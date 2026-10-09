@@ -45,16 +45,34 @@ LOW_STOCK = int(os.environ.get("LOW_STOCK", "2"))
 DB_PATH = os.environ.get("DB_PATH", "store.db")
 PORT = int(os.environ.get("PORT", "8080"))
 
-# Payment Gateway (NOWPayments)
+def parse_profit_margin(val: Optional[str], default: int = 45) -> int:
+    if not val:
+        return default
+    cleaned = "".join(c for c in str(val) if c.isdigit())
+    return int(cleaned) if cleaned else default
+
+# Profit Margin (default 45%)
+raw_margin = os.environ.get("PROFIT_MARGIN") or os.environ.get("RESELLER_MARKUP_PERCENT") or "45%"
+PROFIT_MARGIN = parse_profit_margin(raw_margin, default=45)
+RESELLER_MARKUP_PERCENT = PROFIT_MARGIN
+
+# Reseller / Supplier Catalog API
+RESELLER_BASE_URL = (os.environ.get("RESELLER_BASE_URL") or "https://api-geminipro.ignorelist.com/api/reseller/v1").rstrip("/")
+RESELLER_API_KEY = os.environ.get("RESELLER_API_KEY", "")
+reseller = ResellerClient(base_url=RESELLER_BASE_URL, api_key=RESELLER_API_KEY)
+
+# Crypto Payments
+CRYPTOBOT_TOKEN = os.environ.get("CRYPTOBOT_TOKEN", "")
+BINANCE_PAY_ID = os.environ.get("BINANCE_PAY_ID", "")
+
+# USDT Addresses
+CRYPTO_USDT_BEP20 = os.environ.get("CRYPTO_USDT_BEP20", "")
+CRYPTO_USDT_TRC20 = os.environ.get("CRYPTO_USDT_TRC20", "")
+
+# Alternative Payment Gateway (NOWPayments)
 NOW_API_KEY = os.environ.get("NOWPAYMENTS_API_KEY", "")
 NOW_IPN_SECRET = os.environ.get("NOWPAYMENTS_IPN_SECRET", "")
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")  # https://shop.example.com
-
-# Reseller / Supplier Catalog API
-RESELLER_BASE_URL = os.environ.get("RESELLER_BASE_URL", "https://api-geminipro.ignorelist.com/api/reseller/v1").rstrip("/")
-RESELLER_API_KEY = os.environ.get("RESELLER_API_KEY", "")
-RESELLER_MARKUP_PERCENT = int(os.environ.get("RESELLER_MARKUP_PERCENT", "20"))
-reseller = ResellerClient(base_url=RESELLER_BASE_URL, api_key=RESELLER_API_KEY)
 
 # --------------------------------------------------------------------------
 # Database
@@ -109,6 +127,8 @@ def migrate_db():
         db.execute("ALTER TABLE orders ADD COLUMN supplier_order_id TEXT DEFAULT NULL")
     if "status" not in cols_o:
         db.execute("ALTER TABLE orders ADD COLUMN status TEXT DEFAULT 'completed'")
+    if "invoice_id" not in cols_o:
+        db.execute("ALTER TABLE orders ADD COLUMN invoice_id TEXT DEFAULT NULL")
 
 migrate_db()
 
@@ -130,6 +150,11 @@ TR = {
         "btn_back": "⬅ Back",
         "btn_buy": "💳 Buy / Checkout",
         "btn_pay": "💳 Pay with Crypto ({amount})",
+        "btn_pay_cb": "💳 Pay with @CryptoBot ({amount})",
+        "btn_check_pay": "🔄 Check Payment",
+        "btn_manual_crypto": "💎 USDT / Binance Pay Details",
+        "pay_pending": "⏳ Payment not detected yet. Please complete the invoice in @CryptoBot and check again.",
+        "manual_crypto_info": "💳 <b>Manual Crypto Payment · Order #{oid}</b>\n\nItem: <b>{name}</b>\nAmount: <b>{amount}</b>\n\n{details}\n\n<i>Send exact amount and send your transaction hash/receipt to support to verify.</i>",
         "shop_title": "<b>Available Products</b>",
         "no_products": "No products available at the moment.",
         "product": "<b>{name}</b>\n{desc}\n\nPrice: <b>{price}</b>\nAvailability: {stock}",
@@ -154,6 +179,11 @@ TR = {
         "btn_back": "⬅ Volver",
         "btn_buy": "💳 Comprar / Pagar",
         "btn_pay": "💳 Pagar con Crypto ({amount})",
+        "btn_pay_cb": "💳 Pagar con @CryptoBot ({amount})",
+        "btn_check_pay": "🔄 Verificar Pago",
+        "btn_manual_crypto": "💎 Detalles USDT / Binance Pay",
+        "pay_pending": "⏳ Pago no detectado aún. Completa el pago en @CryptoBot e intenta de nuevo.",
+        "manual_crypto_info": "💳 <b>Pago Manual con Crypto · Pedido #{oid}</b>\n\nArtículo: <b>{name}</b>\nTotal: <b>{amount}</b>\n\n{details}\n\n<i>Envía el monto exacto y tu comprobante/TXID al soporte para recibir tu artículo.</i>",
         "shop_title": "<b>Productos Disponibles</b>",
         "no_products": "No hay productos disponibles por ahora.",
         "product": "<b>{name}</b>\n{desc}\n\nPrecio: <b>{price}</b>\nDisponibilidad: {stock}",
@@ -178,6 +208,11 @@ TR = {
         "btn_back": "⬅ Назад",
         "btn_buy": "💳 Купить / Оформить",
         "btn_pay": "💳 Оплатить криптовалютой ({amount})",
+        "btn_pay_cb": "💳 Оплатить через @CryptoBot ({amount})",
+        "btn_check_pay": "🔄 Проверить оплату",
+        "btn_manual_crypto": "💎 Реквизиты USDT / Binance Pay",
+        "pay_pending": "⏳ Оплата пока не поступила. Завершите платёж в @CryptoBot и попробуйте снова.",
+        "manual_crypto_info": "💳 <b>Оплата криптовалютой · Заказ №{oid}</b>\n\nТовар: <b>{name}</b>\nК оплате: <b>{amount}</b>\n\n{details}\n\n<i>Отправьте точную сумму и подтверждение перевода (TXID) в поддержку для получения товара.</i>",
         "shop_title": "<b>Доступные товары</b>",
         "no_products": "Товаров пока нет в наличии.",
         "product": "<b>{name}</b>\n{desc}\n\nЦена: <b>{price}</b>\nНаличие: {stock}",
@@ -202,6 +237,11 @@ TR = {
         "btn_back": "⬅ رجوع",
         "btn_buy": "💳 شراء / دفع",
         "btn_pay": "💳 الدفع بالعملات الرقمية ({amount})",
+        "btn_pay_cb": "💳 الدفع عبر @CryptoBot ({amount})",
+        "btn_check_pay": "🔄 التحقق من الدفع",
+        "btn_manual_crypto": "💎 تفاصيل USDT / Binance Pay",
+        "pay_pending": "⏳ لم يتم استلام الدفع بعد. يرجى إتمام الدفع في @CryptoBot والمحاولة مرة أخرى.",
+        "manual_crypto_info": "💳 <b>الدفع اليدوي بالعملات المشفرة · الطلب #{oid}</b>\n\nالمنتج: <b>{name}</b>\nالمجموع: <b>{amount}</b>\n\n{details}\n\n<i>أرسل المبلغ المحدد مع إشعار/رقم التحويل للدعم الفني لاستلام المنتج.</i>",
         "shop_title": "<b>المنتجات المتوفرة</b>",
         "no_products": "لا توجد منتجات متوفرة حاليًا.",
         "product": "<b>{name}</b>\n{desc}\n\nالسعر: <b>{price}</b>\nالحالة: {stock}",
@@ -382,6 +422,62 @@ async def product(c: CallbackQuery):
                             [btn(t(uid, "btn_back"), "shop")]]))
 
 
+def manual_crypto_details() -> str:
+    lines = []
+    if BINANCE_PAY_ID and not BINANCE_PAY_ID.startswith("your_"):
+        lines.append(f"• <b>Binance Pay ID:</b> <code>{esc(BINANCE_PAY_ID)}</code>")
+    if CRYPTO_USDT_BEP20 and not CRYPTO_USDT_BEP20.startswith("0xYour"):
+        lines.append(f"• <b>USDT (BEP-20 / BSC):</b>\n<code>{esc(CRYPTO_USDT_BEP20)}</code>")
+    if CRYPTO_USDT_TRC20 and not CRYPTO_USDT_TRC20.startswith("TYour"):
+        lines.append(f"• <b>USDT (TRC-20 / TRON):</b>\n<code>{esc(CRYPTO_USDT_TRC20)}</code>")
+    return "\n".join(lines) if lines else "<i>Contact support for payment addresses.</i>"
+
+
+def has_manual_crypto() -> bool:
+    return bool(
+        (BINANCE_PAY_ID and not BINANCE_PAY_ID.startswith("your_")) or
+        (CRYPTO_USDT_BEP20 and not CRYPTO_USDT_BEP20.startswith("0xYour")) or
+        (CRYPTO_USDT_TRC20 and not CRYPTO_USDT_TRC20.startswith("TYour"))
+    )
+
+
+async def create_cryptobot_invoice(order_id: int, item_name: str, cents: int) -> dict:
+    """Create a @CryptoBot invoice for this specific product order."""
+    payload = {
+        "currency_type": "fiat",
+        "fiat": "USD",
+        "amount": f"{cents / 100:.2f}",
+        "description": f"Order #{order_id}: {item_name}",
+        "payload": str(order_id),
+    }
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        async with s.post(
+            "https://pay.crypt.bot/api/createInvoice",
+            json=payload,
+            headers={"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
+        ) as r:
+            data = await r.json()
+            if not data.get("ok"):
+                raise RuntimeError(f"CryptoBot error: {data}")
+            return data["result"]
+
+
+async def check_cryptobot_invoice(invoice_id: int) -> bool:
+    """Check if a @CryptoBot invoice is paid."""
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        async with s.get(
+            f"https://pay.crypt.bot/api/getInvoices?invoice_ids={invoice_id}",
+            headers={"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
+        ) as r:
+            data = await r.json()
+            if data.get("ok") and data.get("result", {}).get("items"):
+                items = data["result"]["items"]
+                return items[0].get("status") == "paid"
+            return False
+
+
 async def create_order_invoice(order_id: int, item_name: str, cents: int) -> str:
     """Create a NOWPayments direct invoice for this specific product order."""
     payload = {
@@ -414,7 +510,36 @@ async def buy(c: CallbackQuery):
         if stock_count(pid) <= 0:
             return await c.answer(t(uid, "out_of_stock"), show_alert=True)
 
-    # Mode 1: Payment gateway (NOWPayments) enabled -> generate direct checkout link
+    # Mode 1: Telegram @CryptoBot gateway enabled
+    if CRYPTOBOT_TOKEN and not CRYPTOBOT_TOKEN.startswith("token-from"):
+        cur = db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(?,?,?,?,'pending')",
+            (uid, pid, p["name"], p["price"])
+        )
+        oid = cur.lastrowid
+        try:
+            inv = await create_cryptobot_invoice(oid, p["name"], p["price"])
+            inv_id = inv["invoice_id"]
+            db.execute("UPDATE orders SET invoice_id=? WHERE id=?", (str(inv_id), oid))
+            pay_url = inv.get("bot_invoice_url") or inv.get("pay_url")
+        except Exception:
+            log.exception("CryptoBot invoice creation failed")
+            db.execute("UPDATE orders SET status='failed' WHERE id=?", (oid,))
+            return await c.answer(t(uid, "checkout_unavailable"), show_alert=True)
+
+        rows = [
+            [btn(t(uid, "btn_pay_cb", amount=usd(p["price"])), url=pay_url)],
+            [btn(t(uid, "btn_check_pay"), f"chk_cb:{oid}:{inv_id}")],
+        ]
+        if has_manual_crypto():
+            rows.append([btn(t(uid, "btn_manual_crypto"), f"manual_pay:{oid}")])
+        rows.append([btn(t(uid, "btn_back"), f"p:{pid}")])
+
+        await edit(c, t(uid, "checkout_invoice", oid=oid, name=esc(p["name"]), amount=usd(p["price"])),
+                   kb(rows))
+        return
+
+    # Mode 2: Payment gateway (NOWPayments) enabled -> generate direct checkout link
     if NOW_API_KEY and NOW_IPN_SECRET and PUBLIC_URL:
         cur = db.execute(
             "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(?,?,?,?,'pending')",
@@ -428,12 +553,29 @@ async def buy(c: CallbackQuery):
             db.execute("UPDATE orders SET status='failed' WHERE id=?", (oid,))
             return await c.answer(t(uid, "checkout_unavailable"), show_alert=True)
 
+        rows = [[btn(t(uid, "btn_pay", amount=usd(p["price"])), url=url)]]
+        if has_manual_crypto():
+            rows.append([btn(t(uid, "btn_manual_crypto"), f"manual_pay:{oid}")])
+        rows.append([btn(t(uid, "btn_back"), f"p:{pid}")])
+
         await edit(c, t(uid, "checkout_invoice", oid=oid, name=esc(p["name"]), amount=usd(p["price"])),
-                   kb([[btn(t(uid, "btn_pay", amount=usd(p["price"])), url=url)],
-                       [btn(t(uid, "btn_back"), f"p:{pid}")]]))
+                   kb(rows))
         return
 
-    # Mode 2: Direct fulfillment mode (testing or free instant checkout)
+    # Mode 3: Manual Crypto Transfer only
+    if has_manual_crypto():
+        cur = db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(?,?,?,?,'pending')",
+            (uid, pid, p["name"], p["price"])
+        )
+        oid = cur.lastrowid
+        details = manual_crypto_details()
+        text = t(uid, "manual_crypto_info", oid=oid, name=esc(p["name"]), amount=usd(p["price"]), details=details)
+        await edit(c, text, kb([[btn(t(uid, "btn_support"), url=SUPPORT_URL)],
+                                [btn(t(uid, "btn_back"), f"p:{pid}")]]))
+        return
+
+    # Mode 4: Direct fulfillment mode (testing or free instant checkout)
     cur = db.execute(
         "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(?,?,?,?,'processing')",
         (uid, pid, p["name"], p["price"])
@@ -451,6 +593,46 @@ async def buy(c: CallbackQuery):
         if left <= LOW_STOCK:
             name = db.execute("SELECT name FROM products WHERE id=?", (pid,)).fetchone()["name"]
             await notify_admins(c.bot, f"⚠️ Low stock: <b>{esc(name)}</b> (id {pid}) has {left} left.")
+
+
+@dp.callback_query(F.data.startswith("chk_cb:"))
+async def check_cryptobot_payment(c: CallbackQuery):
+    _, oid_str, inv_id_str = c.data.split(":")
+    oid, inv_id = int(oid_str), int(inv_id_str)
+    uid = c.from_user.id
+
+    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o:
+        return await c.answer("Order not found.", show_alert=True)
+    if o["status"] == "completed" and o["payload"]:
+        await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
+        return await c.answer()
+
+    paid = await check_cryptobot_invoice(inv_id)
+    if paid:
+        payload, err = await fulfill_order(c.bot, oid)
+        if payload:
+            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
+            await notify_admins(c.bot, f"✅ Order #{oid} paid via @CryptoBot & delivered: {esc(o['product_name'])} ({usd(o['price'])}) to user {uid}")
+            await c.answer()
+        else:
+            await c.answer(t(uid, err or "supplier_error"), show_alert=True)
+            await notify_admins(c.bot, f"⚠️ Order #{oid} paid via @CryptoBot by user {uid} but delivery failed: {err}")
+    else:
+        await c.answer(t(uid, "pay_pending"), show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("manual_pay:"))
+async def manual_pay_info(c: CallbackQuery):
+    oid = int(c.data.split(":")[1])
+    uid = c.from_user.id
+    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o:
+        return await c.answer("Order not found.", show_alert=True)
+    details = manual_crypto_details()
+    text = t(uid, "manual_crypto_info", oid=oid, name=esc(o["product_name"]), amount=usd(o["price"]), details=details)
+    await edit(c, text, kb([[btn(t(uid, "btn_support"), url=SUPPORT_URL)],
+                            [btn(t(uid, "btn_back"), f"p:{o['product_id']}")] ]))
 
 
 @dp.callback_query(F.data == "orders")
@@ -744,9 +926,11 @@ async def admin_supplier_sync(m: Message, command: CommandObject):
     if not RESELLER_API_KEY:
         return await m.answer("⚠️ <code>RESELLER_API_KEY</code> is not configured in .env.")
 
-    markup = RESELLER_MARKUP_PERCENT
-    if command.args and command.args.strip().isdigit():
-        markup = int(command.args.strip())
+    markup = PROFIT_MARGIN
+    if command.args:
+        custom_markup = parse_profit_margin(command.args.strip(), default=markup)
+        if custom_markup >= 0:
+            markup = custom_markup
 
     try:
         sup_products = await reseller.get_products()

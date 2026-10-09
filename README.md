@@ -11,16 +11,24 @@ Digital goods reseller bot with direct guest checkout, automatic delivery from o
 ## 2. Configure
 ```bash
 cp .env.example .env
-nano .env          # fill BOT_TOKEN, ADMIN_IDS, RESELLER_API_KEY, NOWPayments keys, domain
+nano .env          # fill BOT_TOKEN, ADMIN_IDS, RESELLER_API_KEY, CRYPTOBOT_TOKEN, etc.
 ```
 
-## 3. Direct Checkout (NOWPayments Crypto or Direct Mode)
-1. For automated crypto checkout: create an account on [nowpayments.io](https://nowpayments.io), add payout wallet, and get API key + IPN secret.
-2. When a buyer checks out, a direct invoice is created for that specific order. Once paid, the digital item is delivered automatically!
-3. If NOWPayments keys are left blank, the bot runs in direct/testing mode (immediate free delivery).
+## 3. Direct Checkout (Crypto Payments & Direct Mode)
+The bot supports multiple payment options for seamless guest checkout:
+1. **@CryptoBot (Automated in-Telegram checkout):**
+   - Obtain an API token from [@CryptoBot](https://t.me/CryptoBot) (`/pay` → Create App).
+   - Set `CRYPTOBOT_TOKEN=your_token` in `.env`.
+   - Buyers can pay directly inside Telegram with USDT, TON, BTC, etc., and check payment status with one tap for instant item delivery!
+2. **Direct USDT & Binance Pay Transfer:**
+   - Configure `BINANCE_PAY_ID`, `CRYPTO_USDT_BEP20`, and/or `CRYPTO_USDT_TRC20`.
+   - Buyers can see your payment details and submit their TXID/receipt to support.
+3. **NOWPayments Gateway (Alternative):**
+   - Provide `NOWPAYMENTS_API_KEY`, `NOWPAYMENTS_IPN_SECRET`, and `PUBLIC_URL`.
+4. **Direct / Free Mode:**
+   - If payment gateways are left unconfigured, the bot delivers items immediately (ideal for testing or free distribution).
 
-
-## 4. Run locally (polling; top-ups need a public HTTPS URL, e.g. ngrok)
+## 4. Run locally
 ```bash
 pip install -r requirements.txt
 python bot.py
@@ -39,11 +47,11 @@ Caddy obtains the HTTPS certificate automatically. Data lives in `./data/store.d
 You can sell products via **manual stock** OR **automatically connect to our supplier catalog**:
 
 ### Option A: Automated Supplier Catalog (Recommended)
-Add your supplier API key to `.env`:
+Add your supplier API key and profit margin to `.env`:
 ```bash
 RESELLER_BASE_URL=https://api-geminipro.ignorelist.com/api/reseller/v1
 RESELLER_API_KEY=YOUR_API_KEY
-RESELLER_MARKUP_PERCENT=20   # 20% profit margin
+PROFIT_MARGIN=45%   # Default profit margin (supports "45%" or 45)
 ```
 
 From your Telegram admin account:

@@ -212,6 +212,39 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(p2["price"], 250)
             self.assertEqual(p2["auto_fulfill"], 1)
 
+    def test_parse_profit_margin(self):
+        self.assertEqual(bot.parse_profit_margin("45%"), 45)
+        self.assertEqual(bot.parse_profit_margin("45"), 45)
+        self.assertEqual(bot.parse_profit_margin(""), 45)
+        self.assertEqual(bot.parse_profit_margin(None, default=30), 30)
+        self.assertEqual(bot.parse_profit_margin("0%"), 0)
+        self.assertEqual(bot.parse_profit_margin("100%"), 100)
+
+    def test_manual_crypto_details_and_detection(self):
+        with patch.object(bot, "BINANCE_PAY_ID", "12345678"), \
+             patch.object(bot, "CRYPTO_USDT_BEP20", "0x123abc"), \
+             patch.object(bot, "CRYPTO_USDT_TRC20", "T123xyz"):
+            self.assertTrue(bot.has_manual_crypto())
+            details = bot.manual_crypto_details()
+            self.assertIn("12345678", details)
+            self.assertIn("0x123abc", details)
+            self.assertIn("T123xyz", details)
+
+    async def test_admin_supplier_sync_percentage_string(self):
+        mock_products = [
+            {"id": "gemini-test", "name": "Gemini Pro", "description": "", "price_cents": 100, "stock": 10},
+        ]
+        mock_msg = AsyncMock()
+        mock_cmd = MagicMock()
+        mock_cmd.args = "45%"
+
+        with patch.object(bot.reseller, "get_products", new=AsyncMock(return_value=mock_products)):
+            await bot.admin_supplier_sync(mock_msg, mock_cmd)
+
+            p = bot.db.execute("SELECT * FROM products WHERE supplier_product_id='gemini-test'").fetchone()
+            self.assertIsNotNone(p)
+            self.assertEqual(p["price"], 145)  # 100 cents + 45% = 145 cents ($1.45)
+
 
 if __name__ == "__main__":
     unittest.main()
