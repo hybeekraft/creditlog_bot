@@ -93,7 +93,8 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
           active INTEGER DEFAULT 1,
           supplier_product_id TEXT DEFAULT NULL,
           supplier_price INTEGER DEFAULT NULL,
-          auto_fulfill INTEGER DEFAULT 0);
+          auto_fulfill INTEGER DEFAULT 0,
+          margin INTEGER DEFAULT NULL);
         CREATE TABLE IF NOT EXISTS stock(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           product_id INTEGER NOT NULL,
@@ -244,6 +245,53 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
             p = bot.db.execute("SELECT * FROM products WHERE supplier_product_id='gemini-test'").fetchone()
             self.assertIsNotNone(p)
             self.assertEqual(p["price"], 145)  # 100 cents + 45% = 145 cents ($1.45)
+
+    async def test_admin_setmargin(self):
+        pid = bot.db.execute("""
+            INSERT INTO products(name, price, supplier_price, active)
+            VALUES('Gemini Ultra', 100, 100, 1)
+        """).lastrowid
+
+        mock_msg = AsyncMock()
+        mock_cmd = MagicMock()
+        mock_cmd.args = f"{pid} 60%"
+
+        await bot.admin_setmargin(mock_msg, mock_cmd)
+
+        p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(p["margin"], 60)
+        self.assertEqual(p["price"], 160)  # 100 cents * 1.60 = 160 cents ($1.60)
+        mock_msg.answer.assert_called_once()
+        self.assertIn("60%", mock_msg.answer.call_args[0][0])
+        self.assertIn("$1.60", mock_msg.answer.call_args[0][0])
+
+    async def test_admin_supplier_sync_preserves_custom_margin(self):
+        # Insert product with custom margin of 80%
+        bot.db.execute("""
+            INSERT INTO products(name, price, supplier_product_id, supplier_price, margin, active)
+            VALUES('Custom Item', 180, 'prod-custom', 100, 80, 1)
+        """)
+
+        mock_products = [
+            {"id": "prod-custom", "name": "Custom Item", "description": "", "price_cents": 100, "stock": 5},
+            {"id": "prod-standard", "name": "Standard Item", "description": "", "price_cents": 100, "stock": 5},
+        ]
+        mock_msg = AsyncMock()
+        mock_cmd = MagicMock()
+        mock_cmd.args = "25%"  # Global sync margin is 25%
+
+        with patch.object(bot.reseller, "get_products", new=AsyncMock(return_value=mock_products)):
+            await bot.admin_supplier_sync(mock_msg, mock_cmd)
+
+            # Custom item should retain 80% margin
+            p_custom = bot.db.execute("SELECT * FROM products WHERE supplier_product_id='prod-custom'").fetchone()
+            self.assertEqual(p_custom["margin"], 80)
+            self.assertEqual(p_custom["price"], 180)  # Preserved 80%!
+
+            # Standard item uses global 25% margin
+            p_standard = bot.db.execute("SELECT * FROM products WHERE supplier_product_id='prod-standard'").fetchone()
+            self.assertIsNone(p_standard["margin"])
+            self.assertEqual(p_standard["price"], 125)  # 100 * 1.25
 
 
 if __name__ == "__main__":

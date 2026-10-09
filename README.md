@@ -23,9 +23,7 @@ The bot supports multiple payment options for seamless guest checkout:
 2. **Direct USDT & Binance Pay Transfer:**
    - Configure `BINANCE_PAY_ID`, `CRYPTO_USDT_BEP20`, and/or `CRYPTO_USDT_TRC20`.
    - Buyers can see your payment details and submit their TXID/receipt to support.
-3. **NOWPayments Gateway (Alternative):**
-   - Provide `NOWPAYMENTS_API_KEY`, `NOWPAYMENTS_IPN_SECRET`, and `PUBLIC_URL`.
-4. **Direct / Free Mode:**
+3. **Direct / Free Mode:**
    - If payment gateways are left unconfigured, the bot delivers items immediately (ideal for testing or free distribution).
 
 ## 4. Run locally
@@ -57,7 +55,9 @@ PROFIT_MARGIN=45%   # Default profit margin (supports "45%" or 45)
 From your Telegram admin account:
 - `/supplier` — Check supplier balance and account status.
 - `/s_products` — View products available in the supplier catalog and their wholesale prices.
-- `/s_sync 25` — Automatically import/sync all products from the supplier with a 25% profit margin!
+- `/s_sync [margin_%]` — Automatically import/sync all products from the supplier with default profit margin (or specified margin).
+- `/setmargin <id> <margin_%>` — Set a custom profit margin for a specific product (e.g. `/setmargin 1 60%`). Overrides the default margin and is preserved across `/s_sync`!
+- `/setprice <id> <price_usd>` — Set a direct fixed retail price for a specific product (e.g. `/setprice 1 2.99`).
 - `/s_link <local_id> <supplier_id>` — Link an existing product to auto-fulfill via supplier.
 - `/s_unlink <local_id>` — Unlink and switch back to manual stock.
 - `/s_orders` — View recent supplier orders.

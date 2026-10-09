@@ -8,8 +8,6 @@ Simplified guest checkout model:
   - 4 languages: English, Español, Русский, العربية.
 """
 import asyncio
-import hashlib
-import hmac
 import html
 import json
 import logging
@@ -69,11 +67,6 @@ BINANCE_PAY_ID = os.environ.get("BINANCE_PAY_ID", "")
 CRYPTO_USDT_BEP20 = os.environ.get("CRYPTO_USDT_BEP20", "")
 CRYPTO_USDT_TRC20 = os.environ.get("CRYPTO_USDT_TRC20", "")
 
-# Alternative Payment Gateway (NOWPayments)
-NOW_API_KEY = os.environ.get("NOWPAYMENTS_API_KEY", "")
-NOW_IPN_SECRET = os.environ.get("NOWPAYMENTS_IPN_SECRET", "")
-PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")  # https://shop.example.com
-
 # --------------------------------------------------------------------------
 # Database
 # --------------------------------------------------------------------------
@@ -93,7 +86,8 @@ CREATE TABLE IF NOT EXISTS products(
   active INTEGER DEFAULT 1,
   supplier_product_id TEXT DEFAULT NULL,
   supplier_price INTEGER DEFAULT NULL,
-  auto_fulfill INTEGER DEFAULT 0);
+  auto_fulfill INTEGER DEFAULT 0,
+  margin INTEGER DEFAULT NULL);
 CREATE TABLE IF NOT EXISTS stock(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   product_id INTEGER NOT NULL,
@@ -121,6 +115,8 @@ def migrate_db():
         db.execute("ALTER TABLE products ADD COLUMN supplier_price INTEGER DEFAULT NULL")
     if "auto_fulfill" not in cols_p:
         db.execute("ALTER TABLE products ADD COLUMN auto_fulfill INTEGER DEFAULT 0")
+    if "margin" not in cols_p:
+        db.execute("ALTER TABLE products ADD COLUMN margin INTEGER DEFAULT NULL")
 
     cols_o = {row["name"] for row in db.execute("PRAGMA table_info(orders)").fetchall()}
     if "supplier_order_id" not in cols_o:
@@ -478,25 +474,6 @@ async def check_cryptobot_invoice(invoice_id: int) -> bool:
             return False
 
 
-async def create_order_invoice(order_id: int, item_name: str, cents: int) -> str:
-    """Create a NOWPayments direct invoice for this specific product order."""
-    payload = {
-        "price_amount": cents / 100,
-        "price_currency": "usd",
-        "order_id": f"O{order_id}",
-        "order_description": f"Order #{order_id}: {item_name}",
-        "ipn_callback_url": f"{PUBLIC_URL}/ipn/nowpayments",
-    }
-    timeout = aiohttp.ClientTimeout(total=20)
-    async with aiohttp.ClientSession(timeout=timeout) as s:
-        async with s.post("https://api.nowpayments.io/v1/invoice", json=payload,
-                          headers={"x-api-key": NOW_API_KEY}) as r:
-            data = await r.json()
-            if r.status >= 400:
-                raise RuntimeError(f"NOWPayments error {r.status}: {data}")
-            return data["invoice_url"]
-
-
 @dp.callback_query(F.data.startswith("buy:"))
 async def buy(c: CallbackQuery):
     """Guest checkout for a single product."""
@@ -539,30 +516,7 @@ async def buy(c: CallbackQuery):
                    kb(rows))
         return
 
-    # Mode 2: Payment gateway (NOWPayments) enabled -> generate direct checkout link
-    if NOW_API_KEY and NOW_IPN_SECRET and PUBLIC_URL:
-        cur = db.execute(
-            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(?,?,?,?,'pending')",
-            (uid, pid, p["name"], p["price"])
-        )
-        oid = cur.lastrowid
-        try:
-            url = await create_order_invoice(oid, p["name"], p["price"])
-        except Exception:
-            log.exception("Invoice creation failed")
-            db.execute("UPDATE orders SET status='failed' WHERE id=?", (oid,))
-            return await c.answer(t(uid, "checkout_unavailable"), show_alert=True)
-
-        rows = [[btn(t(uid, "btn_pay", amount=usd(p["price"])), url=url)]]
-        if has_manual_crypto():
-            rows.append([btn(t(uid, "btn_manual_crypto"), f"manual_pay:{oid}")])
-        rows.append([btn(t(uid, "btn_back"), f"p:{pid}")])
-
-        await edit(c, t(uid, "checkout_invoice", oid=oid, name=esc(p["name"]), amount=usd(p["price"])),
-                   kb(rows))
-        return
-
-    # Mode 3: Manual Crypto Transfer only
+    # Mode 2: Manual Crypto Transfer (Binance Pay / USDT addresses)
     if has_manual_crypto():
         cur = db.execute(
             "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(?,?,?,?,'pending')",
@@ -680,46 +634,6 @@ async def set_lang(c: CallbackQuery):
 
 
 # --------------------------------------------------------------------------
-# IPN Webhook (NOWPayments)
-# --------------------------------------------------------------------------
-def verify_sig(body: dict, sig: str) -> bool:
-    msg = json.dumps(body, separators=(",", ":"), sort_keys=True)
-    calc = hmac.new(NOW_IPN_SECRET.encode(), msg.encode(), hashlib.sha512).hexdigest()
-    return hmac.compare_digest(calc, sig or "")
-
-
-async def ipn_handler(request: web.Request):
-    bot: Bot = request.app["bot"]
-    try:
-        data = await request.json()
-    except Exception:
-        return web.Response(status=400)
-    if not NOW_IPN_SECRET or not verify_sig(data, request.headers.get("x-nowpayments-sig", "")):
-        log.warning("IPN with bad signature rejected")
-        return web.Response(status=403)
-
-    order_id_str, status = str(data.get("order_id", "")), data.get("payment_status")
-    if order_id_str.startswith("O") and order_id_str[1:].isdigit():
-        oid = int(order_id_str[1:])
-        if status == "finished":
-            o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
-            if o and o["status"] != "completed":
-                payload, err = await fulfill_order(bot, oid)
-                if payload:
-                    try:
-                        await bot.send_message(o["user_id"], t(o["user_id"], "purchased", oid=oid, payload=esc(payload)))
-                    except Exception:
-                        pass
-                    await notify_admins(bot, f"✅ Order #{oid} paid & delivered: {esc(o['product_name'])} ({usd(o['price'])}) to user {o['user_id']}")
-                else:
-                    await notify_admins(bot, f"⚠️ Order #{oid} paid by user {o['user_id']} but fulfillment failed ({err})! Needs manual delivery.")
-        elif status in ("failed", "expired", "refunded"):
-            db.execute("UPDATE orders SET status=? WHERE id=? AND status='pending'", (status, oid))
-
-    return web.Response(text="ok")
-
-
-# --------------------------------------------------------------------------
 # Admin commands
 # --------------------------------------------------------------------------
 def is_admin(m: Message) -> bool:
@@ -731,9 +645,10 @@ async def admin_help(m: Message):
     await m.answer(
         "<b>Admin Commands</b>\n\n"
         "<b>Catalog & Products</b>\n"
-        "/products - List all products\n"
+        "/products - List all products with margins\n"
         "/addproduct &lt;price_usd&gt; &lt;name&gt; [| description]\n"
         "/setprice &lt;product_id&gt; &lt;price_usd&gt;\n"
+        "/setmargin &lt;product_id&gt; &lt;margin_%&gt; (e.g. /setmargin 1 60%)\n"
         "/toggle &lt;product_id&gt;  (activate/deactivate)\n"
         "/addstock &lt;product_id&gt; &lt;item&gt;  (manual items, 1 per line)\n"
         "/refund &lt;order_id&gt;\n"
@@ -760,8 +675,18 @@ async def admin_products(m: Message):
             stock_info = f"⚡Auto ({p['supplier_product_id']})"
         else:
             stock_info = f"stock {stock_count(p['id'])}"
+
+        margin_info = ""
+        if p["margin"] is not None:
+            margin_info = f" · margin +{p['margin']}%"
+        elif p["supplier_price"]:
+            cost = p["supplier_price"]
+            calc_m = round(((p["price"] - cost) / cost) * 100)
+            margin_info = f" · margin ~{calc_m}%"
+
+        cost_disp = f" (cost {usd(p['supplier_price'])})" if p["supplier_price"] else ""
         lines.append(
-            f"{p['id']}. {esc(p['name'])} · {usd(p['price'])} · {stock_info} · "
+            f"{p['id']}. {esc(p['name'])} · {usd(p['price'])}{cost_disp}{margin_info} · {stock_info} · "
             f"{'on' if p['active'] else 'off'}"
         )
     await m.answer("\n".join(lines))
@@ -787,6 +712,30 @@ async def admin_setprice(m: Message, command: CommandObject):
         await m.answer("Price updated.")
     except Exception:
         await m.answer("Usage: /setprice <product_id> <price_usd>")
+
+
+@dp.message(Command("setmargin"), is_admin)
+async def admin_setmargin(m: Message, command: CommandObject):
+    try:
+        pid, raw_margin = command.args.split()
+        pid = int(pid)
+        margin = parse_profit_margin(raw_margin)
+        p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        if not p:
+            return await m.answer(f"Product #{pid} not found.")
+
+        cost = p["supplier_price"] or p["price"]
+        new_price = max(100, round(cost * (1 + margin / 100)))
+        db.execute("UPDATE products SET margin=?, price=? WHERE id=?", (margin, new_price, pid))
+
+        cost_info = f"• Wholesale Cost: <b>{usd(cost)}</b>\n" if p["supplier_price"] else ""
+        await m.answer(
+            f"✅ Profit margin for #{pid} (<b>{esc(p['name'])}</b>) set to <b>{margin}%</b>.\n"
+            f"{cost_info}"
+            f"• New Selling Price: <b>{usd(new_price)}</b>"
+        )
+    except Exception:
+        await m.answer("Usage: /setmargin <product_id> <margin_percent>\nExamples: /setmargin 1 50% or /setmargin 1 35")
 
 
 @dp.message(Command("toggle"), is_admin)
@@ -944,9 +893,11 @@ async def admin_supplier_sync(m: Message, command: CommandObject):
     for sp in sup_products:
         sp_id = sp["id"]
         cost_cents = sp["price_cents"]
-        retail_cents = max(100, round(cost_cents * (1 + markup / 100)))
 
-        existing = db.execute("SELECT id FROM products WHERE supplier_product_id=?", (sp_id,)).fetchone()
+        existing = db.execute("SELECT id, margin FROM products WHERE supplier_product_id=?", (sp_id,)).fetchone()
+        item_margin = existing["margin"] if (existing and existing["margin"] is not None) else markup
+        retail_cents = max(100, round(cost_cents * (1 + item_margin / 100)))
+
         if existing:
             db.execute("""
                 UPDATE products
@@ -1022,13 +973,11 @@ async def admin_supplier_orders(m: Message):
 async def main():
     bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     app = web.Application()
-    app["bot"] = bot
-    app.router.add_post("/ipn/nowpayments", ipn_handler)
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    log.info("IPN server listening on :%s", PORT)
+    log.info("Health check server listening on :%s", PORT)
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
