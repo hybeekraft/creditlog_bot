@@ -94,7 +94,8 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
           supplier_product_id TEXT DEFAULT NULL,
           supplier_price INTEGER DEFAULT NULL,
           auto_fulfill INTEGER DEFAULT 0,
-          margin INTEGER DEFAULT NULL);
+          margin INTEGER DEFAULT NULL,
+          category TEXT DEFAULT 'AI Tools');
         CREATE TABLE IF NOT EXISTS stock(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           product_id INTEGER NOT NULL,
@@ -107,6 +108,7 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
           product_id INTEGER,
           product_name TEXT,
           price INTEGER,
+          quantity INTEGER DEFAULT 1,
           payload TEXT,
           refunded INTEGER DEFAULT 0,
           supplier_order_id TEXT DEFAULT NULL,
@@ -293,6 +295,113 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(p_standard["margin"])
             self.assertEqual(p_standard["price"], 125)  # 100 * 1.25
 
+    def test_category_detection_and_icons(self):
+        self.assertEqual(bot.detect_category("Codex API 10M Tokens 1 Day"), "Codex API")
+        self.assertEqual(bot.detect_category("Gemini 18 Months"), "Gemini")
+        self.assertEqual(bot.detect_category("Duolingo Super 12 Months"), "Education")
+        self.assertEqual(bot.detect_category("ChatGPT Plus 1 Month"), "ChatGPT")
+        self.assertEqual(bot.detect_category("Unknown Item"), "AI Tools")
+
+        icon_codex = bot.get_product_icon("Codex API 10M")
+        self.assertEqual(icon_codex, "🤖")
+        icon_gemini = bot.get_product_icon("Gemini 18 Months")
+        self.assertEqual(icon_gemini, "✨")
+
+    def test_home_kb_layout(self):
+        bot.db.execute("INSERT INTO products(name, price, active) VALUES('Gemini 18 Months', 72, 1)")
+        bot.db.execute("INSERT INTO products(name, price, active) VALUES('Duolingo Super 12 Months', 90, 1)")
+        markup = bot.home_kb(uid=1001)
+
+        # Check top 2 products with badges
+        btn_texts = [b.text for row in markup.inline_keyboard for b in row]
+        self.assertTrue(any("1️⃣ Gemini 18 Months · $0.72" in t for t in btn_texts))
+        self.assertTrue(any("2️⃣ Duolingo Super 12 Months · $0.90" in t for t in btn_texts))
+        self.assertTrue(any("Shop" in t for t in btn_texts))
+        self.assertTrue(any("Purchases" in t for t in btn_texts))
+
+    def test_categories_kb_grid(self):
+        markup = bot.categories_kb(uid=1001)
+        grid_rows = markup.inline_keyboard[:-2]  # excluding Search/All items and Back
+        # Each category row should have 3 columns
+        for row in grid_rows:
+            self.assertEqual(len(row), 3)
+
+        btn_texts = [b.text for row in markup.inline_keyboard for b in row]
+        self.assertTrue(any("ChatGPT" in t for t in btn_texts))
+        self.assertTrue(any("Codex API" in t for t in btn_texts))
+        self.assertTrue(any("Search" in t for t in btn_texts))
+        self.assertTrue(any("All items" in t for t in btn_texts))
+        self.assertTrue(any("Back" in t for t in btn_texts))
+
+    def test_render_product_card_quantity_buttons(self):
+        # Product with 7 in stock (Screenshot 1: [1], [5], [All 7], [✏️ Custom Qty])
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active, auto_fulfill) VALUES('Codex API 10M Tokens 1 Day', 'Codex API key.', 360, 1, 0)").lastrowid
+        for i in range(7):
+            bot.db.execute("INSERT INTO stock(product_id, payload) VALUES(?, ?)", (pid, f"KEY-{i}"))
+
+        p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        text, markup = bot.render_product_card(uid=1001, p=p, ctx="c_codex_1")
+
+        self.assertIn("Item: <b>Codex API 10M Tokens 1 Day</b>", text)
+        self.assertIn("Price: 3.60 USD", text)
+        self.assertIn("In stock: 7 pcs", text)
+
+        row1_texts = [b.text for b in markup.inline_keyboard[0]]
+        self.assertEqual(row1_texts, ["1", "5", "All 7"])
+        row2_texts = [b.text for b in markup.inline_keyboard[1]]
+        self.assertEqual(row2_texts, ["✏️ Custom Qty"])
+        row3_texts = [b.text for b in markup.inline_keyboard[2]]
+        self.assertEqual(row3_texts, ["🔄 Refresh", "↩️ Back"])
+
+    async def test_multi_quantity_supplier_fulfillment(self):
+        pid = bot.db.execute("""
+            INSERT INTO products(name, price, active, supplier_product_id, auto_fulfill)
+            VALUES('Codex 10M', 360, 1, 'codex-10m', 1)
+        """).lastrowid
+
+        oid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, status) VALUES(5002, ?, 'Codex 10M', 1080, 3, 'pending')",
+            (pid,)
+        ).lastrowid
+
+        mock_bot = AsyncMock()
+        mock_order = {
+            "order_code": "SUP-9999",
+            "value": "KEY-1\nKEY-2\nKEY-3",
+            "quantity": 3,
+        }
+
+        with patch.object(bot.reseller, "create_order", new=AsyncMock(return_value=mock_order)) as mock_create:
+            payload, err = await bot.fulfill_order(mock_bot, oid)
+            self.assertIsNone(err)
+            self.assertEqual(payload, "KEY-1\nKEY-2\nKEY-3")
+            mock_create.assert_called_once_with(product_id="codex-10m", quantity=3)
+
+            o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+            self.assertEqual(o["status"], "completed")
+            self.assertEqual(o["quantity"], 3)
+
+    async def test_multi_quantity_local_stock_fulfillment(self):
+        pid = bot.db.execute("INSERT INTO products(name, price, active, auto_fulfill) VALUES('Local Keys', 100, 1, 0)").lastrowid
+        bot.db.execute("INSERT INTO stock(product_id, payload) VALUES(?, 'KEY-AAA')", (pid,))
+        bot.db.execute("INSERT INTO stock(product_id, payload) VALUES(?, 'KEY-BBB')", (pid,))
+        bot.db.execute("INSERT INTO stock(product_id, payload) VALUES(?, 'KEY-CCC')", (pid,))
+
+        oid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, status) VALUES(6002, ?, 'Local Keys', 300, 3, 'pending')",
+            (pid,)
+        ).lastrowid
+
+        mock_bot = AsyncMock()
+        payload, err = await bot.fulfill_order(mock_bot, oid)
+        self.assertIsNone(err)
+        self.assertEqual(payload, "KEY-AAA\nKEY-BBB\nKEY-CCC")
+
+        # Verify all 3 stock rows are marked sold
+        sold_count = bot.db.execute("SELECT COUNT(*) FROM stock WHERE product_id=? AND sold=1", (pid,)).fetchone()[0]
+        self.assertEqual(sold_count, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
+
