@@ -1502,10 +1502,6 @@ async def set_lang(c: CallbackQuery):
 # --------------------------------------------------------------------------
 # Admin commands
 # --------------------------------------------------------------------------
-def is_admin(m: Message) -> bool:
-    return m.from_user.id in ADMIN_IDS
-
-
 @dp.message(Command("admin"), is_admin)
 async def admin_help(m: Message):
     await m.answer(

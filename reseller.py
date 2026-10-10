@@ -15,7 +15,7 @@ import os
 import re
 import logging
 import aiohttp
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 log = logging.getLogger("reseller")
 
