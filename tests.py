@@ -312,26 +312,44 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         bot.db.execute("INSERT INTO products(name, price, active) VALUES('Duolingo Super 12 Months', 90, 1)")
         markup = bot.home_kb(uid=1001)
 
-        # Check top 2 products with badges
-        btn_texts = [b.text for row in markup.inline_keyboard for b in row]
-        self.assertTrue(any("1️⃣ Gemini 18 Months · $0.72" in t for t in btn_texts))
-        self.assertTrue(any("2️⃣ Duolingo Super 12 Months · $0.90" in t for t in btn_texts))
-        self.assertTrue(any("Shop" in t for t in btn_texts))
-        self.assertTrue(any("Purchases" in t for t in btn_texts))
+        # Check top 2 products with badges and styles
+        gemini_btn = next(b for row in markup.inline_keyboard for b in row if "Gemini 18 Months" in b.text)
+        self.assertIn("1️⃣ Gemini 18 Months · $0.72", gemini_btn.text)
+        self.assertEqual(gemini_btn.style, "success")
+
+        duo_btn = next(b for row in markup.inline_keyboard for b in row if "Duolingo" in b.text)
+        self.assertIn("🦉 Duolingo Super 12 Months · $0.90", duo_btn.text)
+        self.assertEqual(duo_btn.style, "success")
+
+        shop_btn = next(b for row in markup.inline_keyboard for b in row if "Shop" in b.text)
+        self.assertEqual(shop_btn.style, "success")
+
+        orders_btn = next(b for row in markup.inline_keyboard for b in row if "Purchases" in b.text)
+        self.assertEqual(orders_btn.style, "success")
+
+        lang_btn = next(b for row in markup.inline_keyboard for b in row if "Language" in b.text)
+        self.assertEqual(lang_btn.style, "primary")
+
+        back_support = next(b for row in markup.inline_keyboard for b in row if "Support" in b.text)
+        self.assertEqual(back_support.style, "primary")
 
     def test_categories_kb_grid(self):
         markup = bot.categories_kb(uid=1001)
         grid_rows = markup.inline_keyboard[:-2]  # excluding Search/All items and Back
-        # Each category row should have 3 columns
+        # Each category row should have 3 columns and primary (blue) style
         for row in grid_rows:
             self.assertEqual(len(row), 3)
+            for b in row:
+                self.assertEqual(b.style, "primary")
 
-        btn_texts = [b.text for row in markup.inline_keyboard for b in row]
-        self.assertTrue(any("ChatGPT" in t for t in btn_texts))
-        self.assertTrue(any("Codex API" in t for t in btn_texts))
-        self.assertTrue(any("Search" in t for t in btn_texts))
-        self.assertTrue(any("All items" in t for t in btn_texts))
-        self.assertTrue(any("Back" in t for t in btn_texts))
+        search_btn = next(b for row in markup.inline_keyboard for b in row if "Search" in b.text)
+        self.assertEqual(search_btn.style, "primary")
+
+        all_btn = next(b for row in markup.inline_keyboard for b in row if "All items" in b.text)
+        self.assertEqual(all_btn.style, "primary")
+
+        back_btn = next(b for row in markup.inline_keyboard for b in row if "Back" in b.text)
+        self.assertEqual(back_btn.style, "danger")
 
     def test_render_product_card_quantity_buttons(self):
         # Product with 7 in stock (Screenshot 1: [1], [5], [All 7], [✏️ Custom Qty])
@@ -348,10 +366,31 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
 
         row1_texts = [b.text for b in markup.inline_keyboard[0]]
         self.assertEqual(row1_texts, ["1", "5", "All 7"])
+        for b in markup.inline_keyboard[0]:
+            self.assertEqual(b.style, "success")  # Green buttons
+
         row2_texts = [b.text for b in markup.inline_keyboard[1]]
         self.assertEqual(row2_texts, ["✏️ Custom Qty"])
+        self.assertEqual(markup.inline_keyboard[1][0].style, "primary")  # Blue button
+
         row3_texts = [b.text for b in markup.inline_keyboard[2]]
         self.assertEqual(row3_texts, ["🔄 Refresh", "↩️ Back"])
+        self.assertEqual(markup.inline_keyboard[2][0].style, "primary")  # Blue button
+        self.assertEqual(markup.inline_keyboard[2][1].style, "danger")   # Red button
+
+    def test_render_product_list_styles(self):
+        pid1 = bot.db.execute("INSERT INTO products(name, price, active) VALUES('Prod A', 100, 1)").lastrowid
+        p1 = bot.db.execute("SELECT * FROM products WHERE id=?", (pid1,)).fetchone()
+        _, markup = bot.render_product_list(
+            uid=1001, prods=[p1], page=1, cb_prefix="allprods", ctx_prefix="all", back_cb="home"
+        )
+        # Prod button: success (green)
+        prod_btn = markup.inline_keyboard[0][0]
+        self.assertEqual(prod_btn.style, "success")
+        # Refresh: primary (blue), Back: danger (red)
+        bottom_row = markup.inline_keyboard[-1]
+        self.assertEqual(bottom_row[0].style, "primary")
+        self.assertEqual(bottom_row[1].style, "danger")
 
     async def test_multi_quantity_supplier_fulfillment(self):
         pid = bot.db.execute("""

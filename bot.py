@@ -248,6 +248,20 @@ def migrate_db():
             if detected != "AI Tools":
                 db.execute("UPDATE products SET category=? WHERE id=?", (detected, row["id"]))
 
+    # Ensure default showcase products (Gemini 18 Months and Duolingo Super 12 Months)
+    g = db.execute("SELECT id FROM products WHERE name LIKE '%Gemini 18 Months%'").fetchone()
+    if not g:
+        db.execute("""
+            INSERT INTO products(name, description, price, category, auto_fulfill, active)
+            VALUES('Gemini 18 Months', 'Gemini Advanced & Pro 18 Months Subscription', 72, 'Gemini', 1, 1)
+        """)
+    d = db.execute("SELECT id FROM products WHERE name LIKE '%Duolingo%'").fetchone()
+    if not d:
+        db.execute("""
+            INSERT INTO products(name, description, price, category, auto_fulfill, active)
+            VALUES('Duolingo Super 12 Months', 'Duolingo Super 12 Months Plan', 90, 'Education', 1, 1)
+        """)
+
 migrate_db()
 
 dp = Dispatcher()
@@ -418,8 +432,15 @@ def kb(rows):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def btn(text, data=None, url=None):
-    return InlineKeyboardButton(text=text, callback_data=data, url=url)
+def btn(text, data=None, url=None, style=None):
+    kw = {"text": text}
+    if data is not None:
+        kw["callback_data"] = data
+    if url is not None:
+        kw["url"] = url
+    if style is not None:
+        kw["style"] = style
+    return InlineKeyboardButton(**kw)
 
 
 def stock_count(pid: int) -> int:
@@ -445,17 +466,37 @@ async def notify_admins(bot: Bot, text: str):
 
 def home_kb(uid: int):
     """Home screen keyboard matching Screenshot 2."""
-    top_prods = db.execute("SELECT * FROM products WHERE active=1 ORDER BY id LIMIT 2").fetchall()
     rows = []
-    badges = ["1️⃣", "2️⃣"]
-    for i, p in enumerate(top_prods):
-        badge = badges[i] if i < len(badges) else "⭐"
-        rows.append([btn(f"{badge} {p['name']} · {usd(p['price'])}", f"p:{p['id']}:home")])
+
+    # Priority 1: Gemini 18 Months ($0.72)
+    gemini_p = db.execute(
+        "SELECT * FROM products WHERE name LIKE '%Gemini 18 Months%' AND active=1 ORDER BY id LIMIT 1"
+    ).fetchone()
+    if not gemini_p:
+        gemini_p = db.execute(
+            "SELECT * FROM products WHERE category='Gemini' AND active=1 ORDER BY id LIMIT 1"
+        ).fetchone() or db.execute("SELECT * FROM products WHERE active=1 ORDER BY id LIMIT 1").fetchone()
+
+    # Priority 2: Duolingo Super 12 Months ($0.90)
+    duo_p = db.execute(
+        "SELECT * FROM products WHERE name LIKE '%Duolingo%' AND active=1 ORDER BY id LIMIT 1"
+    ).fetchone()
+    if not duo_p and gemini_p:
+        duo_p = db.execute(
+            "SELECT * FROM products WHERE active=1 AND id != ? ORDER BY id LIMIT 1", (gemini_p["id"],)
+        ).fetchone()
+
+    if gemini_p:
+        rows.append([btn(f"1️⃣ {gemini_p['name']} · {usd(gemini_p['price'])}", f"p:{gemini_p['id']}:home", style="success")])
+
+    if duo_p:
+        badge = "🦉" if "duolingo" in duo_p["name"].lower() else "2️⃣"
+        rows.append([btn(f"{badge} {duo_p['name']} · {usd(duo_p['price'])}", f"p:{duo_p['id']}:home", style="success")])
 
     rows += [
-        [btn(t(uid, "btn_shop"), "shop"), btn(t(uid, "btn_orders"), "orders")],
-        [btn(t(uid, "btn_lang"), "lang"), btn(t(uid, "btn_support"), url=SUPPORT_URL)],
-        [btn(t(uid, "btn_news"), url=CHANNEL_URL)],
+        [btn(t(uid, "btn_shop"), "shop", style="success"), btn(t(uid, "btn_orders"), "orders", style="success")],
+        [btn(t(uid, "btn_lang"), "lang", style="primary"), btn(t(uid, "btn_support"), url=SUPPORT_URL, style="primary")],
+        [btn(t(uid, "btn_news"), url=CHANNEL_URL, style="primary")],
     ]
     return kb(rows)
 
@@ -465,15 +506,15 @@ def categories_kb(uid: int):
     rows = []
     current_row = []
     for key, name, icon in CATEGORIES:
-        current_row.append(btn(f"{icon} {name}", f"cat:{key}:1"))
+        current_row.append(btn(f"{icon} {name}", f"cat:{key}:1", style="primary"))
         if len(current_row) == 3:
             rows.append(current_row)
             current_row = []
     if current_row:
         rows.append(current_row)
 
-    rows.append([btn(t(uid, "btn_search"), "search_start"), btn(t(uid, "btn_all_items"), "allprods:1")])
-    rows.append([btn(t(uid, "btn_back"), "home")])
+    rows.append([btn(t(uid, "btn_search"), "search_start", style="primary"), btn(t(uid, "btn_all_items"), "allprods:1", style="primary")])
+    rows.append([btn(t(uid, "btn_back"), "home", style="danger")])
     return kb(rows)
 
 
@@ -486,27 +527,27 @@ def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_pr
     page = max(1, min(page, total_pages))
 
     if not prods:
-        return t(uid, "no_products"), kb([[btn(t(uid, "btn_back"), back_cb)]])
+        return t(uid, "no_products"), kb([[btn(t(uid, "btn_back"), back_cb, style="danger")]])
 
     slice_prods = prods[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
     rows = []
     for p in slice_prods:
         p_cat = p["category"] if "category" in p.keys() else None
         icon = get_product_icon(p["name"], p_cat)
-        rows.append([btn(f"{icon} {p['name']} · {usd(p['price'])} ✅", f"p:{p['id']}:{ctx_prefix}_{page}")])
+        rows.append([btn(f"{icon} {p['name']} · {usd(p['price'])} ✅", f"p:{p['id']}:{ctx_prefix}_{page}", style="success")])
 
     if total_pages > 1:
         pag_row = []
         if page > 1:
-            pag_row.append(btn("◀️", f"{cb_prefix}:{page - 1}"))
-        pag_row.append(btn(f"{page}/{total_pages}", "noop"))
+            pag_row.append(btn("◀️", f"{cb_prefix}:{page - 1}", style="primary"))
+        pag_row.append(btn(f"{page}/{total_pages}", "noop", style="primary"))
         if page < total_pages:
-            pag_row.append(btn("▶️", f"{cb_prefix}:{page + 1}"))
+            pag_row.append(btn("▶️", f"{cb_prefix}:{page + 1}", style="primary"))
         rows.append(pag_row)
 
     rows.append([
-        btn(t(uid, "btn_refresh"), f"{cb_prefix}:{page}"),
-        btn(t(uid, "btn_back"), back_cb)
+        btn(t(uid, "btn_refresh"), f"{cb_prefix}:{page}", style="primary"),
+        btn(t(uid, "btn_back"), back_cb, style="danger")
     ])
     return t(uid, "prods_title"), kb(rows)
 
@@ -542,18 +583,18 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
     has_stock = is_auto or (count and count > 0)
     if has_stock:
         qty_row = []
-        qty_row.append(btn("1", f"buyqty:{p['id']}:1:{ctx}"))
+        qty_row.append(btn("1", f"buyqty:{p['id']}:1:{ctx}", style="success"))
         if is_auto:
-            qty_row.append(btn("5", f"buyqty:{p['id']}:5:{ctx}"))
-            qty_row.append(btn("10", f"buyqty:{p['id']}:10:{ctx}"))
+            qty_row.append(btn("5", f"buyqty:{p['id']}:5:{ctx}", style="success"))
+            qty_row.append(btn("10", f"buyqty:{p['id']}:10:{ctx}", style="success"))
         else:
             if count >= 5:
-                qty_row.append(btn("5", f"buyqty:{p['id']}:5:{ctx}"))
-                qty_row.append(btn(f"All {count}", f"buyqty:{p['id']}:{count}:{ctx}"))
+                qty_row.append(btn("5", f"buyqty:{p['id']}:5:{ctx}", style="success"))
+                qty_row.append(btn(f"All {count}", f"buyqty:{p['id']}:{count}:{ctx}", style="success"))
             elif count > 1:
-                qty_row.append(btn(f"All {count}", f"buyqty:{p['id']}:{count}:{ctx}"))
+                qty_row.append(btn(f"All {count}", f"buyqty:{p['id']}:{count}:{ctx}", style="success"))
         rows.append(qty_row)
-        rows.append([btn(t(uid, "btn_custom_qty"), f"cqty:{p['id']}:{ctx}")])
+        rows.append([btn(t(uid, "btn_custom_qty"), f"cqty:{p['id']}:{ctx}", style="primary")])
 
     # Resolve back navigation
     if ctx == "home":
@@ -573,8 +614,8 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
         back_cb = "shop"
 
     rows.append([
-        btn(t(uid, "btn_refresh"), f"p:{p['id']}:{ctx}"),
-        btn(t(uid, "btn_back"), back_cb)
+        btn(t(uid, "btn_refresh"), f"p:{p['id']}:{ctx}", style="primary"),
+        btn(t(uid, "btn_back"), back_cb, style="danger")
     ])
     return text, kb(rows)
 
@@ -839,12 +880,12 @@ async def start_checkout(event: Message | CallbackQuery, uid: int, p: sqlite3.Ro
             return await event.answer(err_msg)
 
         rows = [
-            [btn(t(uid, "btn_pay_cb", amount=usd(total_cents)), url=pay_url)],
-            [btn(t(uid, "btn_check_pay"), f"chk_cb:{oid}:{inv_id}")],
+            [btn(t(uid, "btn_pay_cb", amount=usd(total_cents)), url=pay_url, style="success")],
+            [btn(t(uid, "btn_check_pay"), f"chk_cb:{oid}:{inv_id}", style="primary")],
         ]
         if has_manual_crypto():
-            rows.append([btn(t(uid, "btn_manual_crypto"), f"manual_pay:{oid}")])
-        rows.append([btn(t(uid, "btn_back"), f"p:{pid}:{ctx}")])
+            rows.append([btn(t(uid, "btn_manual_crypto"), f"manual_pay:{oid}", style="primary")])
+        rows.append([btn(t(uid, "btn_back"), f"p:{pid}:{ctx}", style="danger")])
 
         text = t(uid, "checkout_invoice", oid=oid, name=f"{esc(p['name'])} (x{qty})", amount=usd(total_cents))
         if isinstance(event, CallbackQuery):
@@ -862,8 +903,8 @@ async def start_checkout(event: Message | CallbackQuery, uid: int, p: sqlite3.Ro
         oid = cur.lastrowid
         details = manual_crypto_details()
         text = t(uid, "manual_crypto_info", oid=oid, name=f"{esc(p['name'])} (x{qty})", amount=usd(total_cents), details=details)
-        markup = kb([[btn(t(uid, "btn_support"), url=SUPPORT_URL)],
-                     [btn(t(uid, "btn_back"), f"p:{pid}:{ctx}")]])
+        markup = kb([[btn(t(uid, "btn_support"), url=SUPPORT_URL, style="primary")],
+                     [btn(t(uid, "btn_back"), f"p:{pid}:{ctx}", style="danger")]])
         if isinstance(event, CallbackQuery):
             await edit(event, text, markup)
         else:
@@ -972,7 +1013,7 @@ async def handle_user_text_input(m: Message):
         ctx = state.get("ctx", "shop")
         p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
         if not p:
-            return await m.answer(t(uid, "out_of_stock"), reply_markup=kb([[btn(t(uid, "btn_back"), "shop")]]))
+            return await m.answer(t(uid, "out_of_stock"), reply_markup=kb([[btn(t(uid, "btn_back"), "shop", style="danger")]]))
 
         try:
             qty = int(m.text.strip())
@@ -1042,8 +1083,8 @@ async def manual_pay_info(c: CallbackQuery):
         return await c.answer("Order not found.", show_alert=True)
     details = manual_crypto_details()
     text = t(uid, "manual_crypto_info", oid=oid, name=esc(o["product_name"]), amount=usd(o["price"]), details=details)
-    await edit(c, text, kb([[btn(t(uid, "btn_support"), url=SUPPORT_URL)],
-                            [btn(t(uid, "btn_back"), f"p:{o['product_id']}")] ]))
+    await edit(c, text, kb([[btn(t(uid, "btn_support"), url=SUPPORT_URL, style="primary")],
+                            [btn(t(uid, "btn_back"), f"p:{o['product_id']}", style="danger")] ]))
 
 
 @dp.callback_query(F.data == "orders")
@@ -1065,7 +1106,7 @@ async def recent_purchases(event: Message | CallbackQuery):
             for o in rows
         )
 
-    markup = kb([[btn(t(uid, "btn_back"), "home")]])
+    markup = kb([[btn(t(uid, "btn_back"), "home", style="danger")]])
     if isinstance(event, CallbackQuery):
         await edit(event, text, markup)
     else:
@@ -1075,8 +1116,8 @@ async def recent_purchases(event: Message | CallbackQuery):
 @dp.callback_query(F.data == "lang")
 async def lang_menu(c: CallbackQuery):
     uid = c.from_user.id
-    rows = [[btn(name, f"setlang:{code}")] for code, name in LANG_NAMES.items()]
-    rows.append([btn(t(uid, "btn_back"), "home")])
+    rows = [[btn(name, f"setlang:{code}", style="primary")] for code, name in LANG_NAMES.items()]
+    rows.append([btn(t(uid, "btn_back"), "home", style="danger")])
     await edit(c, t(uid, "lang_choose"), kb(rows))
 
 
