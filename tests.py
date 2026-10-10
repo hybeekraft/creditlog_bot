@@ -144,6 +144,9 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
           refunded INTEGER DEFAULT 0,
           supplier_order_id TEXT DEFAULT NULL,
           supplier TEXT DEFAULT 'default',
+          payment_method TEXT DEFAULT NULL,
+          txid TEXT DEFAULT NULL,
+          invoice_id TEXT DEFAULT NULL,
           status TEXT DEFAULT 'completed',
           created TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS custom_emojis(
@@ -540,6 +543,86 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ord_row["status"], "completed")
         self.assertEqual(ord_row["supplier"], "streaming_hub")
         self.assertEqual(ord_row["supplier_order_id"], "V-77")
+
+    def test_render_order_summary_and_color_buttons(self):
+        pid = bot.db.execute(
+            "INSERT INTO products(name, price, active, category) VALUES('Gemini AI Pro 5TB 18M', 325, 1, 'Gemini')"
+        ).lastrowid
+        p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+
+        text, markup = bot.render_order_summary(uid=1001, p=p, qty=1, ctx="shop")
+        self.assertIn("🧾 <b>Order Summary</b>", text)
+        self.assertIn("Gemini AI Pro 5TB 18M", text)
+        self.assertIn("Qty:</b> 1", text)
+        self.assertIn("Price:</b> $3.25 each", text)
+        self.assertIn("Total:</b> $3.25 USDT", text)
+        self.assertIn("Buy more & save:", text)
+
+        # Buttons verification
+        flat_btns = [b for row in markup.inline_keyboard for b in row]
+        pay_dir_btn = next(b for b in flat_btns if "Pay Directly" in b.text)
+        back_btn = next(b for b in flat_btns if "Back" in b.text)
+        cancel_btn = next(b for b in flat_btns if "Cancel" in b.text)
+
+        self.assertEqual(pay_dir_btn.style, "success")  # Green
+        self.assertEqual(back_btn.style, "primary")     # Blue
+        self.assertEqual(cancel_btn.style, "danger")    # Red
+
+    def test_render_payment_methods_and_color_buttons(self):
+        pid = bot.db.execute(
+            "INSERT INTO products(name, price, active) VALUES('Test Product', 500, 1)"
+        ).lastrowid
+        p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+
+        text, markup = bot.render_payment_methods(uid=1001, p=p, qty=2, ctx="shop")
+        self.assertIn("Choose how to pay:", text)
+
+        flat_btns = [b for row in markup.inline_keyboard for b in row]
+        labels = [b.text for b in flat_btns]
+        self.assertTrue(any("Binance Pay" in lbl for lbl in labels))
+        self.assertTrue(any("USDT BEP20" in lbl for lbl in labels))
+        self.assertTrue(any("USDT TRC20" in lbl for lbl in labels))
+        self.assertTrue(any("CryptoBot" in lbl for lbl in labels))
+        self.assertTrue(any("Back" in lbl for lbl in labels))
+
+    async def test_admin_approve_and_reject_order(self):
+        pid = bot.db.execute(
+            "INSERT INTO products(name, price, active, auto_fulfill) VALUES('Digital Item', 300, 1, 0)"
+        ).lastrowid
+        bot.db.execute("INSERT INTO stock(product_id, payload) VALUES(?, 'KEY-XYZ-999')", (pid,))
+
+        oid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, status, payment_method, txid) "
+            "VALUES(777, ?, 'Digital Item', 300, 1, 'pending', 'binance', 'TX123456')",
+            (pid,)
+        ).lastrowid
+
+        mock_msg = AsyncMock()
+        mock_msg.from_user.id = 111222333  # In ADMIN_IDS
+        mock_msg.text = f"/approve_{oid}"
+        mock_msg.bot = AsyncMock()
+
+        await bot.admin_approve_order(mock_msg)
+        o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(o["status"], "completed")
+        self.assertEqual(o["payload"], "KEY-XYZ-999")
+        mock_msg.bot.send_message.assert_called_once()
+        self.assertEqual(mock_msg.bot.send_message.call_args[0][0], 777)
+
+        # Test Reject Order
+        oid2 = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, status, payment_method) "
+            "VALUES(888, ?, 'Digital Item', 300, 1, 'pending', 'trc20')",
+            (pid,)
+        ).lastrowid
+        mock_msg2 = AsyncMock()
+        mock_msg2.from_user.id = 111222333
+        mock_msg2.text = f"/reject_{oid2}"
+        mock_msg2.bot = AsyncMock()
+
+        await bot.admin_reject_order(mock_msg2)
+        o2 = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid2,)).fetchone()
+        self.assertEqual(o2["status"], "rejected")
 
 
 if __name__ == "__main__":

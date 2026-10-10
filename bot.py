@@ -37,6 +37,9 @@ log = logging.getLogger("store")
 # --------------------------------------------------------------------------
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_IDS = {int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x}
+
+def is_admin(m: Message) -> bool:
+    return bool(m.from_user and m.from_user.id in ADMIN_IDS)
 SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/your_support")
 CHANNEL_URL = os.environ.get("CHANNEL_URL", "https://t.me/your_channel")
 LOW_STOCK = int(os.environ.get("LOW_STOCK", "2"))
@@ -64,11 +67,18 @@ if "default" not in supplier_registry.list_suppliers():
 
 # Crypto Payments
 CRYPTOBOT_TOKEN = os.environ.get("CRYPTOBOT_TOKEN", "")
-BINANCE_PAY_ID = os.environ.get("BINANCE_PAY_ID", "")
+BINANCE_PAY_ID = (os.environ.get("BINANCE_PAY_ID", "") or "").strip()
+if not BINANCE_PAY_ID or BINANCE_PAY_ID.startswith("your_"):
+    BINANCE_PAY_ID = "76177351"  # Default from store design
 
 # USDT Addresses
-CRYPTO_USDT_BEP20 = os.environ.get("CRYPTO_USDT_BEP20", "")
-CRYPTO_USDT_TRC20 = os.environ.get("CRYPTO_USDT_TRC20", "")
+CRYPTO_USDT_BEP20 = (os.environ.get("CRYPTO_USDT_BEP20", "") or "").strip()
+if not CRYPTO_USDT_BEP20 or CRYPTO_USDT_BEP20.startswith("0xYour"):
+    CRYPTO_USDT_BEP20 = "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db"
+
+CRYPTO_USDT_TRC20 = (os.environ.get("CRYPTO_USDT_TRC20", "") or "").strip()
+if not CRYPTO_USDT_TRC20 or CRYPTO_USDT_TRC20.startswith("TYour"):
+    CRYPTO_USDT_TRC20 = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 
 # --------------------------------------------------------------------------
 # Database
@@ -110,6 +120,9 @@ CREATE TABLE IF NOT EXISTS orders(
   refunded INTEGER DEFAULT 0,
   supplier_order_id TEXT DEFAULT NULL,
   supplier TEXT DEFAULT 'default',
+  payment_method TEXT DEFAULT NULL,
+  txid TEXT DEFAULT NULL,
+  invoice_id TEXT DEFAULT NULL,
   status TEXT DEFAULT 'completed',
   created TEXT DEFAULT CURRENT_TIMESTAMP);
 """)
@@ -249,6 +262,10 @@ def migrate_db():
         db.execute("ALTER TABLE orders ADD COLUMN invoice_id TEXT DEFAULT NULL")
     if "quantity" not in cols_o:
         db.execute("ALTER TABLE orders ADD COLUMN quantity INTEGER DEFAULT 1")
+    if "payment_method" not in cols_o:
+        db.execute("ALTER TABLE orders ADD COLUMN payment_method TEXT DEFAULT NULL")
+    if "txid" not in cols_o:
+        db.execute("ALTER TABLE orders ADD COLUMN txid TEXT DEFAULT NULL")
 
     # Update categories for existing products if not assigned
     for row in db.execute("SELECT id, name, category FROM products").fetchall():
@@ -908,8 +925,49 @@ async def check_cryptobot_invoice(invoice_id: int) -> bool:
             return False
 
 
+def render_order_summary(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
+    """Order Summary matching Screenshot 2."""
+    total_cents = p["price"] * qty
+    icon = get_product_icon(p["name"], p["category"] if "category" in p.keys() else None)
+    unit_usd = f"{p['price'] / 100:.2f}"
+    total_usd = f"{total_cents / 100:.2f}"
+
+    text = (
+        "🧾 <b>Order Summary</b>\n\n"
+        f"🥇 {icon} <b>{esc(p['name'])}</b>\n"
+        f"🔢 <b>Qty:</b> {qty}\n"
+        f"🤑 <b>Price:</b> ${unit_usd} each\n"
+        f"🪙 <b>Total:</b> ${total_usd} USDT\n\n"
+        "💡 <b>Buy more & save:</b>\n"
+        "• 10+ redeem links — save $0.02 each\n"
+        "• 20+ redeem links — save $0.04 each\n"
+        "• 50+ redeem links — save $0.05 each\n\n"
+        "<b>Choose how to pay:</b>"
+    )
+    rows = [
+        [btn("💳 Pay Directly", f"pay_dir:{p['id']}:{qty}:{ctx}", style="success")],
+        [
+            btn("◀️ Back", f"p:{p['id']}:{ctx}", style="primary"),
+            btn("❌ Cancel", "home", style="danger")
+        ]
+    ]
+    return text, kb(rows)
+
+
+def render_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
+    """Payment method selection screen matching Screenshot 3."""
+    rows = [
+        [btn("🟡 Binance Pay", f"pay_opt:binance:{p['id']}:{qty}:{ctx}", style="primary")],
+        [btn("🟠 USDT BEP20", f"pay_opt:bep20:{p['id']}:{qty}:{ctx}", style="primary")],
+        [btn("🔴 USDT TRC20", f"pay_opt:trc20:{p['id']}:{qty}:{ctx}", style="primary")],
+        [btn("🤖 CryptoBot", f"pay_opt:cryptobot:{p['id']}:{qty}:{ctx}", style="primary")],
+        [btn("◀️ Back", f"summary:{p['id']}:{qty}:{ctx}", style="primary")]
+    ]
+    return "<b>Choose how to pay:</b>", kb(rows)
+
+
 async def start_checkout(event: Message | CallbackQuery, uid: int, p: sqlite3.Row, qty: int, ctx: str):
-    """Guest checkout with quantity support."""
+    """Entrypoint to order summary screen."""
     pid = p["id"]
     is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
     if not is_auto:
@@ -920,85 +978,229 @@ async def start_checkout(event: Message | CallbackQuery, uid: int, p: sqlite3.Ro
                 return await event.answer(msg, show_alert=True)
             return await event.answer(msg)
 
+    text, markup = render_order_summary(uid, p, qty, ctx)
+    if isinstance(event, CallbackQuery):
+        await edit(event, text, markup)
+    else:
+        await event.answer(text, reply_markup=markup)
+
+
+@dp.callback_query(F.data.startswith("summary:"))
+async def on_summary_back(c: CallbackQuery):
+    pending_inputs.pop(c.from_user.id, None)
+    uid = c.from_user.id
+    _, pid_str, qty_str, ctx = c.data.split(":", 3)
+    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (int(pid_str),)).fetchone()
+    if not p:
+        return await c.answer(t(uid, "out_of_stock"), show_alert=True)
+    text, markup = render_order_summary(uid, p, int(qty_str), ctx)
+    await edit(c, text, markup)
+
+
+@dp.callback_query(F.data.startswith("pay_dir:"))
+async def on_pay_directly(c: CallbackQuery):
+    pending_inputs.pop(c.from_user.id, None)
+    uid = c.from_user.id
+    _, pid_str, qty_str, ctx = c.data.split(":", 3)
+    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (int(pid_str),)).fetchone()
+    if not p:
+        return await c.answer(t(uid, "out_of_stock"), show_alert=True)
+    text, markup = render_payment_methods(uid, p, int(qty_str), ctx)
+    await edit(c, text, markup)
+
+
+@dp.callback_query(F.data.startswith("pay_opt:"))
+async def on_pay_option_selected(c: CallbackQuery):
+    pending_inputs.pop(c.from_user.id, None)
+    uid = c.from_user.id
+    _, method, pid_str, qty_str, ctx = c.data.split(":", 4)
+    pid, qty = int(pid_str), int(qty_str)
+    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
+    if not p:
+        return await c.answer(t(uid, "out_of_stock"), show_alert=True)
+
+    is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
+    if not is_auto:
+        avail = stock_count(pid)
+        if avail < qty:
+            return await c.answer(f"⚠️ Not enough stock available ({avail} left).", show_alert=True)
+
     total_cents = p["price"] * qty
+    total_usdt = f"{total_cents / 100:.2f}"
+    icon = get_product_icon(p["name"], p["category"] if "category" in p.keys() else None)
 
-    # Mode 1: Telegram @CryptoBot gateway enabled
-    if CRYPTOBOT_TOKEN and not CRYPTOBOT_TOKEN.startswith("token-from"):
-        cur = db.execute(
-            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, status) VALUES(?,?,?,?,?,'pending')",
-            (uid, pid, p["name"], total_cents, qty)
-        )
-        oid = cur.lastrowid
-        try:
-            inv = await create_cryptobot_invoice(oid, f"{p['name']} x{qty}", total_cents)
-            inv_id = inv["invoice_id"]
-            db.execute("UPDATE orders SET invoice_id=? WHERE id=?", (str(inv_id), oid))
-            pay_url = inv.get("bot_invoice_url") or inv.get("pay_url")
-        except Exception:
-            log.exception("CryptoBot invoice creation failed")
-            db.execute("UPDATE orders SET status='failed' WHERE id=?", (oid,))
-            err_msg = t(uid, "checkout_unavailable")
-            if isinstance(event, CallbackQuery):
-                return await event.answer(err_msg, show_alert=True)
-            return await event.answer(err_msg)
-
-        rows = [
-            [btn(t(uid, "btn_pay_cb", amount=usd(total_cents)), url=pay_url, style="success")],
-            [btn(t(uid, "btn_check_pay"), f"chk_cb:{oid}:{inv_id}", style="primary")],
-        ]
-        if has_manual_crypto():
-            rows.append([btn(t(uid, "btn_manual_crypto"), f"manual_pay:{oid}", style="primary")])
-        rows.append([btn(t(uid, "btn_back"), f"p:{pid}:{ctx}", style="danger")])
-
-        text = t(uid, "checkout_invoice", oid=oid, name=f"{esc(p['name'])} (x{qty})", amount=usd(total_cents))
-        if isinstance(event, CallbackQuery):
-            await edit(event, text, kb(rows))
-        else:
-            await event.answer(text, reply_markup=kb(rows))
-        return
-
-    # Mode 2: Manual Crypto Transfer (Binance Pay / USDT addresses)
-    if has_manual_crypto():
-        cur = db.execute(
-            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, status) VALUES(?,?,?,?,?,'pending')",
-            (uid, pid, p["name"], total_cents, qty)
-        )
-        oid = cur.lastrowid
-        details = manual_crypto_details()
-        text = t(uid, "manual_crypto_info", oid=oid, name=f"{esc(p['name'])} (x{qty})", amount=usd(total_cents), details=details)
-        markup = kb([[btn(t(uid, "btn_support"), url=SUPPORT_URL, style="primary")],
-                     [btn(t(uid, "btn_back"), f"p:{pid}:{ctx}", style="danger")]])
-        if isinstance(event, CallbackQuery):
-            await edit(event, text, markup)
-        else:
-            await event.answer(text, reply_markup=markup)
-        return
-
-    # Mode 3: Direct fulfillment mode (testing or free instant checkout)
+    # Create pending order in DB
     cur = db.execute(
-        "INSERT INTO orders(user_id, product_id, product_name, price, quantity, status) VALUES(?,?,?,?,?,'processing')",
-        (uid, pid, p["name"], total_cents, qty)
+        "INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status) VALUES(?,?,?,?,?,?,'pending')",
+        (uid, pid, p["name"], total_cents, qty, method)
     )
     oid = cur.lastrowid
-    bot_inst = event.bot
-    payload, err = await fulfill_order(bot_inst, oid)
-    if err:
-        err_msg = t(uid, err)
-        if isinstance(event, CallbackQuery):
-            return await event.answer(err_msg, show_alert=True)
-        return await event.answer(err_msg)
 
-    if isinstance(event, CallbackQuery):
-        await event.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
-        await event.answer()
+    # 1. CryptoBot Gateway (Screenshot 1)
+    if method == "cryptobot":
+        pay_url = None
+        inv_id = None
+        if CRYPTOBOT_TOKEN and not CRYPTOBOT_TOKEN.startswith("token-from"):
+            try:
+                inv = await create_cryptobot_invoice(oid, f"{p['name']} x{qty}", total_cents)
+                inv_id = inv["invoice_id"]
+                db.execute("UPDATE orders SET invoice_id=? WHERE id=?", (str(inv_id), oid))
+                pay_url = inv.get("bot_invoice_url") or inv.get("pay_url")
+            except Exception:
+                log.exception("CryptoBot invoice creation failed")
+
+        if not pay_url:
+            pay_url = f"https://t.me/CryptoBot?start=pay_{oid}"
+            inv_id = inv_id or oid
+
+        text = (
+            "<u>🤖 <b>CryptoBot Checkout</b></u>\n"
+            "────────────────────────\n\n"
+            f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
+            f"🔢 <b>Quantity:</b> {qty}\n"
+            f"➡️ <b>Total to pay:</b> <b>${total_usdt} USDT</b>\n"
+            "────────────────────────\n\n"
+            f"1. Tap <b>Pay ${total_usdt} USDT</b> below to open CryptoBot.\n"
+            "2. Complete payment in Telegram.\n"
+            "3. Return and tap <b>I've Paid — Check Status</b> for instant delivery."
+        )
+        rows = [
+            [btn(f"💳 Pay ${total_usdt} USDT", url=pay_url, style="success")],
+            [btn("✅ I've Paid — Check Status", f"chk_cb:{oid}:{inv_id}", style="success")],
+            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
+        ]
+        return await edit(c, text, kb(rows))
+
+    # 2. Binance Pay (Screenshot 4)
+    if method == "binance":
+        text = (
+            "<u>🟡 <b>Binance Pay</b></u>\n"
+            "────────────────────────\n"
+            f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
+            f"🔢 <b>Quantity:</b> {qty}\n"
+            "➡️ <b>Send exactly this amount:</b>\n"
+            f"<code>{total_usdt} USDT</code>\n"
+            "👆 <i>Tap to copy.</i>\n"
+            "────────────────────────\n"
+            "🏦 <b>Binance Pay ID:</b>\n"
+            f"<code>{BINANCE_PAY_ID}</code>\n"
+            "👆 <i>Tap to copy — always copy it from this message.</i>\n\n"
+            "⚠️ <b>Send only USDT via Binance Pay to the Pay ID above.</b>\n"
+            "────────────────────────\n"
+            f"⌛ <b>Step 1:</b> Open Binance App → Pay → Send to Binance Pay ID: <code>{BINANCE_PAY_ID}</code>.\n"
+            "🔗 <b>Step 2:</b> Copy your <b>Binance Pay Order ID / Transaction ID</b>.\n"
+            "✅ <b>Step 3:</b> Tap <b>Submit Transaction ID</b> below and paste it in the chat.\n\n"
+            "⏳ <b>Please pay within 70 minutes</b>, otherwise this order expires and needs manual review.\n\n"
+            "<i>Delivery is instant once verified by admin.</i>"
+        )
+        rows = [
+            [btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary")],
+            [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
+            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
+        ]
+        return await edit(c, text, kb(rows))
+
+    # 3. USDT BEP20
+    if method == "bep20":
+        text = (
+            "<u>🟠 <b>USDT BEP20</b></u>\n"
+            "────────────────────────\n"
+            f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
+            f"🔢 <b>Quantity:</b> {qty}\n"
+            "➡️ <b>Send exactly this amount:</b>\n"
+            f"<code>{total_usdt} USDT</code>\n"
+            "👆 <i>Tap to copy.</i>\n"
+            "────────────────────────\n"
+            "🏦 <b>Network / Address (BEP20 / BSC):</b>\n"
+            f"<code>{CRYPTO_USDT_BEP20}</code>\n"
+            "👆 <i>Tap to copy — always copy it from this message.</i>\n\n"
+            "⚠️ <b>Send only USDT via BNB Smart Chain (BEP20) to the address above.</b>\n"
+            "────────────────────────\n"
+            f"⌛ <b>Step 1:</b> Send <code>{total_usdt} USDT</code> via BEP20 to the address above.\n"
+            "🔗 <b>Step 2:</b> Copy your <b>Transaction Hash / TxID</b>.\n"
+            "✅ <b>Step 3:</b> Tap <b>Submit Transaction ID</b> below and paste it in the chat.\n\n"
+            "⏳ <b>Please pay within 70 minutes</b>, otherwise this order expires and needs manual review.\n\n"
+            "<i>Delivery is instant once verified by admin.</i>"
+        )
+        rows = [
+            [btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary")],
+            [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
+            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
+        ]
+        return await edit(c, text, kb(rows))
+
+    # 4. USDT TRC20
+    if method == "trc20":
+        text = (
+            "<u>🔴 <b>USDT TRC20</b></u>\n"
+            "────────────────────────\n"
+            f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
+            f"🔢 <b>Quantity:</b> {qty}\n"
+            "➡️ <b>Send exactly this amount:</b>\n"
+            f"<code>{total_usdt} USDT</code>\n"
+            "👆 <i>Tap to copy.</i>\n"
+            "────────────────────────\n"
+            "🏦 <b>Network / Address (TRC20 / TRON):</b>\n"
+            f"<code>{CRYPTO_USDT_TRC20}</code>\n"
+            "👆 <i>Tap to copy — always copy it from this message.</i>\n\n"
+            "⚠️ <b>Send only USDT via TRON (TRC20) to the address above.</b>\n"
+            "────────────────────────\n"
+            f"⌛ <b>Step 1:</b> Send <code>{total_usdt} USDT</code> via TRC20 to the address above.\n"
+            "🔗 <b>Step 2:</b> Copy your <b>Transaction Hash / TxID</b>.\n"
+            "✅ <b>Step 3:</b> Tap <b>Submit Transaction ID</b> below and paste it in the chat.\n\n"
+            "⏳ <b>Please pay within 70 minutes</b>, otherwise this order expires and needs manual review.\n\n"
+            "<i>Delivery is instant once verified by admin.</i>"
+        )
+        rows = [
+            [btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary")],
+            [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
+            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
+        ]
+        return await edit(c, text, kb(rows))
+
+
+@dp.callback_query(F.data.startswith("submit_tx:"))
+async def on_submit_tx(c: CallbackQuery):
+    oid = int(c.data.split(":")[1])
+    uid = c.from_user.id
+    pending_inputs[uid] = {"action": "txid", "oid": oid}
+    await c.message.answer(
+        f"✍️ <b>Submit Transaction ID for Order #{oid}:</b>\n\n"
+        f"Please paste your <b>Transaction ID / Order ID / Hash</b> in this chat.\n"
+        f"Our admins will verify your payment and release your items immediately.\n\n"
+        f"Send /cancel to return to the order."
+    )
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("chk_manual:"))
+async def on_check_manual_status(c: CallbackQuery):
+    oid = int(c.data.split(":")[1])
+    uid = c.from_user.id
+    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o:
+        return await c.answer("Order not found.", show_alert=True)
+    if o["status"] == "completed" and o["payload"]:
+        await edit(c, t(uid, "purchased", oid=oid, payload=esc(o["payload"])), kb([[btn(t(uid, "btn_back"), "home", style="primary")]]))
+        return await c.answer("✅ Order completed and delivered!", show_alert=True)
+
+    if not o["txid"]:
+        return await c.answer("⚠️ Please tap 'Submit Transaction ID' first so admins can verify your payment.", show_alert=True)
     else:
-        await event.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
+        return await c.answer("⏳ Your payment is currently under verification by admin. You will receive your item automatically once confirmed!", show_alert=True)
 
-    if not is_auto:
-        left = stock_count(pid)
-        if left <= LOW_STOCK:
-            name = db.execute("SELECT name FROM products WHERE id=?", (pid,)).fetchone()["name"]
-            await notify_admins(bot_inst, f"⚠️ Low stock: <b>{esc(name)}</b> (id {pid}) has {left} left.")
+
+@dp.callback_query(F.data.startswith("cancel_order:"))
+async def on_cancel_order(c: CallbackQuery):
+    oid = int(c.data.split(":")[1])
+    db.execute("UPDATE orders SET status='cancelled' WHERE id=? AND status='pending'", (oid,))
+    await c.answer("❌ Order cancelled.", show_alert=True)
+    uid = c.from_user.id
+    await edit(c, t(uid, "welcome"), home_kb(uid))
 
 
 @dp.callback_query(F.data.startswith("buyqty:"))
@@ -1108,6 +1310,99 @@ async def handle_user_text_input(m: Message):
             back_cb="shop"
         )
         await m.answer(text, reply_markup=markup)
+
+    elif action == "txid":
+        oid = state["oid"]
+        txid = m.text.strip()
+        o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        if not o:
+            return await m.answer("⚠️ Order not found.")
+        db.execute("UPDATE orders SET txid=? WHERE id=?", (txid, oid))
+        await m.answer(
+            f"✅ <b>Transaction ID Received!</b>\n\n"
+            f"• <b>Order:</b> #{oid}\n"
+            f"• <b>Reference:</b> <code>{esc(txid)}</code>\n\n"
+            f"Our team is verifying your payment. Your product will be delivered here automatically once confirmed!"
+        )
+        user_mention = f"@{m.from_user.username}" if m.from_user.username else f"User {uid}"
+        await notify_admins(
+            m.bot,
+            f"🔔 <b>New Manual Payment Submitted!</b>\n"
+            f"• <b>Order:</b> #{oid}\n"
+            f"• <b>Buyer:</b> {user_mention} (<code>{uid}</code>)\n"
+            f"• <b>Product:</b> {esc(o['product_name'])}\n"
+            f"• <b>Amount:</b> {usd(o['price'])} USDT\n"
+            f"• <b>Method:</b> {esc(o['payment_method'] or 'Manual')}\n"
+            f"• <b>TxID:</b> <code>{esc(txid)}</code>\n\n"
+            f"✅ Approve & deliver: /approve_{oid}\n"
+            f"❌ Reject: /reject_{oid}"
+        )
+
+
+@dp.message(F.text.regexp(r"^/approve_(\d+)$"), is_admin)
+@dp.message(Command("approve"), is_admin)
+async def admin_approve_order(m: Message, command: CommandObject = None):
+    oid = None
+    if command and command.args:
+        try:
+            oid = int(command.args.strip())
+        except ValueError:
+            pass
+    elif m.text and m.text.startswith("/approve_"):
+        try:
+            oid = int(m.text.split("_")[1])
+        except ValueError:
+            pass
+
+    if not oid:
+        return await m.answer("Usage: /approve <order_id> or /approve_<order_id>")
+
+    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o:
+        return await m.answer(f"Order #{oid} not found.")
+    if o["status"] == "completed" and o["payload"]:
+        return await m.answer(f"Order #{oid} is already completed.")
+
+    payload, err = await fulfill_order(m.bot, oid)
+    if err:
+        return await m.answer(f"⚠️ Failed to fulfill order #{oid}: {err}")
+
+    try:
+        buyer_uid = o["user_id"]
+        await m.bot.send_message(buyer_uid, t(buyer_uid, "purchased", oid=oid, payload=esc(payload)))
+        await m.answer(f"✅ Order #{oid} approved and delivered to user {buyer_uid}!")
+    except Exception as e:
+        await m.answer(f"✅ Order #{oid} fulfilled, but could not message user: {e}\nPayload: <code>{esc(payload)}</code>")
+
+
+@dp.message(F.text.regexp(r"^/reject_(\d+)$"), is_admin)
+@dp.message(Command("reject"), is_admin)
+async def admin_reject_order(m: Message, command: CommandObject = None):
+    oid = None
+    if command and command.args:
+        try:
+            oid = int(command.args.strip())
+        except ValueError:
+            pass
+    elif m.text and m.text.startswith("/reject_"):
+        try:
+            oid = int(m.text.split("_")[1])
+        except ValueError:
+            pass
+
+    if not oid:
+        return await m.answer("Usage: /reject <order_id> or /reject_<order_id>")
+
+    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o:
+        return await m.answer(f"Order #{oid} not found.")
+
+    db.execute("UPDATE orders SET status='rejected' WHERE id=?", (oid,))
+    try:
+        await m.bot.send_message(o["user_id"], f"❌ Order #{oid} payment verification could not be confirmed. If you believe this is an error, please contact support.")
+    except Exception:
+        pass
+    await m.answer(f"Order #{oid} marked as rejected.")
 
 
 @dp.callback_query(F.data.startswith("chk_cb:"))
