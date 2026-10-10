@@ -73,12 +73,12 @@ if not BINANCE_PAY_ID or BINANCE_PAY_ID.startswith("your_"):
 
 # USDT Addresses
 CRYPTO_USDT_BEP20 = (os.environ.get("CRYPTO_USDT_BEP20", "") or "").strip()
-if not CRYPTO_USDT_BEP20 or CRYPTO_USDT_BEP20.startswith("0xYour"):
-    CRYPTO_USDT_BEP20 = "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db"
+if not CRYPTO_USDT_BEP20 or CRYPTO_USDT_BEP20.startswith("0xYour") or CRYPTO_USDT_BEP20.startswith("0x4B20"):
+    CRYPTO_USDT_BEP20 = "0xe37301d1cb7E1d479a1F1A78d6A2EAed317412Db"
 
 CRYPTO_USDT_TRC20 = (os.environ.get("CRYPTO_USDT_TRC20", "") or "").strip()
-if not CRYPTO_USDT_TRC20 or CRYPTO_USDT_TRC20.startswith("TYour"):
-    CRYPTO_USDT_TRC20 = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+if not CRYPTO_USDT_TRC20 or CRYPTO_USDT_TRC20.startswith("TYour") or CRYPTO_USDT_TRC20.startswith("TR7NH"):
+    CRYPTO_USDT_TRC20 = "TUaDYFz2fBRXSRDm9d6kN9j2J7bi7ZsBLW"
 
 # --------------------------------------------------------------------------
 # Database
@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS orders(
   supplier TEXT DEFAULT 'default',
   payment_method TEXT DEFAULT NULL,
   txid TEXT DEFAULT NULL,
+  expected_amount TEXT DEFAULT NULL,
   invoice_id TEXT DEFAULT NULL,
   status TEXT DEFAULT 'completed',
   created TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -266,6 +267,8 @@ def migrate_db():
         db.execute("ALTER TABLE orders ADD COLUMN payment_method TEXT DEFAULT NULL")
     if "txid" not in cols_o:
         db.execute("ALTER TABLE orders ADD COLUMN txid TEXT DEFAULT NULL")
+    if "expected_amount" not in cols_o:
+        db.execute("ALTER TABLE orders ADD COLUMN expected_amount TEXT DEFAULT NULL")
 
     # Update categories for existing products if not assigned
     for row in db.execute("SELECT id, name, category FROM products").fetchall():
@@ -1072,7 +1075,7 @@ async def on_pay_option_selected(c: CallbackQuery):
         ]
         return await edit(c, text, kb(rows))
 
-    # 2. Binance Pay (Screenshot 4)
+    # 2. Binance Pay (Screenshot 1)
     if method == "binance":
         text = (
             "<u>🟡 <b>Binance Pay</b></u>\n"
@@ -1088,10 +1091,10 @@ async def on_pay_option_selected(c: CallbackQuery):
             "👆 <i>Tap to copy — always copy it from this message.</i>\n\n"
             "⚠️ <b>Send only USDT via Binance Pay to the Pay ID above.</b>\n"
             "────────────────────────\n"
-            f"⌛ <b>Step 1:</b> Open Binance App → Pay → Send to Binance Pay ID: <code>{BINANCE_PAY_ID}</code>.\n"
+            f"💸 <b>Step 1:</b> Open Binance App → Pay → Send to Binance Pay ID: <code>{BINANCE_PAY_ID}</code>.\n"
             "🔗 <b>Step 2:</b> Copy your <b>Binance Pay Order ID / Transaction ID</b>.\n"
             "✅ <b>Step 3:</b> Tap <b>Submit Transaction ID</b> below and paste it in the chat.\n\n"
-            "⏳ <b>Please pay within 70 minutes</b>, otherwise this order expires and needs manual review.\n\n"
+            "⌛ <b>Please pay within 70 minutes</b>, otherwise this order expires and needs manual review.\n\n"
             "<i>Delivery is instant once verified by admin.</i>"
         )
         rows = [
@@ -1102,27 +1105,34 @@ async def on_pay_option_selected(c: CallbackQuery):
         ]
         return await edit(c, text, kb(rows))
 
-    # 3. USDT BEP20
+    # Calculate unique decimal amount for on-chain USDT payments (extra decimals = unique order ID)
+    extra_suffix = f"{(oid % 90) + 10:02d}"
+    exact_crypto_amount = f"{total_cents / 100:.2f}{extra_suffix}"
+    db.execute("UPDATE orders SET expected_amount=? WHERE id=?", (f"{exact_crypto_amount} USDT", oid))
+
+    # 3. USDT BEP20 (Screenshot 2)
     if method == "bep20":
         text = (
-            "<u>🟠 <b>USDT BEP20</b></u>\n"
+            "<u>🟠 <b>USDT BEP20 (BEP20)</b></u>\n"
             "────────────────────────\n"
             f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
             f"🔢 <b>Quantity:</b> {qty}\n"
             "➡️ <b>Send exactly this amount:</b>\n"
-            f"<code>{total_usdt} USDT</code>\n"
-            "👆 <i>Tap to copy.</i>\n"
+            f"<code>{exact_crypto_amount} USDT</code>\n"
+            "👆 <i>Tap to copy — the extra decimals are your unique order ID. Sending a different amount will NOT verify.</i>\n"
             "────────────────────────\n"
-            "🏦 <b>Network / Address (BEP20 / BSC):</b>\n"
+            "🏦 <b>Deposit Address (BEP20):</b>\n"
             f"<code>{CRYPTO_USDT_BEP20}</code>\n"
             "👆 <i>Tap to copy — always copy it from this message.</i>\n\n"
-            "⚠️ <b>Send only USDT via BNB Smart Chain (BEP20) to the address above.</b>\n"
+            "⚠️ <b>Send only USDT on BEP20. Wrong network = lost funds.</b>\n"
+            "🚫 <b>Send only to the address above. Payments sent to an exchange deposit address or to an older address from a previous chat cannot be verified automatically.</b>\n"
             "────────────────────────\n"
-            f"⌛ <b>Step 1:</b> Send <code>{total_usdt} USDT</code> via BEP20 to the address above.\n"
-            "🔗 <b>Step 2:</b> Copy your <b>Transaction Hash / TxID</b>.\n"
+            f"💸 <b>Step 1:</b> Send exactly {exact_crypto_amount} USDT to the address above.\n"
+            "🔗 <b>Step 2:</b> Copy your <b>Transaction ID (TxID / Tx Hash)</b> from your wallet's transaction history.\n"
             "✅ <b>Step 3:</b> Tap <b>Submit Transaction ID</b> below and paste it in the chat.\n\n"
-            "⏳ <b>Please pay within 70 minutes</b>, otherwise this order expires and needs manual review.\n\n"
-            "<i>Delivery is instant once verified by admin.</i>"
+            f"❌ <b>Do not round the amount (e.g. {total_usdt}) — rounded payments cannot be verified automatically.</b>\n"
+            "⌛ <b>Please pay within 70 minutes</b>, otherwise this order expires and needs manual review.\n\n"
+            "<i>Delivery is instant once the transaction is confirmed on-chain (usually under a minute).</i>"
         )
         rows = [
             [btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary")],
@@ -1132,27 +1142,27 @@ async def on_pay_option_selected(c: CallbackQuery):
         ]
         return await edit(c, text, kb(rows))
 
-    # 4. USDT TRC20
+    # 4. USDT TRC20 (Screenshot 3)
     if method == "trc20":
         text = (
-            "<u>🔴 <b>USDT TRC20</b></u>\n"
+            "<u>🔴 <b>USDT TRC20 (TRC20)</b></u>\n"
             "────────────────────────\n"
             f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
             f"🔢 <b>Quantity:</b> {qty}\n"
             "➡️ <b>Send exactly this amount:</b>\n"
-            f"<code>{total_usdt} USDT</code>\n"
-            "👆 <i>Tap to copy.</i>\n"
+            f"<code>{exact_crypto_amount} USDT</code>\n"
+            "👆 <i>Tap to copy — the extra decimals are your unique order ID.</i>\n"
             "────────────────────────\n"
-            "🏦 <b>Network / Address (TRC20 / TRON):</b>\n"
+            "🏦 <b>Deposit Address (TRC20):</b>\n"
             f"<code>{CRYPTO_USDT_TRC20}</code>\n"
             "👆 <i>Tap to copy — always copy it from this message.</i>\n\n"
-            "⚠️ <b>Send only USDT via TRON (TRC20) to the address above.</b>\n"
+            "⚠️ <b>Send only USDT on TRC20 (Tron). Wrong network = lost funds.</b>\n"
             "────────────────────────\n"
-            f"⌛ <b>Step 1:</b> Send <code>{total_usdt} USDT</code> via TRC20 to the address above.\n"
-            "🔗 <b>Step 2:</b> Copy your <b>Transaction Hash / TxID</b>.\n"
+            f"💸 <b>Step 1:</b> Send exactly {exact_crypto_amount} USDT to the address above.\n"
+            "🔗 <b>Step 2:</b> Copy your <b>Transaction ID (TxID / Tx Hash)</b>.\n"
             "✅ <b>Step 3:</b> Tap <b>Submit Transaction ID</b> below and paste it in the chat.\n\n"
-            "⏳ <b>Please pay within 70 minutes</b>, otherwise this order expires and needs manual review.\n\n"
-            "<i>Delivery is instant once verified by admin.</i>"
+            "⌛ <b>Please pay within 70 minutes</b>, otherwise this order expires and needs manual review.\n\n"
+            "<i>Delivery is instant once the transaction is confirmed on-chain (usually under a minute).</i>"
         )
         rows = [
             [btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary")],

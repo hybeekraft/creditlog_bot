@@ -146,6 +146,7 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
           supplier TEXT DEFAULT 'default',
           payment_method TEXT DEFAULT NULL,
           txid TEXT DEFAULT NULL,
+          expected_amount TEXT DEFAULT NULL,
           invoice_id TEXT DEFAULT NULL,
           status TEXT DEFAULT 'completed',
           created TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -623,6 +624,52 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         await bot.admin_reject_order(mock_msg2)
         o2 = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid2,)).fetchone()
         self.assertEqual(o2["status"], "rejected")
+
+    async def test_crypto_payment_screens(self):
+        pid = bot.db.execute(
+            "INSERT INTO products(name, price, active, auto_fulfill, supplier_product_id) "
+            "VALUES('Gemini AI Pro 5TB 18M', 325, 1, 1, 'gem-1')"
+        ).lastrowid
+
+        # 1. Binance Pay
+        mock_c = AsyncMock()
+        mock_c.from_user.id = 555
+        mock_c.data = f"pay_opt:binance:{pid}:1:shop"
+        mock_c.message = AsyncMock()
+        with patch("bot.edit", new=AsyncMock()) as mock_edit:
+            await bot.on_pay_option_selected(mock_c)
+            mock_edit.assert_called_once()
+            call_text = mock_edit.call_args[0][1]
+            call_kb = mock_edit.call_args[0][2]
+            self.assertIn("🟡 <b>Binance Pay</b>", call_text)
+            self.assertIn("3.25 USDT", call_text)
+            self.assertIn(bot.BINANCE_PAY_ID, call_text)
+            self.assertIn("💸 <b>Step 1:</b>", call_text)
+            self.assertIn("Delivery is instant once verified by admin.", call_text)
+
+        # 2. BEP20
+        mock_c.data = f"pay_opt:bep20:{pid}:1:shop"
+        with patch("bot.edit", new=AsyncMock()) as mock_edit:
+            await bot.on_pay_option_selected(mock_c)
+            mock_edit.assert_called_once()
+            call_text = mock_edit.call_args[0][1]
+            self.assertIn("🟠 <b>USDT BEP20 (BEP20)</b>", call_text)
+            self.assertIn(bot.CRYPTO_USDT_BEP20, call_text)
+            self.assertIn("extra decimals are your unique order ID", call_text)
+            self.assertIn("Do not round the amount (e.g. 3.25)", call_text)
+            self.assertIn("Delivery is instant once the transaction is confirmed on-chain", call_text)
+
+        # 3. TRC20
+        mock_c.data = f"pay_opt:trc20:{pid}:1:shop"
+        with patch("bot.edit", new=AsyncMock()) as mock_edit:
+            await bot.on_pay_option_selected(mock_c)
+            mock_edit.assert_called_once()
+            call_text = mock_edit.call_args[0][1]
+            self.assertIn("🔴 <b>USDT TRC20 (TRC20)</b>", call_text)
+            self.assertIn(bot.CRYPTO_USDT_TRC20, call_text)
+            self.assertIn("extra decimals are your unique order ID", call_text)
+            self.assertIn("Send only USDT on TRC20 (Tron)", call_text)
+            self.assertIn("Delivery is instant once the transaction is confirmed on-chain", call_text)
 
 
 if __name__ == "__main__":
