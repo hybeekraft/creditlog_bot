@@ -307,7 +307,7 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.detect_category("Unknown Item"), "AI Tools")
 
         icon_codex = bot.get_product_icon("Codex API 10M")
-        self.assertEqual(icon_codex, "🤖")
+        self.assertEqual(icon_codex, "🟢")
         icon_gemini = bot.get_product_icon("Gemini 18 Months")
         self.assertEqual(icon_gemini, "✨")
 
