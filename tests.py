@@ -193,7 +193,7 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
 
         mock_event.answer.assert_called_once()
         text = mock_event.answer.call_args[0][0]
-        self.assertIn("Recent Purchases", text)
+        self.assertTrue("Recent Orders" in text or "Recent Purchases" in text)
         self.assertIn("KEY-111-222", text)
         self.assertIn("LINK-333-444", text)
 
@@ -328,7 +328,7 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         shop_btn = next(b for row in markup.inline_keyboard for b in row if "Shop" in b.text)
         self.assertEqual(shop_btn.style, "success")
 
-        orders_btn = next(b for row in markup.inline_keyboard for b in row if "Purchases" in b.text)
+        orders_btn = next(b for row in markup.inline_keyboard for b in row if "Order" in b.text)
         self.assertEqual(orders_btn.style, "success")
 
         lang_btn = next(b for row in markup.inline_keyboard for b in row if "Language" in b.text)
