@@ -26,7 +26,7 @@ from aiogram.types import (BotCommand, CallbackQuery, InlineKeyboardButton,
                            InlineKeyboardMarkup, Message)
 from dotenv import load_dotenv
 
-from reseller import ResellerClient, ResellerAPIError
+from reseller import ResellerClient, ResellerAPIError, SupplierRegistry
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -54,10 +54,13 @@ raw_margin = os.environ.get("PROFIT_MARGIN") or os.environ.get("RESELLER_MARKUP_
 PROFIT_MARGIN = parse_profit_margin(raw_margin, default=45)
 RESELLER_MARKUP_PERCENT = PROFIT_MARGIN
 
-# Reseller / Supplier Catalog API
+# Reseller / Supplier Catalog API (Multi-Supplier Registry)
 RESELLER_BASE_URL = (os.environ.get("RESELLER_BASE_URL") or "https://api-geminipro.ignorelist.com/api/reseller/v1").rstrip("/")
 RESELLER_API_KEY = os.environ.get("RESELLER_API_KEY", "")
-reseller = ResellerClient(base_url=RESELLER_BASE_URL, api_key=RESELLER_API_KEY)
+supplier_registry = SupplierRegistry.from_env()
+reseller = supplier_registry.get("default") or ResellerClient(base_url=RESELLER_BASE_URL, api_key=RESELLER_API_KEY)
+if "default" not in supplier_registry.list_suppliers():
+    supplier_registry.register("default", reseller, is_default=True)
 
 # Crypto Payments
 CRYPTOBOT_TOKEN = os.environ.get("CRYPTOBOT_TOKEN", "")
@@ -88,7 +91,8 @@ CREATE TABLE IF NOT EXISTS products(
   supplier_price INTEGER DEFAULT NULL,
   auto_fulfill INTEGER DEFAULT 0,
   margin INTEGER DEFAULT NULL,
-  category TEXT DEFAULT 'AI Tools');
+  category TEXT DEFAULT 'AI Tools',
+  supplier TEXT DEFAULT 'default');
 CREATE TABLE IF NOT EXISTS stock(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   product_id INTEGER NOT NULL,
@@ -105,6 +109,7 @@ CREATE TABLE IF NOT EXISTS orders(
   payload TEXT,
   refunded INTEGER DEFAULT 0,
   supplier_order_id TEXT DEFAULT NULL,
+  supplier TEXT DEFAULT 'default',
   status TEXT DEFAULT 'completed',
   created TEXT DEFAULT CURRENT_TIMESTAMP);
 """)
@@ -230,10 +235,14 @@ def migrate_db():
         db.execute("ALTER TABLE products ADD COLUMN margin INTEGER DEFAULT NULL")
     if "category" not in cols_p:
         db.execute("ALTER TABLE products ADD COLUMN category TEXT DEFAULT 'AI Tools'")
+    if "supplier" not in cols_p:
+        db.execute("ALTER TABLE products ADD COLUMN supplier TEXT DEFAULT 'default'")
 
     cols_o = {row["name"] for row in db.execute("PRAGMA table_info(orders)").fetchall()}
     if "supplier_order_id" not in cols_o:
         db.execute("ALTER TABLE orders ADD COLUMN supplier_order_id TEXT DEFAULT NULL")
+    if "supplier" not in cols_o:
+        db.execute("ALTER TABLE orders ADD COLUMN supplier TEXT DEFAULT 'default'")
     if "status" not in cols_o:
         db.execute("ALTER TABLE orders ADD COLUMN status TEXT DEFAULT 'completed'")
     if "invoice_id" not in cols_o:
@@ -696,21 +705,23 @@ async def fulfill_order(bot: Bot, oid: int) -> Tuple[Optional[str], Optional[str
 
     # Option A: Supplier Catalog Auto-fulfillment
     if p["auto_fulfill"] and p["supplier_product_id"]:
+        sup_name = p["supplier"] if ("supplier" in p.keys() and p["supplier"]) else "default"
+        sup_client = supplier_registry.get(sup_name) or reseller
         try:
-            order_res = await reseller.create_order(product_id=p["supplier_product_id"], quantity=qty)
+            order_res = await sup_client.create_order(product_id=p["supplier_product_id"], quantity=qty)
             payload = order_res.get("value")
             supplier_order_id = order_res.get("order_code")
             if not payload:
                 raise ResellerAPIError(f"Supplier order succeeded but returned empty value: {order_res}")
         except Exception as e:
-            log.exception("Supplier order failed for order %s", oid)
+            log.exception("Supplier order failed for order %s (supplier: %s)", oid, sup_name)
             db.execute("UPDATE orders SET status='failed' WHERE id=?", (oid,))
-            await notify_admins(bot, f"⚠️ Supplier order failed for order #{oid} (user {o['user_id']}, product #{p['id']}, qty {qty}):\n<code>{esc(str(e))}</code>")
+            await notify_admins(bot, f"⚠️ Supplier order failed for order #{oid} (user {o['user_id']}, product #{p['id']}, supplier '{sup_name}', qty {qty}):\n<code>{esc(str(e))}</code>")
             return None, "supplier_error"
 
         db.execute(
-            "UPDATE orders SET payload=?, supplier_order_id=?, status='completed' WHERE id=?",
-            (payload, supplier_order_id, oid)
+            "UPDATE orders SET payload=?, supplier_order_id=?, supplier=?, status='completed' WHERE id=?",
+            (payload, supplier_order_id, sup_name, oid)
         )
         return payload, None
 
@@ -1440,51 +1451,81 @@ async def admin_broadcast(m: Message, command: CommandObject):
 
 
 # --------------------------------------------------------------------------
-# Supplier Admin Commands
+# Supplier Admin Commands (Multi-Supplier Registry)
 # --------------------------------------------------------------------------
-@dp.message(Command("supplier"), is_admin)
-async def admin_supplier_info(m: Message):
-    if not RESELLER_API_KEY:
-        return await m.answer("⚠️ <code>RESELLER_API_KEY</code> is not configured in .env.")
-    try:
-        bal_res = await reseller.get_balance()
-        bal_str = f"${bal_res.get('balance', 0):.2f} {bal_res.get('currency', 'USD')}"
-    except Exception as e:
-        bal_str = f"Error: {e}"
+@dp.message(Command("supplier", "suppliers"), is_admin)
+async def admin_supplier_info(m: Message, command: CommandObject):
+    registered = supplier_registry.list_suppliers()
+    if not registered:
+        return await m.answer("⚠️ No suppliers registered. Configure <code>RESELLER_API_KEY</code> or <code>SUPPLIER_&lt;NAME&gt;_KEY</code> in .env.")
 
-    try:
-        info_res = await reseller.get_info()
-        info_text = json.dumps(info_res, indent=2, ensure_ascii=False)
-        if len(info_text) > 400:
-            info_text = info_text[:400] + "..."
-    except Exception as e:
-        info_text = f"Error: {e}"
+    arg = (command.args or "").strip().lower()
+    if arg and arg in registered:
+        sup_client = registered[arg]
+        try:
+            bal_res = await sup_client.get_balance()
+            bal_str = f"${bal_res.get('balance', 0):.2f} {bal_res.get('currency', 'USD')}"
+        except Exception as e:
+            bal_str = f"Error: {e}"
 
-    await m.answer(
-        f"🌐 <b>Supplier API Status</b>\n"
-        f"<b>Base URL:</b> <code>{esc(RESELLER_BASE_URL)}</code>\n"
-        f"<b>API Key:</b> {'Set (✓)' if RESELLER_API_KEY else 'Missing (✗)'}\n"
-        f"<b>Supplier Balance:</b> <b>{esc(bal_str)}</b>\n\n"
-        f"<b>Account Info:</b>\n<pre>{esc(info_text)}</pre>"
-    )
+        try:
+            info_res = await sup_client.get_info()
+            info_text = json.dumps(info_res, indent=2, ensure_ascii=False)
+            if len(info_text) > 400:
+                info_text = info_text[:400] + "..."
+        except Exception as e:
+            info_text = f"Error: {e}"
+
+        p_count = db.execute("SELECT COUNT(*) FROM products WHERE supplier=? AND active=1", (arg,)).fetchone()[0]
+
+        return await m.answer(
+            f"🌐 <b>Supplier: <code>{esc(arg)}</code></b>\n"
+            f"<b>Base URL:</b> <code>{esc(sup_client.base_url)}</code>\n"
+            f"<b>Balance:</b> <b>{esc(bal_str)}</b>\n"
+            f"<b>Active Linked Products:</b> {p_count}\n\n"
+            f"<b>Account Info:</b>\n<pre>{esc(info_text)}</pre>"
+        )
+
+    # All suppliers overview
+    lines = ["🌐 <b>Configured Suppliers / Resellers:</b>\n"]
+    for name, client in registered.items():
+        try:
+            bal_res = await client.get_balance()
+            bal_disp = f"${bal_res.get('balance', 0):.2f} {bal_res.get('currency', 'USD')}"
+        except Exception as e:
+            bal_disp = f"Error ({e})"
+
+        p_count = db.execute("SELECT COUNT(*) FROM products WHERE supplier=? AND active=1", (name,)).fetchone()[0]
+        is_def = " (default)" if name == supplier_registry.default_name() else ""
+        lines.append(
+            f"• <b>{esc(name.upper())}</b>{is_def}\n"
+            f"  URL: <code>{esc(client.base_url)}</code>\n"
+            f"  Balance: <b>{esc(bal_disp)}</b> · Products: {p_count}\n"
+        )
+
+    lines.append("<i>Tip: Type <code>/supplier &lt;name&gt;</code> for details or <code>/s_sync &lt;name&gt; [margin]</code> to sync products.</i>")
+    await m.answer("\n".join(lines))
 
 
 @dp.message(Command("s_products"), is_admin)
-async def admin_supplier_products(m: Message):
-    if not RESELLER_API_KEY:
-        return await m.answer("⚠️ <code>RESELLER_API_KEY</code> is not configured in .env.")
+async def admin_supplier_products(m: Message, command: CommandObject):
+    sup_name = (command.args or "").strip().lower() or supplier_registry.default_name()
+    sup_client = supplier_registry.get(sup_name)
+    if not sup_client or not sup_client.api_key:
+        return await m.answer(f"⚠️ Supplier <code>{esc(sup_name)}</code> not found or has no API key.")
+
     try:
-        products = await reseller.get_products()
+        products = await sup_client.get_products()
     except Exception as e:
-        return await m.answer(f"Failed to fetch supplier catalog: {esc(str(e))}")
+        return await m.answer(f"Failed to fetch supplier catalog from '{sup_name}': {esc(str(e))}")
 
     if not products:
-        return await m.answer("No products found in supplier catalog.")
+        return await m.answer(f"No products found in catalog for '{sup_name}'.")
 
     local_map = {row["supplier_product_id"]: row for row in db.execute(
-        "SELECT id, name, price, supplier_product_id FROM products WHERE supplier_product_id IS NOT NULL").fetchall()}
+        "SELECT id, name, price, supplier_product_id FROM products WHERE supplier=? AND supplier_product_id IS NOT NULL", (sup_name,)).fetchall()}
 
-    lines = ["<b>Supplier Catalog Products:</b>\n"]
+    lines = [f"<b>Supplier '{esc(sup_name)}' Catalog Products:</b>\n"]
     for p in products:
         pid = p["id"]
         linked = local_map.get(pid)
@@ -1505,68 +1546,106 @@ async def admin_supplier_products(m: Message):
 
 @dp.message(Command("s_sync"), is_admin)
 async def admin_supplier_sync(m: Message, command: CommandObject):
-    if not RESELLER_API_KEY:
-        return await m.answer("⚠️ <code>RESELLER_API_KEY</code> is not configured in .env.")
+    registered = supplier_registry.list_suppliers()
+    if not registered:
+        return await m.answer("⚠️ No suppliers configured in .env.")
 
+    args = (command.args or "").strip().split()
+    target_suppliers = []
     markup = PROFIT_MARGIN
-    if command.args:
-        custom_markup = parse_profit_margin(command.args.strip(), default=markup)
-        if custom_markup >= 0:
-            markup = custom_markup
 
-    try:
-        sup_products = await reseller.get_products()
-    except Exception as e:
-        return await m.answer(f"Failed to fetch supplier catalog: {esc(str(e))}")
+    if not args:
+        target_suppliers = [supplier_registry.default_name()]
+    elif args[0].lower() == "all":
+        target_suppliers = list(registered.keys())
+        if len(args) > 1:
+            markup = parse_profit_margin(args[1], default=markup)
+    elif args[0].lower() in registered:
+        target_suppliers = [args[0].lower()]
+        if len(args) > 1:
+            markup = parse_profit_margin(args[1], default=markup)
+    else:
+        markup = parse_profit_margin(args[0], default=markup)
+        target_suppliers = [supplier_registry.default_name()]
 
-    if not sup_products:
-        return await m.answer("No products returned by supplier.")
+    total_added = 0
+    total_updated = 0
+    total_items = 0
+    errors = []
 
-    added, updated = 0, 0
-    for sp in sup_products:
-        sp_id = sp["id"]
-        cost_cents = sp["price_cents"]
-        cat = detect_category(sp["name"])
+    for sup_name in target_suppliers:
+        client = registered.get(sup_name)
+        if not client or not client.api_key:
+            errors.append(f"'{sup_name}': API key not configured")
+            continue
 
-        existing = db.execute("SELECT id, margin FROM products WHERE supplier_product_id=?", (sp_id,)).fetchone()
-        item_margin = existing["margin"] if (existing and existing["margin"] is not None) else markup
-        retail_cents = max(100, round(cost_cents * (1 + item_margin / 100)))
+        try:
+            sup_products = await client.get_products()
+        except Exception as e:
+            errors.append(f"'{sup_name}': {e}")
+            continue
 
-        if existing:
-            db.execute("""
-                UPDATE products
-                SET name=?, description=?, price=?, supplier_price=?, auto_fulfill=1, active=1, category=?
-                WHERE id=?
-            """, (sp["name"], sp["description"], retail_cents, cost_cents, cat, existing["id"]))
-            updated += 1
-        else:
-            db.execute("""
-                INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category)
-                VALUES(?,?,?,?,?,1,1,?)
-            """, (sp["name"], sp["description"], retail_cents, sp_id, cost_cents, cat))
-            added += 1
+        for sp in sup_products:
+            sp_id = sp["id"]
+            cost_cents = sp["price_cents"]
+            cat = detect_category(sp["name"])
 
-    await m.answer(
+            existing = db.execute(
+                "SELECT id, margin FROM products WHERE supplier_product_id=? AND supplier=?",
+                (sp_id, sup_name)
+            ).fetchone()
+            item_margin = existing["margin"] if (existing and existing["margin"] is not None) else markup
+            retail_cents = max(100, round(cost_cents * (1 + item_margin / 100)))
+
+            if existing:
+                db.execute("""
+                    UPDATE products
+                    SET name=?, description=?, price=?, supplier_price=?, auto_fulfill=1, active=1, category=?, supplier=?
+                    WHERE id=?
+                """, (sp["name"], sp["description"], retail_cents, cost_cents, cat, sup_name, existing["id"]))
+                total_updated += 1
+            else:
+                db.execute("""
+                    INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier)
+                    VALUES(?,?,?,?,?,1,1,?,?)
+                """, (sp["name"], sp["description"], retail_cents, sp_id, cost_cents, cat, sup_name))
+                total_added += 1
+
+        total_items += len(sup_products)
+
+    res_msg = (
         f"✅ <b>Catalog Sync Complete!</b>\n"
-        f"• Profit margin markup: <b>{markup}%</b>\n"
-        f"• New products imported: <b>{added}</b>\n"
-        f"• Existing products updated: <b>{updated}</b>\n"
-        f"• Total catalog items: <b>{len(sup_products)}</b>"
+        f"• Suppliers synced: <b>{', '.join(target_suppliers)}</b>\n"
+        f"• Default profit margin: <b>{markup}%</b>\n"
+        f"• New products imported: <b>{total_added}</b>\n"
+        f"• Existing products updated: <b>{total_updated}</b>\n"
+        f"• Total catalog items processed: <b>{total_items}</b>"
     )
+    if errors:
+        res_msg += "\n\n⚠️ <b>Errors:</b>\n" + "\n".join(f"• {esc(err)}" for err in errors)
+
+    await m.answer(res_msg)
 
 
 @dp.message(Command("s_link"), is_admin)
 async def admin_supplier_link(m: Message, command: CommandObject):
     try:
-        local_id, sup_id = command.args.split()
-        local_id = int(local_id)
+        parts = command.args.split()
+        local_id = int(parts[0])
+        sup_id = parts[1].strip()
+        sup_name = parts[2].strip().lower() if len(parts) > 2 else supplier_registry.default_name()
+
         p = db.execute("SELECT * FROM products WHERE id=?", (local_id,)).fetchone()
         if not p:
             return await m.answer(f"Product #{local_id} not found.")
-        db.execute("UPDATE products SET supplier_product_id=?, auto_fulfill=1 WHERE id=?", (sup_id.strip(), local_id))
-        await m.answer(f"Product #{local_id} ({esc(p['name'])}) linked to supplier product <code>{esc(sup_id)}</code>.")
+
+        db.execute(
+            "UPDATE products SET supplier_product_id=?, supplier=?, auto_fulfill=1 WHERE id=?",
+            (sup_id, sup_name, local_id)
+        )
+        await m.answer(f"Product #{local_id} ({esc(p['name'])}) linked to supplier '<b>{esc(sup_name)}</b>' product <code>{esc(sup_id)}</code>.")
     except Exception:
-        await m.answer("Usage: /s_link <local_product_id> <supplier_product_id>")
+        await m.answer("Usage: /s_link <local_product_id> <supplier_product_id> [supplier_name]")
 
 
 @dp.message(Command("s_unlink"), is_admin)

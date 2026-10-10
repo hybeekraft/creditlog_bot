@@ -75,6 +75,36 @@ class TestResellerClient(unittest.IsolatedAsyncioTestCase):
             await client.get_products()
 
 
+class TestSupplierRegistry(unittest.IsolatedAsyncioTestCase):
+    def test_registry_register_and_get(self):
+        from reseller import SupplierRegistry
+        reg = SupplierRegistry()
+        c1 = ResellerClient(base_url="https://api1.example.com", api_key="k1")
+        c2 = ResellerClient(base_url="https://api2.example.com", api_key="k2")
+
+        reg.register("gemini", c1, is_default=True)
+        reg.register("streaming", c2)
+
+        self.assertEqual(reg.get("gemini"), c1)
+        self.assertEqual(reg.get("streaming"), c2)
+        self.assertEqual(reg.get(), c1)  # default
+        self.assertEqual(reg.default_name(), "gemini")
+
+    def test_registry_from_env(self):
+        from reseller import SupplierRegistry
+        with patch.dict(os.environ, {
+            "RESELLER_BASE_URL": "https://api-default.com",
+            "RESELLER_API_KEY": "def_key",
+            "SUPPLIER_VENDORB_URL": "https://api-vendorb.com",
+            "SUPPLIER_VENDORB_KEY": "vendorb_key",
+        }):
+            reg = SupplierRegistry.from_env()
+            self.assertIn("default", reg.list_suppliers())
+            self.assertIn("vendorb", reg.list_suppliers())
+            self.assertEqual(reg.get("vendorb").base_url, "https://api-vendorb.com")
+            self.assertEqual(reg.get("vendorb").api_key, "vendorb_key")
+
+
 class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.db = sqlite3.connect(":memory:", isolation_level=None)
@@ -95,7 +125,8 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
           supplier_price INTEGER DEFAULT NULL,
           auto_fulfill INTEGER DEFAULT 0,
           margin INTEGER DEFAULT NULL,
-          category TEXT DEFAULT 'AI Tools');
+          category TEXT DEFAULT 'AI Tools',
+          supplier TEXT DEFAULT 'default');
         CREATE TABLE IF NOT EXISTS stock(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           product_id INTEGER NOT NULL,
@@ -112,6 +143,7 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
           payload TEXT,
           refunded INTEGER DEFAULT 0,
           supplier_order_id TEXT DEFAULT NULL,
+          supplier TEXT DEFAULT 'default',
           status TEXT DEFAULT 'completed',
           created TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS custom_emojis(
@@ -480,8 +512,38 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         saved = bot.get_custom_emoji_id("duolingo")
         self.assertEqual(saved, "1234567890123")
 
+    async def test_multi_supplier_fulfillment_routing(self):
+        # Register a second supplier 'streaming_hub'
+        mock_vendor = ResellerClient(base_url="https://api.vendor.com", api_key="vkey")
+        mock_vendor.create_order = AsyncMock(return_value={"order_code": "V-77", "value": "NETFLIX-KEY-123"})
+        bot.supplier_registry.register("streaming_hub", mock_vendor)
+
+        # Create product linked to streaming_hub
+        pid = bot.db.execute("""
+            INSERT INTO products(name, price, active, supplier_product_id, supplier, auto_fulfill)
+            VALUES('Netflix 1M', 1000, 1, 'net-45', 'streaming_hub', 1)
+        """).lastrowid
+
+        oid = bot.db.execute("""
+            INSERT INTO orders(user_id, product_id, product_name, price, status, quantity)
+            VALUES(1001, ?, 'Netflix 1M', 1000, 'pending', 1)
+        """, (pid,)).lastrowid
+
+        mock_bot = AsyncMock()
+        payload, err = await bot.fulfill_order(mock_bot, oid)
+        self.assertIsNone(err)
+        self.assertEqual(payload, "NETFLIX-KEY-123")
+        mock_vendor.create_order.assert_called_once_with(product_id="net-45", quantity=1)
+
+        # Check order record was updated with supplier
+        ord_row = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(ord_row["status"], "completed")
+        self.assertEqual(ord_row["supplier"], "streaming_hub")
+        self.assertEqual(ord_row["supplier_order_id"], "V-77")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

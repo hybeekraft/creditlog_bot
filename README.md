@@ -44,21 +44,34 @@ Caddy obtains the HTTPS certificate automatically. Data lives in `./data/store.d
 
 You can sell products via **manual stock** OR **automatically connect to our supplier catalog**:
 
-### Option A: Automated Supplier Catalog (Recommended)
-Add your supplier API key and profit margin to `.env`:
+### Option A: Automated Supplier Catalog (Single or Multi-Supplier)
+Add your primary supplier and optional additional suppliers to `.env`:
 ```bash
+# Primary Supplier (default)
 RESELLER_BASE_URL=https://api-geminipro.ignorelist.com/api/reseller/v1
 RESELLER_API_KEY=YOUR_API_KEY
 PROFIT_MARGIN=45%   # Default profit margin (supports "45%" or 45)
+
+# Optional Additional Suppliers (Generic Multi-Supplier Registry)
+# Any SUPPLIER_<NAME>_KEY will be automatically registered!
+SUPPLIER_STREAMING_URL=https://api-streaming.com/api/v1
+SUPPLIER_STREAMING_KEY=your_streaming_api_key
+
+SUPPLIER_GAMES_URL=https://api-games.com/api/v1
+SUPPLIER_GAMES_KEY=your_games_api_key
 ```
 
 From your Telegram admin account:
-- `/supplier` — Check supplier balance and account status.
-- `/s_products` — View products available in the supplier catalog and their wholesale prices.
-- `/s_sync [margin_%]` — Automatically import/sync all products from the supplier with default profit margin (or specified margin).
+- `/supplier` or `/suppliers` — View all configured suppliers, their balances, and active product counts. Or `/supplier <name>` for detailed info.
+- `/s_products [supplier]` — View catalog products and wholesale costs from a specific supplier (defaults to primary).
+- `/s_sync [supplier_or_all] [margin_%]` — Automatically import/sync products:
+  - `/s_sync` — Sync primary supplier with default margin.
+  - `/s_sync 50%` — Sync primary supplier with 50% margin.
+  - `/s_sync streaming 40%` — Sync a specific supplier.
+  - `/s_sync all 45%` — Sync all configured suppliers in one command!
 - `/setmargin <id> <margin_%>` — Set a custom profit margin for a specific product (e.g. `/setmargin 1 60%`). Overrides the default margin and is preserved across `/s_sync`!
 - `/setprice <id> <price_usd>` — Set a direct fixed retail price for a specific product (e.g. `/setprice 1 2.99`).
-- `/s_link <local_id> <supplier_id>` — Link an existing product to auto-fulfill via supplier.
+- `/s_link <local_id> <supplier_id> [supplier_name]` — Link an existing product to auto-fulfill via a specific supplier.
 - `/s_unlink <local_id>` — Unlink and switch back to manual stock.
 - `/s_orders` — View recent supplier orders.
 

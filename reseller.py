@@ -11,6 +11,8 @@ Endpoints:
   - Orders: GET /orders
   - Order: GET /orders/{orderCode}
 """
+import os
+import re
 import logging
 import aiohttp
 from typing import Any, Dict, List, Optional, Tuple
@@ -290,3 +292,81 @@ class ResellerClient:
         """Fetch a specific order by orderCode."""
         data = await self._request("GET", f"/orders/{order_code}")
         return data if isinstance(data, dict) else {"data": data}
+
+
+class SupplierRegistry:
+    """
+    Registry for managing multiple reseller/supplier API clients.
+    Supports:
+      - Default / primary supplier (backward-compatible with RESELLER_BASE_URL & RESELLER_API_KEY)
+      - Multiple named suppliers configured via environment variables
+        (SUPPLIER_<NAME>_KEY and SUPPLIER_<NAME>_URL, e.g. SUPPLIER_AI_KEY, SUPPLIER_STREAMING_KEY)
+        or added programmatically.
+      - Catalog fetching, balance checking, and order creation routed to specific suppliers.
+    """
+
+    def __init__(self):
+        self._suppliers: Dict[str, ResellerClient] = {}
+        self._default_name: str = "default"
+
+    def register(self, name: str, client: ResellerClient, is_default: bool = False):
+        name = name.strip().lower()
+        self._suppliers[name] = client
+        if is_default or not self._default_name or self._default_name not in self._suppliers:
+            self._default_name = name
+
+    def get(self, name: Optional[str] = None) -> Optional[ResellerClient]:
+        if not name:
+            name = self._default_name
+        name = name.strip().lower()
+        return self._suppliers.get(name) or self._suppliers.get(self._default_name)
+
+    def list_suppliers(self) -> Dict[str, ResellerClient]:
+        return dict(self._suppliers)
+
+    def default_name(self) -> str:
+        return self._default_name
+
+    @classmethod
+    def from_env(cls) -> "SupplierRegistry":
+        """
+        Auto-discover suppliers from environment variables:
+          1. Legacy/default:
+             RESELLER_BASE_URL and RESELLER_API_KEY -> 'default'
+          2. Named suppliers:
+             SUPPLIER_<NAME>_KEY & optional SUPPLIER_<NAME>_URL
+             e.g.:
+               SUPPLIER_STREAMING_KEY=...
+               SUPPLIER_STREAMING_URL=https://...
+               SUPPLIER_GAMES_KEY=...
+               SUPPLIER_GAMES_URL=https://...
+        """
+        registry = cls()
+        def_url = os.environ.get("RESELLER_BASE_URL") or "https://api-geminipro.ignorelist.com/api/reseller/v1"
+        def_key = os.environ.get("RESELLER_API_KEY", "").strip()
+        if def_key:
+            registry.register("default", ResellerClient(base_url=def_url, api_key=def_key), is_default=True)
+
+        for env_k, env_v in os.environ.items():
+            m = re.match(r"^SUPPLIER_([A-Z0-9_]+)_KEY$", env_k)
+            if m and env_v.strip():
+                name = m.group(1).lower()
+                url = os.environ.get(f"SUPPLIER_{m.group(1)}_URL") or def_url
+                is_def = (name == "default") or (not registry._suppliers)
+                registry.register(name, ResellerClient(base_url=url, api_key=env_v.strip()), is_default=is_def)
+
+        return registry
+
+    async def get_all_balances(self) -> Dict[str, Dict[str, Any]]:
+        results = {}
+        for name, client in self._suppliers.items():
+            try:
+                results[name] = await client.get_balance()
+            except Exception as e:
+                results[name] = {"error": str(e), "balance": 0.0, "currency": "USD"}
+        return results
+
+    async def close_all(self):
+        for client in self._suppliers.values():
+            await client.close()
+
