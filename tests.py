@@ -114,6 +114,10 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
           supplier_order_id TEXT DEFAULT NULL,
           status TEXT DEFAULT 'completed',
           created TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS custom_emojis(
+          key TEXT PRIMARY KEY,
+          emoji_id TEXT NOT NULL,
+          created TEXT DEFAULT CURRENT_TIMESTAMP);
         """)
 
     async def test_guest_checkout_direct_supplier_fulfillment(self):
@@ -440,7 +444,44 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         sold_count = bot.db.execute("SELECT COUNT(*) FROM stock WHERE product_id=? AND sold=1", (pid,)).fetchone()[0]
         self.assertEqual(sold_count, 3)
 
+    async def test_custom_emoji_lookup_and_button_rendering(self):
+        # Insert custom emoji for chatgpt
+        bot.db.execute("INSERT OR REPLACE INTO custom_emojis(key, emoji_id) VALUES('chatgpt', '5368324170671202288')")
+        self.assertEqual(bot.get_custom_emoji_id("chatgpt"), "5368324170671202288")
+
+        markup = bot.categories_kb(uid=1001)
+        chatgpt_btn = next(b for row in markup.inline_keyboard for b in row if "ChatGPT" in b.text)
+        self.assertEqual(chatgpt_btn.icon_custom_emoji_id, "5368324170671202288")
+        self.assertEqual(chatgpt_btn.style, "primary")
+
+    async def test_admin_setemoji_command_with_entity(self):
+        mock_msg = AsyncMock()
+        mock_cmd = MagicMock()
+        mock_cmd.args = "gemini"
+
+        mock_entity = MagicMock()
+        mock_entity.type = "custom_emoji"
+        mock_entity.custom_emoji_id = 998877665544
+        mock_msg.entities = [mock_entity]
+
+        await bot.admin_setemoji(mock_msg, mock_cmd)
+        saved = bot.get_custom_emoji_id("gemini")
+        self.assertEqual(saved, "998877665544")
+        mock_msg.answer.assert_called_once()
+        self.assertIn("998877665544", mock_msg.answer.call_args[0][0])
+
+    async def test_admin_setemoji_command_numeric_id(self):
+        mock_msg = AsyncMock()
+        mock_cmd = MagicMock()
+        mock_cmd.args = "duolingo 1234567890123"
+        mock_msg.entities = []
+
+        await bot.admin_setemoji(mock_msg, mock_cmd)
+        saved = bot.get_custom_emoji_id("duolingo")
+        self.assertEqual(saved, "1234567890123")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

@@ -262,7 +262,33 @@ def migrate_db():
             VALUES('Duolingo Super 12 Months', 'Duolingo Super 12 Months Plan', 90, 'Education', 1, 1)
         """)
 
+    # Custom emojis table for original brand logos (Telegram custom emoji IDs)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS custom_emojis(
+          key TEXT PRIMARY KEY,
+          emoji_id TEXT NOT NULL,
+          created TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
 migrate_db()
+
+
+def get_custom_emoji_id(key: str) -> Optional[str]:
+    """Retrieve Telegram custom_emoji_id for a brand or UI key from DB or ENV."""
+    k = (key or "").strip().lower()
+    if not k:
+        return None
+    try:
+        row = db.execute("SELECT emoji_id FROM custom_emojis WHERE key=?", (k,)).fetchone()
+        if row and row["emoji_id"]:
+            return str(row["emoji_id"]).strip()
+    except Exception:
+        pass
+    env_val = os.environ.get(f"EMOJI_{k.upper()}")
+    if env_val:
+        return str(env_val).strip()
+    return None
 
 dp = Dispatcher()
 usd = lambda c: f"${c / 100:.2f}"
@@ -432,7 +458,7 @@ def kb(rows):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def btn(text, data=None, url=None, style=None):
+def btn(text, data=None, url=None, style=None, emoji_id=None):
     kw = {"text": text}
     if data is not None:
         kw["callback_data"] = data
@@ -440,6 +466,8 @@ def btn(text, data=None, url=None, style=None):
         kw["url"] = url
     if style is not None:
         kw["style"] = style
+    if emoji_id:
+        kw["icon_custom_emoji_id"] = str(emoji_id)
     return InlineKeyboardButton(**kw)
 
 
@@ -486,17 +514,30 @@ def home_kb(uid: int):
             "SELECT * FROM products WHERE active=1 AND id != ? ORDER BY id LIMIT 1", (gemini_p["id"],)
         ).fetchone()
 
+    gemini_emoji_id = get_custom_emoji_id("gemini_product") or get_custom_emoji_id("gemini") or get_custom_emoji_id("google")
+    duo_emoji_id = get_custom_emoji_id("duolingo_product") or get_custom_emoji_id("duolingo") or get_custom_emoji_id("education")
+
     if gemini_p:
-        rows.append([btn(f"1️⃣ {gemini_p['name']} · {usd(gemini_p['price'])}", f"p:{gemini_p['id']}:home", style="success")])
+        text_g = f"{gemini_p['name']} · {usd(gemini_p['price'])}" if gemini_emoji_id else f"1️⃣ {gemini_p['name']} · {usd(gemini_p['price'])}"
+        rows.append([btn(text_g, f"p:{gemini_p['id']}:home", style="success", emoji_id=gemini_emoji_id)])
 
     if duo_p:
         badge = "🦉" if "duolingo" in duo_p["name"].lower() else "2️⃣"
-        rows.append([btn(f"{badge} {duo_p['name']} · {usd(duo_p['price'])}", f"p:{duo_p['id']}:home", style="success")])
+        text_d = f"{duo_p['name']} · {usd(duo_p['price'])}" if duo_emoji_id else f"{badge} {duo_p['name']} · {usd(duo_p['price'])}"
+        rows.append([btn(text_d, f"p:{duo_p['id']}:home", style="success", emoji_id=duo_emoji_id)])
+
+    shop_emoji_id = get_custom_emoji_id("shop")
+    orders_emoji_id = get_custom_emoji_id("orders") or get_custom_emoji_id("purchases")
+    lang_emoji_id = get_custom_emoji_id("lang") or get_custom_emoji_id("language")
+    support_emoji_id = get_custom_emoji_id("support")
+    news_emoji_id = get_custom_emoji_id("news") or get_custom_emoji_id("channel")
 
     rows += [
-        [btn(t(uid, "btn_shop"), "shop", style="success"), btn(t(uid, "btn_orders"), "orders", style="success")],
-        [btn(t(uid, "btn_lang"), "lang", style="primary"), btn(t(uid, "btn_support"), url=SUPPORT_URL, style="primary")],
-        [btn(t(uid, "btn_news"), url=CHANNEL_URL, style="primary")],
+        [btn(t(uid, "btn_shop"), "shop", style="success", emoji_id=shop_emoji_id),
+         btn(t(uid, "btn_orders"), "orders", style="success", emoji_id=orders_emoji_id)],
+        [btn(t(uid, "btn_lang"), "lang", style="primary", emoji_id=lang_emoji_id),
+         btn(t(uid, "btn_support"), url=SUPPORT_URL, style="primary", emoji_id=support_emoji_id)],
+        [btn(t(uid, "btn_news"), url=CHANNEL_URL, style="primary", emoji_id=news_emoji_id)],
     ]
     return kb(rows)
 
@@ -506,15 +547,23 @@ def categories_kb(uid: int):
     rows = []
     current_row = []
     for key, name, icon in CATEGORIES:
-        current_row.append(btn(f"{icon} {name}", f"cat:{key}:1", style="primary"))
+        custom_id = get_custom_emoji_id(key)
+        btn_text = name if custom_id else f"{icon} {name}"
+        current_row.append(btn(btn_text, f"cat:{key}:1", style="primary", emoji_id=custom_id))
         if len(current_row) == 3:
             rows.append(current_row)
             current_row = []
     if current_row:
         rows.append(current_row)
 
-    rows.append([btn(t(uid, "btn_search"), "search_start", style="primary"), btn(t(uid, "btn_all_items"), "allprods:1", style="primary")])
-    rows.append([btn(t(uid, "btn_back"), "home", style="danger")])
+    search_id = get_custom_emoji_id("search")
+    all_id = get_custom_emoji_id("all_items") or get_custom_emoji_id("all")
+    back_id = get_custom_emoji_id("back")
+    rows.append([
+        btn(t(uid, "btn_search"), "search_start", style="primary", emoji_id=search_id),
+        btn(t(uid, "btn_all_items"), "allprods:1", style="primary", emoji_id=all_id)
+    ])
+    rows.append([btn(t(uid, "btn_back"), "home", style="danger", emoji_id=back_id)])
     return kb(rows)
 
 
@@ -533,8 +582,11 @@ def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_pr
     rows = []
     for p in slice_prods:
         p_cat = p["category"] if "category" in p.keys() else None
+        cat_key = CAT_KEY_BY_NAME.get((p_cat or "").lower()) or CAT_KEY_BY_NAME.get(detect_category(p["name"]).lower())
+        p_emoji_id = get_custom_emoji_id(cat_key) if cat_key else None
         icon = get_product_icon(p["name"], p_cat)
-        rows.append([btn(f"{icon} {p['name']} · {usd(p['price'])} ✅", f"p:{p['id']}:{ctx_prefix}_{page}", style="success")])
+        btn_text = f"{p['name']} · {usd(p['price'])} ✅" if p_emoji_id else f"{icon} {p['name']} · {usd(p['price'])} ✅"
+        rows.append([btn(btn_text, f"p:{p['id']}:{ctx_prefix}_{page}", style="success", emoji_id=p_emoji_id)])
 
     if total_pages > 1:
         pag_row = []
@@ -1152,6 +1204,10 @@ async def admin_help(m: Message):
         "/refund &lt;order_id&gt;\n"
         "/stats - View sales stats\n"
         "/broadcast &lt;text&gt; - Broadcast message\n\n"
+        "🎨 <b>Brand Custom Emojis</b>\n"
+        "/setemoji &lt;key&gt; [emoji] - Set official brand custom emoji ID\n"
+        "/emojis - View configured brand custom emojis\n"
+        "/delemoji &lt;key&gt; - Remove custom emoji\n\n"
         "🌐 <b>Supplier Catalog (Automated)</b>\n"
         "/supplier - Supplier balance & account info\n"
         "/s_products - List available supplier products\n"
@@ -1160,6 +1216,83 @@ async def admin_help(m: Message):
         "/s_unlink &lt;local_id&gt; - Revert to manual stock\n"
         "/s_orders - Recent supplier orders"
     )
+
+
+@dp.message(Command("setemoji"), is_admin)
+async def admin_setemoji(m: Message, command: CommandObject):
+    """
+    Sets custom emoji ID for a brand, category, or UI button.
+    Usage: /setemoji <key> [custom_emoji_or_id]
+    Examples:
+      /setemoji chatgpt  (with custom emoji sent in the message)
+      /setemoji chatgpt 5368324170671202288
+      /setemoji gemini
+    """
+    if not command.args:
+        avail_keys = ", ".join(k for k, _, _ in CATEGORIES)
+        return await m.answer(
+            f"<b>Usage:</b> <code>/setemoji &lt;key&gt; [emoji]</code>\n\n"
+            f"Send with a custom emoji or paste its numeric ID.\n\n"
+            f"<b>Available keys:</b>\n<code>{avail_keys}, shop, orders, lang, support, news, search, all_items, back</code>"
+        )
+
+    parts = command.args.split(None, 1)
+    key = parts[0].strip().lower()
+
+    # Look for custom_emoji in message entities
+    emoji_id = None
+    if m.entities:
+        for ent in m.entities:
+            if ent.type == "custom_emoji" and ent.custom_emoji_id:
+                emoji_id = str(ent.custom_emoji_id)
+                break
+
+    # If not found in entities, check if numeric string passed in text
+    if not emoji_id and len(parts) > 1:
+        arg_val = "".join(c for c in parts[1].strip() if c.isdigit())
+        if arg_val:
+            emoji_id = arg_val
+
+    if not emoji_id:
+        return await m.answer(
+            f"⚠️ Could not find custom emoji ID for <b>{esc(key)}</b>.\n"
+            f"Please insert a custom emoji from your Telegram pack in the command or provide its numeric ID:\n"
+            f"<code>/setemoji {esc(key)} &lt;custom_emoji_or_id&gt;</code>"
+        )
+
+    db.execute(
+        "INSERT INTO custom_emojis(key, emoji_id) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET emoji_id=excluded.emoji_id",
+        (key, emoji_id)
+    )
+    await m.answer(
+        f"✅ Brand emoji for <b>{esc(key)}</b> updated!\n"
+        f"• Custom Emoji ID: <code>{esc(emoji_id)}</code>"
+    )
+
+
+@dp.message(Command("emojis"), is_admin)
+async def admin_list_emojis(m: Message):
+    """List all configured brand custom emojis."""
+    rows = db.execute("SELECT key, emoji_id FROM custom_emojis ORDER BY key").fetchall()
+    if not rows:
+        return await m.answer(
+            "No custom emojis configured yet.\n"
+            "Use <code>/setemoji &lt;key&gt; &lt;emoji&gt;</code> to set official brand custom emojis from your Telegram pack."
+        )
+
+    lines = ["<b>Configured Brand Custom Emojis:</b>\n"]
+    for r in rows:
+        lines.append(f"• <b>{esc(r['key'])}</b>: <code>{esc(r['emoji_id'])}</code>")
+    await m.answer("\n".join(lines))
+
+
+@dp.message(Command("delemoji"), is_admin)
+async def admin_del_emoji(m: Message, command: CommandObject):
+    if not command.args:
+        return await m.answer("Usage: /delemoji <key>")
+    key = command.args.strip().lower()
+    db.execute("DELETE FROM custom_emojis WHERE key=?", (key,))
+    await m.answer(f"Custom emoji for <b>{esc(key)}</b> removed.")
 
 
 @dp.message(Command("products"), is_admin)
