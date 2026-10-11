@@ -422,12 +422,31 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
     def test_render_product_list_styles(self):
         pid1 = bot.db.execute("INSERT INTO products(name, price, active) VALUES('Prod A', 100, 1)").lastrowid
         p1 = bot.db.execute("SELECT * FROM products WHERE id=?", (pid1,)).fetchone()
+
+        pid_oos = bot.db.execute("INSERT INTO products(name, price, active, auto_fulfill, supplier_product_id, supplier_stock) VALUES('Prod OOS', 200, 1, 1, 'oos-1', 0)").lastrowid
+        p_oos = bot.db.execute("SELECT * FROM products WHERE id=?", (pid_oos,)).fetchone()
+
+        pid_in = bot.db.execute("INSERT INTO products(name, price, active, auto_fulfill, supplier_product_id, supplier_stock) VALUES('Prod InStock', 300, 1, 1, 'in-1', 25)").lastrowid
+        p_in = bot.db.execute("SELECT * FROM products WHERE id=?", (pid_in,)).fetchone()
+
         _, markup = bot.render_product_list(
-            uid=1001, prods=[p1], page=1, cb_prefix="allprods", ctx_prefix="all", back_cb="home"
+            uid=1001, prods=[p1, p_oos, p_in], page=1, cb_prefix="allprods", ctx_prefix="all", back_cb="home"
         )
-        # Prod button: success (green)
-        prod_btn = markup.inline_keyboard[0][0]
-        self.assertEqual(prod_btn.style, "success")
+        # Prod A: in stock, success (green) with ✅
+        btn_a = markup.inline_keyboard[0][0]
+        self.assertEqual(btn_a.style, "success")
+        self.assertTrue(btn_a.text.endswith("✅"))
+
+        # Prod OOS: out of stock at supplier, danger (red) with ❌
+        btn_oos = markup.inline_keyboard[1][0]
+        self.assertEqual(btn_oos.style, "danger")
+        self.assertTrue(btn_oos.text.endswith("❌"))
+
+        # Prod InStock: in stock, success (green) with ✅
+        btn_in = markup.inline_keyboard[2][0]
+        self.assertEqual(btn_in.style, "success")
+        self.assertTrue(btn_in.text.endswith("✅"))
+
         # Refresh: primary (blue), Back: danger (red)
         bottom_row = markup.inline_keyboard[-1]
         self.assertEqual(bottom_row[0].style, "primary")

@@ -165,7 +165,7 @@ CAT_KEY_BY_NAME = {name.lower(): k for k, name, icon in CATEGORIES}
 
 def detect_category(name: str) -> str:
     n = name.lower()
-    if "codex" in n:
+    if "codex" in n or "astra" in n:
         return "Codex API"
     if "chatgpt" in n or "gpt" in n or "openai" in n:
         return "ChatGPT"
@@ -177,7 +177,7 @@ def detect_category(name: str) -> str:
         return "Claude"
     if "kimi" in n or "moonshot" in n:
         return "Kimi"
-    if any(k in n for k in ["sora", "runway", "pika", "kling", "luma", "video ai"]):
+    if any(k in n for k in ["sora", "runway", "pika", "kling", "luma", "video ai", "capcut"]):
         return "Video AI"
     if "elevenlabs" in n or "eleven" in n:
         return "ElevenLabs"
@@ -193,7 +193,7 @@ def detect_category(name: str) -> str:
         return "Autodesk"
     if any(k in n for k in ["canva", "figma", "freepik", "envato", "design"]):
         return "Design"
-    if any(k in n for k in ["office", "windows", "microsoft 365", "excel", "word"]):
+    if any(k in n for k in ["office", "windows", "microsoft", "o365", "excel", "word", "zoom", "notion"]):
         return "Office"
     if any(k in n for k in ["duolingo", "coursera", "udemy", "education", "chegg", "quizlet", "cambly"]):
         return "Education"
@@ -201,7 +201,7 @@ def detect_category(name: str) -> str:
         return "Streaming"
     if any(k in n for k in ["spotify", "apple music", "tidal", "deezer", "music"]):
         return "Music"
-    if any(k in n for k in ["vpn", "nordvpn", "expressvpn", "surfshark", "mullvad"]):
+    if any(k in n for k in ["vpn", "nordvpn", "expressvpn", "surfshark", "mullvad", "hma", "proton", "windscribe"]):
         return "VPN"
     if any(k in n for k in ["security", "antivirus", "malwarebytes", "kaspersky", "eset"]):
         return "Security"
@@ -209,7 +209,7 @@ def detect_category(name: str) -> str:
         return "Games"
     if any(k in n for k in ["twitter", "x.com", "instagram", "tiktok", "facebook", "linkedin", "social"]):
         return "Social"
-    if "discord" in n or "nitro" in n:
+    if any(k in n for k in ["discord", "nitro", "decor", "gifting"]):
         return "Discord"
     return "AI Tools"
 
@@ -226,10 +226,10 @@ def get_product_icon(name: str, cat_name: Optional[str] = None) -> str:
 
 
 def get_products_for_category(key: str) -> list[sqlite3.Row]:
-    cat_name, _ = CAT_BY_KEY.get(key, ("AI Tools", "🧬"))
-    all_active = db.execute("SELECT * FROM products WHERE active=1 ORDER BY id").fetchall()
+    cat_name, _ = CAT_BY_KEY.get(key, ("AI Tools", "⚡"))
+    all_prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
     matched = []
-    for p in all_active:
+    for p in all_prods:
         p_cat = (p["category"] or "").strip()
         if p_cat.lower() == cat_name.lower() or p_cat.lower() == key.lower():
             matched.append(p)
@@ -299,15 +299,112 @@ def migrate_db():
 
     # Seed known manual / assisted services from reseller master catalog
     MANUAL_CATALOG_SEEDS = [
+        # Screenshot Page 1
+        ("ChatGPT Plus 1M Apple Pay", "Ready-made ChatGPT Plus account (Apple Pay). Format: Email | Password | 2FA.", 880, "ChatGPT"),
+        ("ChatGPT K12 EDU 24M", "ChatGPT K12 EDU 24 Months student/educational account access.", 420, "ChatGPT"),
+        ("ChatGPT Business Team 1M", "ChatGPT Team Workspace 1 Month access.", 1600, "ChatGPT"),
+        ("ChatGPT Business Team 1M FW", "ChatGPT Team 1 Month Full Warranty access.", 1850, "ChatGPT"),
+        ("ChatGPT Plus Your Mail 4M", "ChatGPT Plus 4 Months upgraded on your own personal email.", 4300, "ChatGPT"),
+        ("ChatGPT Plus 4M", "ChatGPT Plus 4 Months subscription ready-made account.", 2449, "ChatGPT"),
+        ("ChatGPT Go 1M", "ChatGPT Go 1 Month subscription access.", 385, "ChatGPT"),
+        ("100$ API Claude 30D", "Claude API with $100 preloaded credits valid 30 days.", 250, "Claude"),
+        ("500$ API Claude 30D", "Claude API with $500 preloaded credits valid 30 days.", 770, "Claude"),
+        ("ElevenLabs Redeem 131K Credits", "ElevenLabs 131,000 character credits instant redeem code.", 300, "ElevenLabs"),
+        ("ElevenReader Ultra 1Y Gift Link", "ElevenReader Ultra 1 Year official gift redeem link.", 550, "ElevenLabs"),
+        ("Eleven Reader Ultra 12M", "ElevenReader Ultra 12 Months premium account access.", 250, "ElevenLabs"),
+        ("Codex API 10M Tokens 1D", "Codex API 10M tokens 1-day high speed access.", 170, "Codex API"),
+        ("Codex API 10M Tokens 1 Day", "Codex API 10M tokens 1 Day standard access.", 360, "Codex API"),
+        ("Codex API 50M Tokens 2D", "Codex API 50M tokens 2-day access.", 400, "Codex API"),
+
+        # Screenshot Page 2
+        ("Grok API $10 1M", "Grok API $10 credit balance valid 1 month.", 250, "Grok"),
+        ("Grok API $30 1M", "Grok API $30 credit balance valid 1 month.", 320, "Grok"),
+        ("Grok API $50 1M", "Grok API $50 credit balance valid 1 month.", 500, "Grok"),
+        ("Grok API $100 1M", "Grok API $100 credit balance valid 1 month.", 740, "Grok"),
+        ("Claude API 10M Tokens 1 Day", "Claude API 10M tokens 1 Day access.", 200, "Claude"),
+        ("Codex API 100M Tokens 3D", "Codex API 100M tokens 3-day access.", 600, "Codex API"),
+        ("Gemini Pro 18 Months", "Google Gemini Pro & Advanced 18 Months access.", 65, "Gemini"),
+        ("Grok API 4.5 HIGH/XHIGH 15M Tokens 1 Day", "Grok API 4.5 High/XHigh tier 15M tokens 1 day.", 250, "Grok"),
+        ("Netflix 4K Private Slot 1M", "Netflix Ultra HD 4K private slot 1 month.", 450, "Streaming"),
+        ("Zoom Pro 1M Ready-made Account", "Zoom Pro 1 Month ready-made account credentials.", 400, "Office"),
+        ("Grok API 4.5 HIGH/XHIGH 100M Tokens 7 Days", "Grok API 4.5 High/XHigh tier 100M tokens 7 days.", 500, "Grok"),
+        ("API Codex Astra $10 1M", "Codex Astra API $10 credits valid 1 month.", 300, "Codex API"),
+        ("API Codex Astra $30 1M", "Codex Astra API $30 credits valid 1 month.", 450, "Codex API"),
+        ("API Codex Astra $50 1M", "Codex Astra API $50 credits valid 1 month.", 550, "Codex API"),
+        ("API Codex Astra $100 1M", "Codex Astra API $100 credits valid 1 month.", 900, "Codex API"),
+
+        # Screenshot Page 3
+        ("API Codex Astra $200 1M", "Codex Astra API $200 credits valid 1 month.", 1290, "Codex API"),
+        ("API Codex Astra $300 1M", "Codex Astra API $300 credits valid 1 month.", 1800, "Codex API"),
+        ("API Codex Astra $500 1M", "Codex Astra API $500 credits valid 1 month.", 3000, "Codex API"),
+        ("API Codex Astra $1000 1M", "Codex Astra API $1000 credits valid 1 month.", 6000, "Codex API"),
+        ("Super Grok 7 Days", "Super Grok premium subscription 7 days access.", 375, "Grok"),
+        ("Zoom Pro 14D", "Zoom Pro 14 days subscription.", 200, "Office"),
+        ("CDK Heavy Grok 1M", "Heavy Grok 1 Month CDK activation key.", 3499, "Grok"),
+        ("Zoom Pro 28D", "Zoom Pro 28 days subscription.", 400, "Office"),
+        ("CDK Grok Super 1M", "Grok Super 1 Month CDK activation key.", 2100, "Grok"),
+        ("Claude API 50M Tokens 2 Days", "Claude API 50M tokens valid 2 days.", 400, "Claude"),
+        ("Codex API 50M Tokens 1 Day", "Codex API 50M tokens valid 1 day.", 420, "Codex API"),
+        ("Google AI Pro Gemini 3M", "Google AI Pro Gemini 3 Months subscription.", 1099, "Gemini"),
+        ("Discord Nitro 1M Token", "Discord Nitro 1 Month direct token.", 400, "Discord"),
+        ("Gemini Pro 3M", "Google Gemini Pro 3 Months subscription.", 100, "Gemini"),
+        ("Discord Nitro 3M Token", "Discord Nitro 3 Months direct token.", 600, "Discord"),
+
+        # Screenshot Page 4
+        ("HMA VPN 20-30 Days", "HideMyAss VPN 20-30 days private account.", 250, "VPN"),
+        ("O365 Ready Account Random 6-12M", "Office 365 ready-made account random 6-12 months.", 400, "Office"),
+        ("Gemini API $10 1M", "Gemini API $10 credits valid 1 month.", 250, "Gemini"),
+        ("Gemini API $30 1M", "Gemini API $30 credits valid 1 month.", 350, "Gemini"),
+        ("Gemini API $50 1M", "Gemini API $50 credits valid 1 month.", 500, "Gemini"),
+        ("Discord Nitro Trial 3M", "Discord Nitro 3 Months trial link.", 750, "Discord"),
+        ("HMA Android/PC 20-30 Days", "HMA VPN Android & PC access 20-30 days.", 150, "VPN"),
+        ("Microsoft 365 Family 5U 12M", "Microsoft 365 Family 5 Users 12 Months.", 1200, "Office"),
+        ("Proton VPN Plus 1 Month", "Proton VPN Plus 1 Month subscription.", 325, "VPN"),
+        ("Proton Unlimited 1M", "Proton Unlimited 1 Month premium account.", 550, "VPN"),
+        ("Claude API 100M Tokens 3D", "Claude API 100M tokens valid 3 days.", 600, "Claude"),
+        ("Codex API 100M Tokens 1 Day", "Codex API 100M tokens valid 1 day.", 500, "Codex API"),
+        ("Discord Decor 66K Profile Effect", "Discord Profile Decor 66K points effect.", 600, "Discord"),
+        ("Discord Decor 79K Profile Effect", "Discord Profile Decor 79K points effect.", 650, "Discord"),
+        ("Discord Decor 92K Profile Effect", "Discord Profile Decor 92K points effect.", 750, "Discord"),
+
+        # Screenshot Page 5
+        ("Lovable Pro Lite 1 Year Link", "Lovable Pro Lite 1 Year activation invite link.", 800, "AI Tools"),
+        ("Netflix Premium 4K Slot 1M", "Netflix Premium 4K UHD private profile 1 month.", 650, "Streaming"),
+        ("CapCut Pro Team 1M", "CapCut Pro Team membership 1 month.", 270, "Video AI"),
+        ("Duolingo Super 12M", "Duolingo Super 12 Months subscription.", 65, "Education"),
+        ("Discord Gifting Badge x1", "Discord Gifting Badge x1 delivery.", 550, "Discord"),
+        ("CapCut Pro Professional 28 Days", "CapCut Pro Professional 28 days activation.", 250, "Video AI"),
+        ("Super Duolingo Your Mail 12 Months", "Duolingo Super 12 Months activated on your own email.", 900, "Education"),
+        ("Claude API 500M Tokens 6D", "Claude API 500M tokens valid 6 days.", 2300, "Claude"),
+        ("NordVPN Basic 3 Months Code", "NordVPN Basic 3 Months activation code.", 399, "VPN"),
+        ("LinkedIn Career 3M", "LinkedIn Premium Career 3 Months subscription.", 220, "Social"),
+        ("NordVPN 10 Devices 5M", "NordVPN 10 Devices support 5 Months.", 1500, "VPN"),
+        ("Notion Business 3M", "Notion Business Workspace 3 Months.", 199, "Office"),
+        ("NordVPN 10 Devices 3M", "NordVPN 10 Devices support 3 Months.", 1100, "VPN"),
+        ("Notion Plus 12 Months", "Notion Plus 12 Months subscription.", 250, "Office"),
+        ("Canva Pro Add to Team 12 Months", "Canva Pro Add to Team 12 Months membership.", 450, "Design"),
+
+        # Page 12 / Additional catalog services
+        ("Cursor Pro 1M", "Cursor Pro 1 Month premium subscription.", 990, "AI Tools"),
+        ("iCloud 2TB 1M", "Apple iCloud+ 2TB family slot 1 month.", 400, "Office"),
+        ("Apple Music 1M", "Apple Music individual 1 month subscription.", 200, "Music"),
+        ("Spotify Premium 12M", "Spotify Premium 12 Months individual plan.", 1200, "Music"),
+        ("YouTube Premium 12M", "YouTube Premium 12 Months individual subscription.", 1500, "Streaming"),
+        ("Windscribe VPN Pro 1Y", "Windscribe VPN Pro 1 Year unlimited data.", 1400, "VPN"),
+        ("TradingView Essential 1M", "TradingView Essential 1 Month subscription.", 750, "Office"),
+        ("GitHub Copilot 1M", "GitHub Copilot individual 1 Month subscription.", 400, "AI Tools"),
+        ("Perplexity Pro 1M", "Perplexity Pro 1 Month subscription access.", 500, "AI Tools"),
+
+        # Additional Assisted / API Keys
         ("Cursor Pro API 400 Credits/day 1 Month", "Cursor Pro dedicated API key with 400 credits/day refresh.", 1550, "AI Tools"),
         ("Cursor Pro API 6500 Credits 1 Month", "Cursor Pro high-volume 6500 credits 1 month plan.", 1550, "AI Tools"),
         ("Kimi GLM DeepSeek API 50M Tokens 2D", "High speed Kimi GLM DeepSeek API 50M Tokens 2 Days.", 300, "Codex API"),
         ("API QWEN Unlimited Tokens 7D", "Qwen API Unlimited tokens 7-day access.", 500, "AI Tools"),
         ("Kimi GLM DeepSeek API 100M Tokens 4D", "High speed Kimi GLM DeepSeek API 100M Tokens 4-day access.", 650, "Codex API"),
         ("Freepik Magnific API Panel 30D", "Freepik Magnific AI upscale & generator panel 30 days.", 500, "AI Tools"),
-        ("Discord Nitro 2M", "Discord Nitro 2 months subscription gift link.", 900, "Subscriptions"),
-        ("Notion Business Admin 1M", "Notion Business Workspace Admin 1 month.", 770, "Work & Office"),
-        ("iCloud 2TB 3M", "Apple iCloud+ 2TB Family storage access 3 months.", 1150, "Subscriptions"),
+        ("Discord Nitro 2M", "Discord Nitro 2 months subscription gift link.", 900, "Discord"),
+        ("Notion Business Admin 1M", "Notion Business Workspace Admin 1 month.", 770, "Office"),
+        ("iCloud 2TB 3M", "Apple iCloud+ 2TB Family storage access 3 months.", 1150, "Office"),
     ]
     for m_name, m_desc, m_price, m_cat in MANUAL_CATALOG_SEEDS:
         exists = db.execute("SELECT id FROM products WHERE name=?", (m_name,)).fetchone()
@@ -316,6 +413,10 @@ def migrate_db():
                 INSERT INTO products(name, description, price, category, auto_fulfill, active, delivery_type)
                 VALUES(?,?,?,?,0,1,'manual')
             """, (m_name, m_desc, m_price, m_cat))
+        else:
+            db.execute("""
+                UPDATE products SET category=?, description=COALESCE(description, ?) WHERE id=?
+            """, (m_cat, m_desc, exists["id"]))
 
     # Custom emojis table for original brand logos (Telegram custom emoji IDs)
     db.execute("""
@@ -622,11 +723,11 @@ def categories_kb(uid: int):
     return kb(rows)
 
 
-PAGE_SIZE = 12
+PAGE_SIZE = 15
 
 
 def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_prefix: str, back_cb: str) -> Tuple[str, InlineKeyboardMarkup]:
-    """1-column product list matching Screenshot 4."""
+    """1-column product list matching Screenshot style with green/red stock status buttons."""
     total_pages = max(1, (len(prods) + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(1, min(page, total_pages))
 
@@ -640,16 +741,32 @@ def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_pr
         cat_key = CAT_KEY_BY_NAME.get((p_cat or "").lower()) or CAT_KEY_BY_NAME.get(detect_category(p["name"]).lower())
         p_emoji_id = get_custom_emoji_id(cat_key) if cat_key else None
         icon = get_product_icon(p["name"], p_cat)
-        btn_text = f"{p['name']} · {usd(p['price'])} ✅" if p_emoji_id else f"{icon} {p['name']} · {usd(p['price'])} ✅"
-        rows.append([btn(btn_text, f"p:{p['id']}:{ctx_prefix}_{page}", style="success", emoji_id=p_emoji_id)])
+
+        is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
+        deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
+        sup_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
+        count = stock_count(p["id"]) if not is_auto else None
+
+        if not p["active"]:
+            is_avail = False
+        elif is_auto and sup_stock is not None and sup_stock <= 0:
+            is_avail = False
+        elif not is_auto and deliv_type != "manual" and db.execute("SELECT 1 FROM stock WHERE product_id=?", (p["id"],)).fetchone() and count == 0:
+            is_avail = False
+        else:
+            is_avail = True
+
+        status_mark = "✅" if is_avail else "❌"
+        btn_style = "success" if is_avail else "danger"
+
+        btn_text = f"{p['name']} · {usd(p['price'])} {status_mark}" if p_emoji_id else f"{icon} {p['name']} · {usd(p['price'])} {status_mark}"
+        rows.append([btn(btn_text, f"p:{p['id']}:{ctx_prefix}_{page}", style=btn_style, emoji_id=p_emoji_id)])
 
     if total_pages > 1:
         pag_row = []
-        if page > 1:
-            pag_row.append(btn("◀️", f"{cb_prefix}:{page - 1}", style="primary"))
+        pag_row.append(btn("◀️", f"{cb_prefix}:{page - 1}" if page > 1 else "noop", style="primary"))
         pag_row.append(btn(f"{page}/{total_pages}", "noop", style="primary"))
-        if page < total_pages:
-            pag_row.append(btn("▶️", f"{cb_prefix}:{page + 1}", style="primary"))
+        pag_row.append(btn("▶️", f"{cb_prefix}:{page + 1}" if page < total_pages else "noop", style="primary"))
         rows.append(pag_row)
 
     rows.append([
@@ -866,7 +983,7 @@ async def on_all_prods(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
     page = int(c.data.split(":")[1])
-    prods = db.execute("SELECT * FROM products WHERE active=1 ORDER BY id").fetchall()
+    prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
     text, markup = render_product_list(
         uid, prods, page=page,
         cb_prefix="allprods",
@@ -895,7 +1012,7 @@ async def on_search_page(c: CallbackQuery):
     _, term, page_str = c.data.split(":", 2)
     page = int(page_str)
     prods = db.execute(
-        "SELECT * FROM products WHERE active=1 AND (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY id",
+        "SELECT * FROM products WHERE (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY id",
         (f"%{term.lower()}%", f"%{term.lower()}%")
     ).fetchall()
     text, markup = render_product_list(
@@ -919,7 +1036,7 @@ async def on_product(c: CallbackQuery):
     parts = c.data.split(":", 2)
     pid = int(parts[1])
     ctx = parts[2] if len(parts) > 2 else "shop"
-    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
+    p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
     if not p:
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
     text, markup = render_product_card(uid, p, ctx)
@@ -1364,7 +1481,7 @@ async def handle_user_text_input(m: Message):
     elif action == "search":
         term = m.text.strip()
         prods = db.execute(
-            "SELECT * FROM products WHERE active=1 AND (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY id",
+            "SELECT * FROM products WHERE LOWER(name) LIKE ? OR LOWER(description) LIKE ? ORDER BY id",
             (f"%{term.lower()}%", f"%{term.lower()}%")
         ).fetchall()
         text, markup = render_product_list(
