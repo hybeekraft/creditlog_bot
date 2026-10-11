@@ -1165,6 +1165,121 @@ class TestFulfillmentStrategyModelAAndB(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.get_setting("fulfillment_mode"), "instant")
 
 
+class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        bot.db.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
+        bot.db.execute("DELETE FROM settings")
+
+    def test_render_fsub_gate_formatting(self):
+        channels = ["@Aristocrticc", "@geminiupdate"]
+        text, markup = bot.render_fsub_gate(channels)
+        self.assertIn("Free join required for use bot, please join.", text)
+        self.assertIn("1️⃣ <b>Channel:</b> @Aristocrticc", text)
+        self.assertIn("2️⃣ <b>Group:</b> @geminiupdate", text)
+        self.assertIn("Check Membership", text)
+
+        buttons = [b for row in markup.inline_keyboard for b in row]
+        self.assertEqual(len(buttons), 3)
+        self.assertEqual(buttons[0].text, "📢 Join Channel")
+        self.assertEqual(buttons[0].url, "https://t.me/Aristocrticc")
+        self.assertEqual(buttons[1].text, "💬 Join Group")
+        self.assertEqual(buttons[1].url, "https://t.me/geminiupdate")
+        self.assertEqual(buttons[2].text, "✅ Check Membership")
+        self.assertEqual(buttons[2].callback_data, "check_fsub")
+
+    async def test_admin_is_exempt_from_fsub(self):
+        mock_bot = AsyncMock()
+        admin_id = list(bot.ADMIN_IDS)[0] if bot.ADMIN_IDS else 99999
+        with patch.object(bot, "ADMIN_IDS", {admin_id}), \
+             patch.object(bot, "get_fsub_channels", return_value=["@Aristocrticc"]):
+            passed, missing = await bot.check_user_fsub(mock_bot, admin_id)
+            self.assertTrue(passed)
+            self.assertEqual(missing, [])
+            mock_bot.get_chat_member.assert_not_called()
+
+    async def test_non_member_fails_fsub(self):
+        mock_bot = AsyncMock()
+        mock_member = MagicMock()
+        mock_member.status = "left"
+        mock_bot.get_chat_member.return_value = mock_member
+
+        with patch.object(bot, "ADMIN_IDS", set()), \
+             patch.object(bot, "is_fsub_enabled", return_value=True), \
+             patch.object(bot, "get_fsub_channels", return_value=["@Aristocrticc"]):
+            passed, missing = await bot.check_user_fsub(mock_bot, 123456)
+            self.assertFalse(passed)
+            self.assertEqual(missing, ["@Aristocrticc"])
+
+    async def test_active_member_passes_fsub(self):
+        mock_bot = AsyncMock()
+        mock_member = MagicMock()
+        mock_member.status = "member"
+        mock_bot.get_chat_member.return_value = mock_member
+
+        with patch.object(bot, "ADMIN_IDS", set()), \
+             patch.object(bot, "is_fsub_enabled", return_value=True), \
+             patch.object(bot, "get_fsub_channels", return_value=["@Aristocrticc"]):
+            passed, missing = await bot.check_user_fsub(mock_bot, 123456)
+            self.assertTrue(passed)
+            self.assertEqual(missing, [])
+
+    async def test_on_check_fsub_callback(self):
+        c = MagicMock()
+        c.from_user.id = 123456
+        c.from_user.language_code = "en"
+        c.bot = AsyncMock()
+        c.answer = AsyncMock()
+
+        # 1. Not joined yet
+        with patch("bot.check_user_fsub", new=AsyncMock(return_value=(False, ["@Aristocrticc"]))), \
+             patch("bot.edit", new=AsyncMock()) as mock_edit:
+            await bot.on_check_fsub(c)
+            self.assertTrue(c.answer.called)
+            self.assertIn("not joined", c.answer.call_args[0][0].lower())
+            self.assertTrue(mock_edit.called)
+
+        # 2. Joined
+        with patch("bot.check_user_fsub", new=AsyncMock(return_value=(True, []))), \
+             patch("bot.edit", new=AsyncMock()) as mock_edit:
+            await bot.on_check_fsub(c)
+            self.assertTrue(c.answer.called)
+            self.assertIn("verified", c.answer.call_args[0][0].lower())
+            self.assertTrue(mock_edit.called)
+
+    async def test_admin_fsub_management_commands(self):
+        m = MagicMock()
+        m.answer = AsyncMock()
+
+        # View status
+        await bot.admin_fsub(m, None)
+        self.assertIn("Force-Subscribe", m.answer.call_args[0][0])
+
+        # Enable / Disable
+        cmd = MagicMock()
+        cmd.args = "off"
+        await bot.admin_fsub(m, cmd)
+        self.assertEqual(bot.get_setting("fsub_enabled"), "0")
+
+        cmd.args = "on"
+        await bot.admin_fsub(m, cmd)
+        self.assertEqual(bot.get_setting("fsub_enabled"), "1")
+
+        # Set channels
+        cmd.args = "set @chan1,@chan2"
+        await bot.admin_fsub(m, cmd)
+        self.assertEqual(bot.get_fsub_channels(), ["@chan1", "@chan2"])
+
+        # Add channel
+        cmd.args = "add @chan3"
+        await bot.admin_fsub(m, cmd)
+        self.assertIn("@chan3", bot.get_fsub_channels())
+
+        # Remove channel
+        cmd.args = "remove @chan1"
+        await bot.admin_fsub(m, cmd)
+        self.assertNotIn("@chan1", bot.get_fsub_channels())
+
+
 if __name__ == "__main__":
     unittest.main()
 

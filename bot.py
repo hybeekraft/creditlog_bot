@@ -44,6 +44,7 @@ def is_admin(m: Message) -> bool:
     return bool(m.from_user and m.from_user.id in ADMIN_IDS)
 SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/your_support")
 CHANNEL_URL = os.environ.get("CHANNEL_URL", "https://t.me/your_channel")
+REQUIRED_CHANNELS_RAW = os.environ.get("REQUIRED_CHANNELS", "").strip()
 LOW_STOCK = int(os.environ.get("LOW_STOCK", "2"))
 DB_PATH = os.environ.get("DB_PATH", "store.db")
 PORT = int(os.environ.get("PORT", "8080"))
@@ -158,6 +159,97 @@ def set_setting(key: str, value: str):
             "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value)
         )
+
+
+# --------------------------------------------------------------------------
+# Force Subscribe (Mandatory Channel/Group Join Gate)
+# --------------------------------------------------------------------------
+NUM_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+
+
+def get_fsub_channels() -> List[str]:
+    raw = get_setting("fsub_channels", REQUIRED_CHANNELS_RAW)
+    if not raw:
+        return []
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
+def is_fsub_enabled() -> bool:
+    channels = get_fsub_channels()
+    if not channels:
+        return False
+    return get_setting("fsub_enabled", "1" if channels else "0") == "1"
+
+
+def set_fsub_channels(channels: List[str]):
+    set_setting("fsub_channels", ",".join(channels))
+
+
+def set_fsub_enabled(enabled: bool):
+    set_setting("fsub_enabled", "1" if enabled else "0")
+
+
+def render_fsub_gate(channels: List[str]) -> Tuple[str, InlineKeyboardMarkup]:
+    """Renders mandatory join message and action buttons matching Telegram FSUB design."""
+    lines = ["🔒 <b>Free join required for use bot, please join.</b>\n"]
+    rows = []
+    for i, ch in enumerate(channels):
+        num_icon = NUM_EMOJIS[i] if i < len(NUM_EMOJIS) else f"{i+1}️⃣"
+        name_clean = ch.strip()
+        url = name_clean
+        if not url.startswith("http"):
+            username = name_clean.lstrip("@")
+            url = f"https://t.me/{username}"
+
+        is_group = "group" in name_clean.lower() or "chat" in name_clean.lower() or i == 1
+        label_type = "Group" if is_group else "Channel"
+        lines.append(f"{num_icon} <b>{label_type}:</b> {esc(name_clean)}")
+
+        btn_title = "💬 Join Group" if is_group else "📢 Join Channel"
+        rows.append([btn(btn_title, url=url, style="primary")])
+
+    lines.append("\nAfter joining, tap <b>✅ Check Membership</b> below.")
+    rows.append([btn("✅ Check Membership", "check_fsub", style="success")])
+    return "\n".join(lines), kb(rows)
+
+
+async def check_user_fsub(bot_inst: Bot, uid: int) -> Tuple[bool, List[str]]:
+    """
+    Checks if user has joined all required channels/groups.
+    Admins are always exempt.
+    Returns (passed: bool, missing_channels: List[str]).
+    """
+    if uid in ADMIN_IDS:
+        return True, []
+    if not is_fsub_enabled():
+        return True, []
+    channels = get_fsub_channels()
+    if not channels:
+        return True, []
+
+    missing = []
+    for ch in channels:
+        target = ch.strip()
+        if not target:
+            continue
+        if target.startswith("https://t.me/"):
+            target = "@" + target.replace("https://t.me/", "").rstrip("/")
+        if not target.startswith("@") and not target.startswith("-100") and not target.lstrip("-").isdigit():
+            target = f"@{target}"
+        try:
+            member = await bot_inst.get_chat_member(chat_id=target, user_id=uid)
+            status = getattr(member, "status", None)
+            if status in ("left", "kicked"):
+                missing.append(ch)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "user not found" in err_str or "participant_id_invalid" in err_str or "user_not_participant" in err_str:
+                missing.append(ch)
+            elif "not enough rights" in err_str or "bot is not a member" in err_str or "chat not found" in err_str:
+                log.warning("FSUB: Bot cannot check %s (%s). Please verify bot is admin in the chat.", ch, e)
+            else:
+                log.debug("FSUB check error for %s: %s", ch, e)
+    return len(missing) == 0, missing
 
 
 async def check_supplier_balance_sufficient(sup_client: ResellerClient, cost_usd: float) -> Tuple[bool, float]:
@@ -1370,8 +1462,13 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
 @dp.message(Command("menu"))
 async def start(m: Message):
     pending_inputs.pop(m.from_user.id, None)
-    get_user(m.from_user.id, m.from_user.language_code)
-    await m.answer(t(m.from_user.id, "welcome"), reply_markup=home_kb(m.from_user.id))
+    uid = m.from_user.id
+    get_user(uid, m.from_user.language_code)
+    passed, missing = await check_user_fsub(m.bot, uid)
+    if not passed:
+        text, markup = render_fsub_gate(missing)
+        return await m.answer(text, reply_markup=markup)
+    await m.answer(t(uid, "welcome"), reply_markup=home_kb(uid))
 
 
 @dp.message(Command("shop"))
@@ -1379,6 +1476,10 @@ async def cmd_shop(m: Message):
     pending_inputs.pop(m.from_user.id, None)
     uid = m.from_user.id
     get_user(uid, m.from_user.language_code)
+    passed, missing = await check_user_fsub(m.bot, uid)
+    if not passed:
+        text, markup = render_fsub_gate(missing)
+        return await m.answer(text, reply_markup=markup)
     await m.answer(t(uid, "cat_title"), reply_markup=categories_kb(uid))
 
 
@@ -1386,6 +1487,10 @@ async def cmd_shop(m: Message):
 async def home(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
+    passed, missing = await check_user_fsub(c.bot, uid)
+    if not passed:
+        text, markup = render_fsub_gate(missing)
+        return await edit(c, text, markup)
     await edit(c, t(uid, "welcome"), home_kb(uid))
 
 
@@ -1393,13 +1498,39 @@ async def home(c: CallbackQuery):
 async def shop(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
+    passed, missing = await check_user_fsub(c.bot, uid)
+    if not passed:
+        text, markup = render_fsub_gate(missing)
+        return await edit(c, text, markup)
     await edit(c, t(uid, "cat_title"), categories_kb(uid))
+
+
+@dp.callback_query(F.data == "check_fsub")
+async def on_check_fsub(c: CallbackQuery):
+    uid = c.from_user.id
+    passed, missing = await check_user_fsub(c.bot, uid)
+    if passed:
+        await c.answer("✅ Membership verified! Welcome to the store.", show_alert=False)
+        pending_inputs.pop(uid, None)
+        get_user(uid, c.from_user.language_code)
+        await edit(c, t(uid, "welcome"), home_kb(uid))
+    else:
+        await c.answer("⚠️ You have not joined all required channels/groups yet. Please join and try again!", show_alert=True)
+        text, markup = render_fsub_gate(missing)
+        try:
+            await edit(c, text, markup)
+        except Exception:
+            pass
 
 
 @dp.callback_query(F.data.startswith("cat:"))
 async def on_category(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
+    passed, missing = await check_user_fsub(c.bot, uid)
+    if not passed:
+        text, markup = render_fsub_gate(missing)
+        return await edit(c, text, markup)
     parts = c.data.split(":")
     key = parts[1]
     page = int(parts[2]) if len(parts) > 2 else 1
@@ -2211,6 +2342,15 @@ async def manual_pay_info(c: CallbackQuery):
 async def recent_purchases(event: Message | CallbackQuery):
     """View recent purchases for the current user."""
     uid = event.from_user.id
+    bot_obj = event.bot
+    passed, missing = await check_user_fsub(bot_obj, uid)
+    if not passed:
+        text, markup = render_fsub_gate(missing)
+        if isinstance(event, CallbackQuery):
+            return await edit(event, text, markup)
+        else:
+            return await event.answer(text, reply_markup=markup)
+
     rows = db.execute(
         "SELECT * FROM orders WHERE user_id=? AND payload IS NOT NULL AND status='completed' ORDER BY id DESC LIMIT 10",
         (uid,)
@@ -2295,8 +2435,66 @@ async def admin_help(m: Message):
         "/s_orders - Recent supplier orders\n\n"
         "⚡ <b>Fulfillment & Approval</b>\n"
         "/approve &lt;order_id&gt; - Approve & buy from supplier after top-up\n"
-        "/deliver &lt;order_id&gt; &lt;item&gt; - Deliver manually to buyer"
+        "/deliver &lt;order_id&gt; &lt;item&gt; - Deliver manually to buyer\n\n"
+        "🔒 <b>Force-Subscription (FSUB)</b>\n"
+        "/fsub - View status & manage mandatory join channels"
     )
+
+
+@dp.message(Command("fsub"), is_admin)
+async def admin_fsub(m: Message, command: CommandObject = None):
+    args = (command.args or "").strip() if command else ""
+    if not args:
+        enabled = is_fsub_enabled()
+        channels = get_fsub_channels()
+        ch_list = "\n".join(f"  {i+1}. <code>{esc(c)}</code>" for i, c in enumerate(channels)) if channels else "  <i>None configured</i>"
+        status_badge = "🟢 <b>Enabled</b>" if enabled else "🔴 <b>Disabled</b>"
+        return await m.answer(
+            f"🔒 <b>Force-Subscribe (FSUB) Management</b>\n"
+            f"────────────────────────\n"
+            f"• <b>Status:</b> {status_badge}\n"
+            f"• <b>Required Channels/Groups:</b>\n{ch_list}\n"
+            f"────────────────────────\n"
+            f"<b>Commands:</b>\n"
+            f"• <code>/fsub on</code> — Enable gate\n"
+            f"• <code>/fsub off</code> — Disable gate\n"
+            f"• <code>/fsub add &lt;@channel_or_group&gt;</code> — Add channel\n"
+            f"• <code>/fsub remove &lt;@channel_or_group&gt;</code> — Remove channel\n"
+            f"• <code>/fsub set &lt;@c1,@c2&gt;</code> — Replace all channels\n\n"
+            f"💡 <i>Tip: The bot must be an Administrator in the required channels/groups to check membership!</i>"
+        )
+
+    parts = args.split(maxsplit=1)
+    subcmd = parts[0].lower()
+    subarg = parts[1].strip() if len(parts) > 1 else ""
+
+    if subcmd == "on":
+        set_fsub_enabled(True)
+        return await m.answer("✅ Force-Subscription is now <b>ENABLED</b>.")
+    elif subcmd == "off":
+        set_fsub_enabled(False)
+        return await m.answer("🔴 Force-Subscription is now <b>DISABLED</b>.")
+    elif subcmd == "add" and subarg:
+        channels = get_fsub_channels()
+        if subarg not in channels:
+            channels.append(subarg)
+            set_fsub_channels(channels)
+            set_fsub_enabled(True)
+            return await m.answer(f"✅ Added <code>{esc(subarg)}</code> to required channels. FSUB is active.")
+        return await m.answer(f"ℹ️ <code>{esc(subarg)}</code> is already in the list.")
+    elif subcmd == "remove" and subarg:
+        channels = get_fsub_channels()
+        target = subarg.lower()
+        new_channels = [c for c in channels if c.lower() != target and c.lstrip("@").lower() != target.lstrip("@")]
+        set_fsub_channels(new_channels)
+        return await m.answer(f"✅ Removed <code>{esc(subarg)}</code>. Remaining: {len(new_channels)} channels.")
+    elif subcmd == "set" and subarg:
+        new_channels = [c.strip() for c in subarg.split(",") if c.strip()]
+        set_fsub_channels(new_channels)
+        set_fsub_enabled(True)
+        return await m.answer(f"✅ Configured {len(new_channels)} required channels: {', '.join(new_channels)}")
+    else:
+        return await m.answer("Usage: /fsub [on | off | add <@channel> | remove <@channel> | set <@c1,@c2>]")
 
 
 @dp.message(Command("setemoji"), is_admin)
