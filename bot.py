@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
@@ -28,6 +29,7 @@ from dotenv import load_dotenv
 
 from reseller import ResellerClient, ResellerAPIError, SupplierRegistry
 import onchain
+import binance_pay
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -71,6 +73,14 @@ CRYPTOBOT_TOKEN = os.environ.get("CRYPTOBOT_TOKEN", "")
 BINANCE_PAY_ID = (os.environ.get("BINANCE_PAY_ID", "") or "").strip()
 if not BINANCE_PAY_ID or BINANCE_PAY_ID.startswith("your_"):
     BINANCE_PAY_ID = "76177351"  # Default from store design
+
+# Binance Pay Merchant API Credentials (Optional - enables automated checkout & instant verification)
+BINANCE_PAY_API_KEY = (os.environ.get("BINANCE_PAY_API_KEY", "") or "").strip()
+BINANCE_PAY_SECRET_KEY = (os.environ.get("BINANCE_PAY_SECRET_KEY", "") or "").strip()
+binance_client = binance_pay.BinancePayClient(
+    api_key=BINANCE_PAY_API_KEY,
+    secret_key=BINANCE_PAY_SECRET_KEY,
+)
 
 # USDT Addresses
 CRYPTO_USDT_BEP20 = (os.environ.get("CRYPTO_USDT_BEP20", "") or "").strip()
@@ -1608,8 +1618,45 @@ async def on_pay_option_selected(c: CallbackQuery):
         ]
         return await edit(c, text, kb(rows))
 
-    # 2. Binance Pay (Screenshot 1)
+    # 2. Binance Pay
     if method == "binance":
+        if binance_client.is_configured():
+            trade_no = f"CL_{oid}_{int(time.time())}"
+            ok, bdata, err = await binance_client.create_order(
+                merchant_trade_no=trade_no,
+                amount_usd=total_cents / 100.0,
+                goods_name=p["name"],
+                goods_id=str(pid),
+                goods_detail=f"Order #{oid}: {p['name']} x{qty}",
+            )
+            if ok:
+                prepay_id = bdata.get("prepayId")
+                pay_url = bdata.get("universalUrl") or bdata.get("checkoutUrl") or bdata.get("deeplink")
+                db.execute(
+                    "UPDATE orders SET invoice_id=?, expected_amount=? WHERE id=?",
+                    (str(prepay_id), f"{total_usdt} USDT", oid)
+                )
+                text = (
+                    "<u>🟡 <b>Binance Pay Checkout</b></u>\n"
+                    "────────────────────────\n\n"
+                    f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
+                    f"🔢 <b>Quantity:</b> {qty}\n"
+                    f"➡️ <b>Total to pay:</b> <b>${total_usdt} USDT</b>\n"
+                    "────────────────────────\n\n"
+                    f"1. Tap <b>Pay ${total_usdt} in Binance App</b> below.\n"
+                    "2. Complete payment in your Binance app.\n"
+                    "3. Return and tap <b>I've Paid — Check Status</b> for instant delivery!"
+                )
+                rows = [
+                    [btn(f"💳 Pay ${total_usdt} in Binance App", url=pay_url, style="success")],
+                    [btn("✅ I've Paid — Check Status", f"chk_bpay:{oid}:{prepay_id}", style="success")],
+                    [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+                    [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
+                ]
+                return await edit(c, text, kb(rows))
+            else:
+                log.warning("Binance Pay order creation failed (%s), falling back to Pay ID", err)
+
         text = (
             "<u>🟡 <b>Binance Pay</b></u>\n"
             "────────────────────────\n"
@@ -1807,10 +1854,19 @@ async def on_check_manual_status(c: CallbackQuery):
         await edit(c, t(uid, "purchased", oid=oid, payload=esc(o["payload"])), kb([[btn(t(uid, "btn_back"), "home", style="primary")]]))
         return await c.answer("✅ Order completed and delivered!", show_alert=True)
 
+    method = (o["payment_method"] or "").lower()
     if not o["txid"]:
+        if "binance" in method and binance_client.is_configured() and o["invoice_id"]:
+            ok, bdata, _ = await binance_client.query_order(prepay_id=o["invoice_id"])
+            if ok and bdata.get("status") in ("PAID", "SUCCESS"):
+                txid = bdata.get("transactionId") or o["invoice_id"]
+                db.execute("UPDATE orders SET txid=?, status='paid' WHERE id=?", (txid, oid))
+                payload, err = await fulfill_order(c.bot, oid)
+                if payload and payload != "MANUAL_PENDING":
+                    await edit(c, t(uid, "purchased", oid=oid, payload=esc(payload)), kb([[btn(t(uid, "btn_back"), "home", style="primary")]]))
+                    return await c.answer("✅ Verified via Binance Pay and delivered!", show_alert=True)
         return await c.answer("⚠️ Please tap 'Submit Transaction ID' first so we can verify your payment.", show_alert=True)
 
-    method = (o["payment_method"] or "").lower()
     if "bep20" in method or "trc20" in method:
         verified, result = await check_and_fulfill_onchain(oid, o["txid"], uid, c.bot)
         if verified and result == "VERIFIED_AND_DELIVERED":
@@ -1818,6 +1874,15 @@ async def on_check_manual_status(c: CallbackQuery):
             if comp_o and comp_o["payload"] and comp_o["payload"] != "MANUAL_PENDING":
                 await edit(c, t(uid, "purchased", oid=oid, payload=esc(comp_o["payload"])), kb([[btn(t(uid, "btn_back"), "home", style="primary")]]))
                 return await c.answer("✅ Verified on blockchain and delivered!", show_alert=True)
+    elif "binance" in method and binance_client.is_configured():
+        ok, bdata, _ = await binance_client.query_order(prepay_id=o["invoice_id"] if o["invoice_id"] else o["txid"])
+        if ok and bdata.get("status") in ("PAID", "SUCCESS"):
+            txid = bdata.get("transactionId") or o["txid"]
+            db.execute("UPDATE orders SET txid=?, status='paid' WHERE id=?", (txid, oid))
+            payload, err = await fulfill_order(c.bot, oid)
+            if payload and payload != "MANUAL_PENDING":
+                await edit(c, t(uid, "purchased", oid=oid, payload=esc(payload)), kb([[btn(t(uid, "btn_back"), "home", style="primary")]]))
+                return await c.answer("✅ Verified via Binance Pay and delivered!", show_alert=True)
 
     return await c.answer("⏳ Your payment is currently under verification. You will receive your item automatically once confirmed!", show_alert=True)
 
@@ -1973,6 +2038,37 @@ async def handle_user_text_input(m: Message):
                 else:
                     return await m.answer(f"✅ {result}")
 
+        elif "binance" in method and binance_client.is_configured():
+            verif_msg = await m.answer("🔍 <i>Verifying with Binance Pay...</i>")
+            target_prepay = o["invoice_id"] if o["invoice_id"] else txid
+            ok, bdata, _ = await binance_client.query_order(prepay_id=target_prepay)
+            try:
+                await verif_msg.delete()
+            except Exception:
+                pass
+
+            if ok and bdata.get("status") in ("PAID", "SUCCESS"):
+                b_txid = bdata.get("transactionId") or txid
+                db.execute("UPDATE orders SET txid=?, status='paid' WHERE id=?", (b_txid, oid))
+                payload, err = await fulfill_order(m.bot, oid)
+                if payload == "MANUAL_PENDING":
+                    return await m.answer(
+                        f"🎉 <b>Payment Verified via Binance Pay for Order #{oid}!</b>\n\n"
+                        f"Item: <b>{esc(o['product_name'])}</b>\n\n"
+                        f"🟡 <i>This product is an assisted/manual setup service. Our support team has received your order and will deliver your credentials or setup link directly to you here shortly!</i>\n\n"
+                        f"If you have any questions, contact Support: {SUPPORT_URL}"
+                    )
+                elif payload:
+                    await notify_admins(
+                        m.bot,
+                        f"⚡ <b>Auto-Verified via Binance Pay & Delivered!</b>\n"
+                        f"• <b>Order:</b> #{oid}\n"
+                        f"• <b>Product:</b> {esc(o['product_name'])}\n"
+                        f"• <b>Amount:</b> {usd(o['price'])}\n"
+                        f"• <b>Binance TxID:</b> <code>{esc(b_txid)}</code>"
+                    )
+                    return await m.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
+
         # Fallback to admin review (e.g. for Binance Pay or if block confirmation is still pending)
         await m.answer(
             f"✅ <b>Transaction ID Received!</b>\n\n"
@@ -2105,6 +2201,51 @@ async def check_cryptobot_payment(c: CallbackQuery):
             await notify_admins(c.bot, f"⚠️ Order #{oid} paid via @CryptoBot by user {uid} but delivery failed: {err}")
     else:
         await c.answer(t(uid, "pay_pending"), show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("chk_bpay:"))
+async def check_binance_pay_payment(c: CallbackQuery):
+    parts = c.data.split(":")
+    oid = int(parts[1])
+    prepay_id = parts[2] if len(parts) > 2 else None
+    uid = c.from_user.id
+
+    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o:
+        return await c.answer("Order not found.", show_alert=True)
+    if o["status"] == "completed" and o["payload"]:
+        await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
+        return await c.answer()
+
+    target_prepay = prepay_id or o["invoice_id"]
+    ok, data, err = await binance_client.query_order(prepay_id=target_prepay)
+    if ok and data.get("status") in ("PAID", "SUCCESS"):
+        txid = data.get("transactionId") or target_prepay or f"BPAY_{oid}"
+        db.execute("UPDATE orders SET txid=?, status='paid' WHERE id=?", (txid, oid))
+        payload, err = await fulfill_order(c.bot, oid)
+        if payload == "MANUAL_PENDING":
+            await c.message.answer(
+                f"🎉 <b>Payment Confirmed for Order #{oid}!</b>\n\n"
+                f"Item: <b>{esc(o['product_name'])}</b>\n\n"
+                f"🟡 <i>This product is an assisted/manual setup service. Our support team has received your order and will deliver your credentials or setup link directly to you here shortly!</i>\n\n"
+                f"If you have any questions, contact Support: {SUPPORT_URL}"
+            )
+            await notify_admins(c.bot, f"🔔 <b>New Paid Manual Order #{oid}</b>\n• Item: <b>{esc(o['product_name'])}</b>\n• Buyer: <code>{uid}</code>\n• Paid: {usd(o['price'])}\n• Method: <b>Binance Pay</b>\n• TxID: <code>{txid}</code>\n👉 Use <code>/deliver {oid} &lt;credentials/link&gt;</code> to complete.")
+            return await c.answer("✅ Payment Confirmed!", show_alert=True)
+        elif payload:
+            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
+            await notify_admins(c.bot, f"✅ Order #{oid} auto-paid via Binance Pay & delivered: {esc(o['product_name'])} ({usd(o['price'])}) to user {uid}\n• TxID: <code>{txid}</code>")
+            return await c.answer("✅ Delivered!", show_alert=True)
+        else:
+            await c.answer(t(uid, err or "supplier_error"), show_alert=True)
+            await notify_admins(c.bot, f"⚠️ Order #{oid} paid via Binance Pay by user {uid} but delivery failed: {err}")
+            return
+    elif ok and data.get("status") in ("INITIAL", "PENDING"):
+        return await c.answer(t(uid, "pay_pending"), show_alert=True)
+    elif ok and data.get("status") in ("EXPIRED", "CANCELED"):
+        return await c.answer(f"❌ Order is {data.get('status').lower()}.", show_alert=True)
+    else:
+        return await c.answer(t(uid, "pay_pending"), show_alert=True)
 
 
 @dp.callback_query(F.data.startswith("manual_pay:"))
@@ -2822,17 +2963,60 @@ async def periodic_supplier_sync(interval_sec: int = 600):
             log.warning("Periodic supplier sync encountered error: %s", e)
 
 
+async def handle_binance_pay_webhook(request: web.Request) -> web.Response:
+    try:
+        body_bytes = await request.read()
+        body_str = body_bytes.decode("utf-8")
+        headers = request.headers
+        ts = headers.get("BinancePay-Timestamp", "")
+        nonce = headers.get("BinancePay-Nonce", "")
+        sig = headers.get("BinancePay-Signature", "")
+
+        if binance_client.is_configured() and sig:
+            if not binance_client.verify_webhook_signature(ts, nonce, body_str, sig):
+                log.warning("Binance webhook invalid signature")
+                return web.json_response({"returnCode": "FAIL", "returnMessage": "Invalid signature"}, status=400)
+
+        data = json.loads(body_str) if body_str else {}
+        if data.get("bizStatus") == "PAY_SUCCESS":
+            raw_data = data.get("data")
+            inner = json.loads(raw_data) if isinstance(raw_data, str) else (raw_data or {})
+            trade_no = str(inner.get("merchantTradeNo", ""))
+            txid = str(inner.get("transactionId") or "")
+            oid = None
+            if trade_no.startswith("CL_"):
+                parts = trade_no.split("_")
+                if len(parts) >= 2 and parts[1].isdigit():
+                    oid = int(parts[1])
+
+            if oid:
+                o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+                if o and o["status"] != "completed":
+                    db.execute("UPDATE orders SET txid=?, status='paid' WHERE id=? AND status='pending'", (txid or trade_no, oid))
+                    bot_inst = request.app.get("bot")
+                    if bot_inst:
+                        asyncio.create_task(fulfill_order(bot_inst, oid))
+                        log.info("Binance webhook fulfilled Order #%s", oid)
+
+        return web.json_response({"returnCode": "SUCCESS", "returnMessage": None})
+    except Exception as e:
+        log.exception("Binance Pay webhook handler error: %s", e)
+        return web.json_response({"returnCode": "FAIL", "returnMessage": str(e)}, status=500)
+
+
 # --------------------------------------------------------------------------
 # Entrypoint
 # --------------------------------------------------------------------------
 async def main():
     bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     app = web.Application()
+    app["bot"] = bot
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
+    app.router.add_post("/binancepay/webhook", handle_binance_pay_webhook)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    log.info("Health check server listening on :%s", PORT)
+    log.info("Health check & webhook server listening on :%s", PORT)
 
     # Initial sync with reseller API on startup
     try:

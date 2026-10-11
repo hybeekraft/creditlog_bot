@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sqlite3
 import unittest
@@ -1080,6 +1081,205 @@ class TestOnChainVerification(unittest.IsolatedAsyncioTestCase):
             ok2, res2 = await bot.check_and_fulfill_onchain(502, valid_hash, 888, mock_bot)
             self.assertFalse(ok2)
             self.assertIn("already claimed", res2)
+
+
+class TestBinancePayIntegration(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        import binance_pay
+        self.bp = binance_pay
+        self.client = binance_pay.BinancePayClient(
+            api_key="test_api_key_123",
+            secret_key="test_secret_key_456",
+        )
+
+    def test_client_is_configured(self):
+        self.assertTrue(self.client.is_configured())
+        unconfigured = self.bp.BinancePayClient(api_key="", secret_key="")
+        self.assertFalse(unconfigured.is_configured())
+        dummy = self.bp.BinancePayClient(api_key="your_key", secret_key="your_secret")
+        self.assertFalse(dummy.is_configured())
+
+    def test_build_headers_and_signature(self):
+        body = '{"merchantTradeNo":"CL_100","orderAmount":5.0}'
+        ts = "1700000000000"
+        nonce = "abcdefghijklmnopqrstuvwxyz123456"
+        headers = self.client.build_headers(body, timestamp=ts, nonce=nonce)
+
+        self.assertEqual(headers["Content-Type"], "application/json")
+        self.assertEqual(headers["BinancePay-Timestamp"], ts)
+        self.assertEqual(headers["BinancePay-Nonce"], nonce)
+        self.assertEqual(headers["BinancePay-Certificate-SN"], "test_api_key_123")
+        self.assertTrue(headers["BinancePay-Signature"].isupper())
+        # Signature should match HMAC-SHA512
+        import hmac, hashlib
+        expected_sig = hmac.new(
+            b"test_secret_key_456",
+            f"{ts}\n{nonce}\n{body}\n".encode("utf-8"),
+            hashlib.sha512
+        ).hexdigest().upper()
+        self.assertEqual(headers["BinancePay-Signature"], expected_sig)
+
+    def test_verify_webhook_signature(self):
+        body = '{"bizStatus":"PAY_SUCCESS"}'
+        ts = "1700000000000"
+        nonce = "abcdefghijklmnopqrstuvwxyz123456"
+        headers = self.client.build_headers(body, timestamp=ts, nonce=nonce)
+        valid = self.client.verify_webhook_signature(ts, nonce, body, headers["BinancePay-Signature"])
+        self.assertTrue(valid)
+
+        invalid = self.client.verify_webhook_signature(ts, nonce, body, "WRONGSIGNATURE")
+        self.assertFalse(invalid)
+
+    async def test_create_order_success(self):
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={
+            "status": "SUCCESS",
+            "code": "000000",
+            "data": {
+                "prepayId": "BPAY_PREPAY_999",
+                "universalUrl": "https://app.binance.com/qr/dplk_test",
+                "checkoutUrl": "https://pay.binance.com/checkout_test",
+            }
+        })
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_resp
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.post.return_value = cm
+
+        ok, data, err = await self.client.create_order(
+            merchant_trade_no="CL_123_test",
+            amount_usd=10.50,
+            goods_name="ChatGPT Plus",
+            session=mock_session
+        )
+        self.assertTrue(ok)
+        self.assertEqual(data["prepayId"], "BPAY_PREPAY_999")
+        self.assertEqual(data["universalUrl"], "https://app.binance.com/qr/dplk_test")
+        self.assertEqual(err, "")
+
+    async def test_query_order_paid(self):
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={
+            "status": "SUCCESS",
+            "code": "000000",
+            "data": {
+                "status": "PAID",
+                "transactionId": "TXN_BINANCE_777",
+                "orderAmount": "10.50",
+            }
+        })
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_resp
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.post.return_value = cm
+
+        ok, data, err = await self.client.query_order(prepay_id="BPAY_PREPAY_999", session=mock_session)
+        self.assertTrue(ok)
+        self.assertEqual(data["status"], "PAID")
+        self.assertEqual(data["transactionId"], "TXN_BINANCE_777")
+
+    async def test_bot_binance_pay_automated_checkout(self):
+        # Create product
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active, auto_fulfill, delivery_type) VALUES(80, 'Binance Auto Prod', 1500, 1, 0, 'auto')")
+        bot.db.execute("INSERT INTO stock(product_id, payload, sold) VALUES(80, 'BPAY-KEY-001', 0)")
+
+        c = MagicMock()
+        c.data = "pay_opt:binance:80:1:shop"
+        c.from_user.id = 555
+        c.message.message_id = 101
+
+        with patch.object(bot.binance_client, "is_configured", return_value=True), \
+             patch.object(bot.binance_client, "create_order", new=AsyncMock(return_value=(
+                 True,
+                 {"prepayId": "PREPAY_888", "universalUrl": "https://app.binance.com/qr/test888"},
+                 ""
+             ))), \
+             patch("bot.edit", new=AsyncMock()) as mock_edit:
+            await bot.on_pay_option_selected(c)
+
+            self.assertTrue(mock_edit.called)
+            edit_text = mock_edit.call_args[0][1]
+            markup = mock_edit.call_args[0][2]
+
+            self.assertIn("Binance Pay Checkout", edit_text)
+            self.assertIn("15.00 USDT", edit_text)
+
+            # Check buttons: pay link and check status button
+            urls = [b.url for row in markup.inline_keyboard for b in row if b.url]
+            cdata = [b.callback_data for row in markup.inline_keyboard for b in row if b.callback_data]
+            self.assertIn("https://app.binance.com/qr/test888", urls)
+            self.assertTrue(any(d.startswith("chk_bpay:") for d in cdata))
+
+    async def test_bot_chk_bpay_fulfills_and_delivers(self):
+        # Insert product, stock, and pending order
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active, auto_fulfill, delivery_type) VALUES(81, 'BPay Item', 500, 1, 0, 'auto')")
+        bot.db.execute("INSERT INTO stock(product_id, payload, sold) VALUES(81, 'BPAY-DELIVERY-TOKEN', 0)")
+        cur = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, status, payment_method, invoice_id) "
+            "VALUES(555, 81, 'BPay Item', 500, 1, 'pending', 'binance', 'PREPAY_999')"
+        )
+        oid = cur.lastrowid
+
+        c = MagicMock()
+        c.data = f"chk_bpay:{oid}:PREPAY_999"
+        c.from_user.id = 555
+        c.bot = AsyncMock()
+        c.message.answer = AsyncMock()
+        c.answer = AsyncMock()
+
+        with patch.object(bot.binance_client, "query_order", new=AsyncMock(return_value=(
+            True,
+            {"status": "PAID", "transactionId": "BINANCE_TX_SUCCESS"},
+            ""
+        ))):
+            await bot.check_binance_pay_payment(c)
+
+            o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+            self.assertEqual(o["status"], "completed")
+            self.assertEqual(o["payload"], "BPAY-DELIVERY-TOKEN")
+            self.assertEqual(o["txid"], "BINANCE_TX_SUCCESS")
+            self.assertTrue(c.message.answer.called)
+            answer_text = c.message.answer.call_args[0][0]
+            self.assertIn("BPAY-DELIVERY-TOKEN", answer_text)
+
+    async def test_bot_binance_pay_webhook_fulfills_order(self):
+        # Create product, stock, and pending order
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active, auto_fulfill, delivery_type) VALUES(82, 'Webhook Item', 800, 1, 0, 'auto')")
+        bot.db.execute("INSERT INTO stock(product_id, payload, sold) VALUES(82, 'WEBHOOK-TOKEN-999', 0)")
+        cur = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, status, payment_method) "
+            "VALUES(555, 82, 'Webhook Item', 800, 1, 'pending', 'binance')"
+        )
+        oid = cur.lastrowid
+
+        import json
+        webhook_body = json.dumps({
+            "bizStatus": "PAY_SUCCESS",
+            "data": json.dumps({
+                "merchantTradeNo": f"CL_{oid}_1700000000",
+                "transactionId": "TX_WEBHOOK_123",
+            })
+        }).encode("utf-8")
+
+        mock_request = MagicMock()
+        mock_request.read = AsyncMock(return_value=webhook_body)
+        mock_request.headers = {}
+        mock_request.app = {"bot": AsyncMock()}
+
+        with patch.object(bot.binance_client, "is_configured", return_value=False):
+            resp = await bot.handle_binance_pay_webhook(mock_request)
+            self.assertEqual(resp.status, 200)
+
+            # Wait briefly for background fulfillment task
+            await asyncio.sleep(0.05)
+
+            o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+            self.assertEqual(o["status"], "completed")
+            self.assertEqual(o["payload"], "WEBHOOK-TOKEN-999")
 
 
 if __name__ == "__main__":
