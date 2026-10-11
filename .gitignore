@@ -3,3 +3,6 @@
 __pycache__/
 *.db
 data/
+.playwright-mcp/
+*.py[cod]
+.pytest_cache/
