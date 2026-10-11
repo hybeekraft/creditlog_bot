@@ -437,15 +437,15 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(btn_a.style, "success")
         self.assertTrue(btn_a.text.endswith("✅"))
 
-        # Prod OOS: out of stock at supplier, danger (red) with ⛔
-        btn_oos = markup.inline_keyboard[1][0]
-        self.assertEqual(btn_oos.style, "danger")
-        self.assertTrue(btn_oos.text.endswith("⛔"))
-
         # Prod InStock: in stock, success (green) with ✅
-        btn_in = markup.inline_keyboard[2][0]
+        btn_in = markup.inline_keyboard[1][0]
         self.assertEqual(btn_in.style, "success")
         self.assertTrue(btn_in.text.endswith("✅"))
+
+        # Prod OOS: out of stock at supplier, danger (red) with ⛔ (placed at the end)
+        btn_oos = markup.inline_keyboard[2][0]
+        self.assertEqual(btn_oos.style, "danger")
+        self.assertTrue(btn_oos.text.endswith("⛔"))
 
         # Filter toggle row: "Available only" (green)
         filter_row = markup.inline_keyboard[-2]
@@ -892,6 +892,43 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
 
         await bot.on_buy_qty(mock_cb)
         mock_cb.answer.assert_called_once_with(bot.t(1001, "out_of_stock"), show_alert=True)
+
+
+    def test_catalog_alphabetical_and_out_of_stock_at_last_pages(self):
+        bot.db.execute("DELETE FROM products")
+        # In stock products: Zebra, Apple, Mango
+        bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES(1, 'Zebra VPN', 100, 1, 1, 'z1', 10, 'auto')")
+        bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES(2, 'Apple TV', 200, 1, 1, 'a1', 5, 'auto')")
+        bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES(3, 'Mango Music', 300, 1, 1, 'm1', 8, 'auto')")
+        # Out of stock products: Banana (OOS), Zulu (OOS)
+        bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES(4, 'Zulu AI', 400, 0, 1, 'zu1', 0, 'auto')")
+        bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES(5, 'Banana Pro', 500, 0, 1, 'b1', 0, 'auto')")
+
+        prods = bot.db.execute("SELECT * FROM products ORDER BY id").fetchall()
+        sorted_prods = bot.sort_catalog_products(prods)
+
+        names = [p["name"] for p in sorted_prods]
+        # In-stock items should be first, sorted A-Z: Apple TV, Mango Music, Zebra VPN
+        self.assertEqual(names[:3], ["Apple TV", "Mango Music", "Zebra VPN"])
+        # Out-of-stock items should follow at the end, sorted A-Z: Banana Pro, Zulu AI
+        self.assertEqual(names[3:], ["Banana Pro", "Zulu AI"])
+
+        # Check render_product_list pagination with small PAGE_SIZE simulation (e.g. 2 per page)
+        with patch.object(bot, "PAGE_SIZE", 2):
+            # Page 1: Apple TV, Mango Music (both in-stock, success)
+            _, kb_p1 = bot.render_product_list(1001, prods, page=1, cb_prefix="allprods", ctx_prefix="all", back_cb="shop")
+            btns_p1 = [row[0] for row in kb_p1.inline_keyboard if row[0].callback_data.startswith("p:")]
+            self.assertEqual([b.style for b in btns_p1], ["success", "success"])
+            self.assertIn("Apple TV", btns_p1[0].text)
+            self.assertIn("Mango Music", btns_p1[1].text)
+
+            # Page 3 (last page): Zulu AI (out-of-stock, danger)
+            _, kb_p3 = bot.render_product_list(1001, prods, page=3, cb_prefix="allprods", ctx_prefix="all", back_cb="shop")
+            btns_p3 = [row[0] for row in kb_p3.inline_keyboard if row[0].callback_data.startswith("p:")]
+            self.assertEqual(len(btns_p3), 1)
+            self.assertEqual(btns_p3[0].style, "danger")
+            self.assertIn("Zulu AI", btns_p3[0].text)
+            self.assertIn("⛔", btns_p3[0].text)
 
 
 if __name__ == "__main__":

@@ -1037,12 +1037,32 @@ def categories_kb(uid: int):
 PAGE_SIZE = 15
 
 
+def sort_catalog_products(prods: list) -> list:
+    """
+    Sorts products so that:
+    1. In-stock / available goods come first, arranged alphabetically by name (A-Z, case-insensitive).
+    2. Out-of-stock goods come on the last pages, arranged alphabetically by name (A-Z, case-insensitive).
+    """
+    in_stock = []
+    out_of_stock = []
+    for p in prods:
+        if is_product_available(p):
+            in_stock.append(p)
+        else:
+            out_of_stock.append(p)
+
+    in_stock.sort(key=lambda x: str(x["name"]).lower())
+    out_of_stock.sort(key=lambda x: str(x["name"]).lower())
+    return in_stock + out_of_stock
+
+
 def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_prefix: str, back_cb: str, avail_only: int = 0) -> Tuple[str, InlineKeyboardMarkup]:
-    """1-column product list matching Screenshot style with green/red stock status buttons and Available only filter toggle."""
+    """1-column product list with in-stock products arranged alphabetically and out-of-stock goods at the last pages."""
+    sorted_prods = sort_catalog_products(prods)
     if avail_only:
-        display_prods = [p for p in prods if is_product_available(p)]
+        display_prods = [p for p in sorted_prods if is_product_available(p)]
     else:
-        display_prods = prods
+        display_prods = sorted_prods
 
     if not display_prods:
         empty_rows = []
