@@ -1284,10 +1284,20 @@ async def fulfill_order(bot: Bot, oid: int) -> Tuple[Optional[str], Optional[str
 # User Handlers & Navigation
 # --------------------------------------------------------------------------
 @dp.message(CommandStart())
+@dp.message(Command("start"))
+@dp.message(Command("menu"))
 async def start(m: Message):
     pending_inputs.pop(m.from_user.id, None)
     get_user(m.from_user.id, m.from_user.language_code)
     await m.answer(t(m.from_user.id, "welcome"), reply_markup=home_kb(m.from_user.id))
+
+
+@dp.message(Command("shop"))
+async def cmd_shop(m: Message):
+    pending_inputs.pop(m.from_user.id, None)
+    uid = m.from_user.id
+    get_user(uid, m.from_user.language_code)
+    await m.answer(t(uid, "cat_title"), reply_markup=categories_kb(uid))
 
 
 @dp.callback_query(F.data == "home")
@@ -1997,6 +2007,7 @@ async def manual_pay_info(c: CallbackQuery):
 
 
 @dp.callback_query(F.data == "orders")
+@dp.message(Command("order"))
 @dp.message(Command("orders"))
 @dp.message(Command("purchases"))
 async def recent_purchases(event: Message | CallbackQuery):
@@ -2020,6 +2031,21 @@ async def recent_purchases(event: Message | CallbackQuery):
         await edit(event, text, markup)
     else:
         await event.answer(text, reply_markup=markup)
+
+
+@dp.message(Command("support"))
+async def cmd_support(m: Message):
+    uid = m.from_user.id
+    get_user(uid, m.from_user.language_code)
+    support_emoji_id = get_custom_emoji_id("support")
+    markup = kb([
+        [btn(t(uid, "btn_support"), url=SUPPORT_URL, style="primary", emoji_id=support_emoji_id)],
+        [btn(t(uid, "btn_back"), "home", style="danger")]
+    ])
+    await m.answer(
+        f"💬 <b>Support</b>\n\nNeed assistance? Contact our support team directly:\n{SUPPORT_URL}",
+        reply_markup=markup
+    )
 
 
 @dp.callback_query(F.data == "lang")
@@ -2706,8 +2732,11 @@ async def main():
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_my_commands([
-            BotCommand(command="start", description="Main menu"),
-            BotCommand(command="orders", description="View recent purchases"),
+            BotCommand(command="start", description="Start bot"),
+            BotCommand(command="menu", description="Open main menu"),
+            BotCommand(command="shop", description="Open shop"),
+            BotCommand(command="order", description="Order history"),
+            BotCommand(command="support", description="Contacts support"),
         ])
         await dp.start_polling(bot)
     finally:

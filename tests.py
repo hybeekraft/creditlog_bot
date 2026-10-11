@@ -931,6 +931,59 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
             self.assertIn("⛔", btns_p3[0].text)
 
 
+class TestBotCommands(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        bot.db.execute("DELETE FROM orders")
+        bot.db.execute("DELETE FROM products")
+        bot.db.execute("DELETE FROM users")
+
+    async def test_cmd_start_and_menu(self):
+        msg = MagicMock()
+        msg.from_user.id = 555
+        msg.from_user.language_code = "en"
+        msg.answer = AsyncMock()
+
+        await bot.start(msg)
+        msg.answer.assert_called_once()
+        args, kwargs = msg.answer.call_args
+        self.assertIn("Welcome", args[0])
+        self.assertIsNotNone(kwargs.get("reply_markup"))
+
+    async def test_cmd_shop(self):
+        msg = MagicMock()
+        msg.from_user.id = 555
+        msg.from_user.language_code = "en"
+        msg.answer = AsyncMock()
+
+        await bot.cmd_shop(msg)
+        msg.answer.assert_called_once()
+        args, kwargs = msg.answer.call_args
+        self.assertIn("category", args[0].lower())
+        self.assertIsNotNone(kwargs.get("reply_markup"))
+
+    async def test_cmd_order_history(self):
+        msg = MagicMock()
+        msg.from_user.id = 555
+        msg.answer = AsyncMock()
+
+        await bot.recent_purchases(msg)
+        msg.answer.assert_called_once()
+        args, _ = msg.answer.call_args
+        self.assertIn("haven't made any orders yet", args[0])
+
+    async def test_cmd_support(self):
+        msg = MagicMock()
+        msg.from_user.id = 555
+        msg.from_user.language_code = "en"
+        msg.answer = AsyncMock()
+
+        await bot.cmd_support(msg)
+        msg.answer.assert_called_once()
+        args, kwargs = msg.answer.call_args
+        self.assertIn("Support", args[0])
+        self.assertIsNotNone(kwargs.get("reply_markup"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
