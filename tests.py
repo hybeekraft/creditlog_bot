@@ -430,27 +430,61 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         p_in = bot.db.execute("SELECT * FROM products WHERE id=?", (pid_in,)).fetchone()
 
         _, markup = bot.render_product_list(
-            uid=1001, prods=[p1, p_oos, p_in], page=1, cb_prefix="allprods", ctx_prefix="all", back_cb="home"
+            uid=1001, prods=[p1, p_oos, p_in], page=1, cb_prefix="allprods", ctx_prefix="all", back_cb="home", avail_only=0
         )
         # Prod A: in stock, success (green) with ✅
         btn_a = markup.inline_keyboard[0][0]
         self.assertEqual(btn_a.style, "success")
         self.assertTrue(btn_a.text.endswith("✅"))
 
-        # Prod OOS: out of stock at supplier, danger (red) with ❌
+        # Prod OOS: out of stock at supplier, danger (red) with ⛔
         btn_oos = markup.inline_keyboard[1][0]
         self.assertEqual(btn_oos.style, "danger")
-        self.assertTrue(btn_oos.text.endswith("❌"))
+        self.assertTrue(btn_oos.text.endswith("⛔"))
 
         # Prod InStock: in stock, success (green) with ✅
         btn_in = markup.inline_keyboard[2][0]
         self.assertEqual(btn_in.style, "success")
         self.assertTrue(btn_in.text.endswith("✅"))
 
+        # Filter toggle row: "Available only" (green)
+        filter_row = markup.inline_keyboard[-2]
+        self.assertEqual(filter_row[0].text, "✅ Available only")
+        self.assertEqual(filter_row[0].style, "success")
+        self.assertEqual(filter_row[0].callback_data, "allprods:1:1")
+
         # Refresh: primary (blue), Back: danger (red)
         bottom_row = markup.inline_keyboard[-1]
         self.assertEqual(bottom_row[0].style, "primary")
         self.assertEqual(bottom_row[1].style, "danger")
+
+    def test_render_product_list_available_only_filter(self):
+        pid_avail = bot.db.execute("INSERT INTO products(name, price, active, auto_fulfill, supplier_product_id, supplier_stock) VALUES('Available Item', 100, 1, 1, 'avail-1', 10)").lastrowid
+        p_avail = bot.db.execute("SELECT * FROM products WHERE id=?", (pid_avail,)).fetchone()
+
+        pid_oos = bot.db.execute("INSERT INTO products(name, price, active, auto_fulfill, supplier_product_id, supplier_stock) VALUES('OOS Item', 200, 1, 1, 'oos-2', 0)").lastrowid
+        p_oos = bot.db.execute("SELECT * FROM products WHERE id=?", (pid_oos,)).fetchone()
+
+        # With avail_only=1, only p_avail should be displayed
+        _, markup = bot.render_product_list(
+            uid=1001, prods=[p_avail, p_oos], page=1, cb_prefix="allprods", ctx_prefix="all", back_cb="home", avail_only=1
+        )
+        # Only 1 product item rendered
+        self.assertEqual(len(markup.inline_keyboard), 3)  # product row, filter toggle row, refresh/back row
+        item_btn = markup.inline_keyboard[0][0]
+        self.assertIn("Available Item", item_btn.text)
+        self.assertTrue(item_btn.text.endswith("✅"))
+
+        # Toggle button should now offer "Show all products" with primary style
+        toggle_btn = markup.inline_keyboard[1][0]
+        self.assertEqual(toggle_btn.text, "📦 Show all products")
+        self.assertEqual(toggle_btn.style, "primary")
+        self.assertEqual(toggle_btn.callback_data, "allprods:1:0")
+
+        # Back navigation from product card preserves avail_only
+        _, card_markup = bot.render_product_card(1001, p_avail, ctx="all_1_1")
+        back_btn = card_markup.inline_keyboard[-1][1]
+        self.assertEqual(back_btn.callback_data, "allprods:1:1")
 
     async def test_multi_quantity_supplier_fulfillment(self):
         pid = bot.db.execute("""

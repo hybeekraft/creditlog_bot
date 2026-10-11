@@ -215,6 +215,21 @@ def detect_category(name: str) -> str:
 
 
 def get_product_icon(name: str, cat_name: Optional[str] = None) -> str:
+    n = name.lower()
+    if "snapchat" in n:
+        return "👻"
+    if "cursor" in n:
+        return "🔲"
+    if "elevenlabs" in n or "eleven" in n:
+        return "⏸️"
+    if "kimi" in n:
+        return "🐇"
+    if "capcut" in n:
+        return "✂️"
+    if "kling" in n:
+        return "🎥"
+    if "autodesk" in n or "autocad" in n:
+        return "🅰️"
     category = cat_name or detect_category(name)
     key = CAT_KEY_BY_NAME.get(category.lower())
     if key and key in CAT_BY_KEY:
@@ -405,18 +420,41 @@ def migrate_db():
         ("Discord Nitro 2M", "Discord Nitro 2 months subscription gift link.", 900, "Discord"),
         ("Notion Business Admin 1M", "Notion Business Workspace Admin 1 month.", 770, "Office"),
         ("iCloud 2TB 3M", "Apple iCloud+ 2TB Family storage access 3 months.", 1150, "Office"),
+
+        # Out-of-stock products shown in catalog (Page 17)
+        ("Snapchat Plus+ 6 Months", "Snapchat Plus 6 Months subscription access.", 800, "Social", 0),
+        ("Cursor Pro + Grok Bot 1M", "Cursor Pro + Grok Bot 1 Month bundle access.", 4500, "AI Tools", 0),
+        ("Veo Ultra X20 0 Credits 1M", "Veo Ultra X20 0 Credits 1 Month video generation access.", 1750, "Video AI", 0),
+        ("ElevenLabs Creator 1M", "ElevenLabs Creator 1 Month audio subscription.", 750, "ElevenLabs", 0),
+        ("Perplexity Pro 1M", "Perplexity Pro 1 Month subscription access.", 800, "AI Tools", 0),
+        ("Vidiq Boost 1 Channel 2000 Credits", "Vidiq Boost 1 Channel 2000 Credits 1 Month plan.", 750, "Subscriptions", 0),
+        ("Pixverse 600 Credits", "Pixverse 600 Credits 1 Month generation plan.", 100, "Video AI", 0),
+        ("Kimi GLM DeepSeek API 500M Tokens 7D", "Kimi GLM DeepSeek API 500M Tokens 7 Days access.", 2400, "Codex API", 0),
+        ("CapCut Pro Team 3M", "CapCut Pro Team 3 Months premium access.", 920, "Design", 0),
+        ("KlingAI 725-850 Credits 1M", "KlingAI 725-850 Credits 1 Month plan.", 1000, "Video AI", 0),
+        ("Seedance 400-600 Credits", "Seedance 400-600 Credits video access.", 150, "AI Tools", 0),
+        ("Autodesk All Apps 3Y", "Autodesk All Apps 3 Years student/educator access.", 380, "Autodesk", 0),
+        ("Autodesk 1 App 3Y Upgrade", "Autodesk 1 App 3 Years upgrade license.", 500, "Autodesk", 0),
+        ("Autodesk Full Apps 3Y Upgrade", "Autodesk Full Apps 3 Years upgrade license.", 800, "Autodesk", 0),
     ]
-    for m_name, m_desc, m_price, m_cat in MANUAL_CATALOG_SEEDS:
+    for item in MANUAL_CATALOG_SEEDS:
+        m_name, m_desc, m_price, m_cat = item[0], item[1], item[2], item[3]
+        m_stock = item[4] if len(item) > 4 else None
         exists = db.execute("SELECT id FROM products WHERE name=?", (m_name,)).fetchone()
         if not exists:
             db.execute("""
-                INSERT INTO products(name, description, price, category, auto_fulfill, active, delivery_type)
-                VALUES(?,?,?,?,0,1,'manual')
-            """, (m_name, m_desc, m_price, m_cat))
+                INSERT INTO products(name, description, price, category, auto_fulfill, active, supplier_stock, delivery_type)
+                VALUES(?,?,?,?,0,1,?,'manual')
+            """, (m_name, m_desc, m_price, m_cat, m_stock))
         else:
-            db.execute("""
-                UPDATE products SET category=?, description=COALESCE(description, ?) WHERE id=?
-            """, (m_cat, m_desc, exists["id"]))
+            if m_stock is not None:
+                db.execute("""
+                    UPDATE products SET category=?, description=COALESCE(description, ?), price=?, supplier_stock=? WHERE id=?
+                """, (m_cat, m_desc, m_price, m_stock, exists["id"]))
+            else:
+                db.execute("""
+                    UPDATE products SET category=?, description=COALESCE(description, ?) WHERE id=?
+                """, (m_cat, m_desc, exists["id"]))
 
     # Custom emojis table for original brand logos (Telegram custom emoji IDs)
     db.execute("""
@@ -468,6 +506,8 @@ TR = {
         "btn_refresh": "🔄 Refresh",
         "btn_custom_qty": "✏️ Custom Qty",
         "btn_all_items": "🛍 All items",
+        "btn_avail_only": "✅ Available only",
+        "btn_show_all": "📦 Show all products",
         "btn_search": "🔍 Search",
         "cat_title": "🛍 <b>Choose a category</b>\nSelect a section or open the full catalog:",
         "prods_title": "🛍 ✨ <b>Choose a product</b>",
@@ -501,6 +541,8 @@ TR = {
         "btn_refresh": "🔄 Actualizar",
         "btn_custom_qty": "✏️ Cantidad personal",
         "btn_all_items": "🛍 Todos los productos",
+        "btn_avail_only": "✅ Solo disponibles",
+        "btn_show_all": "📦 Mostrar todos",
         "btn_search": "🔍 Buscar",
         "cat_title": "🛍 <b>Elige una categoría</b>\nSelecciona una sección o abre el catálogo:",
         "prods_title": "🛍 ✨ <b>Elige un producto</b>",
@@ -534,6 +576,8 @@ TR = {
         "btn_refresh": "🔄 Обновить",
         "btn_custom_qty": "✏️ Своё кол-во",
         "btn_all_items": "🛍 Все товары",
+        "btn_avail_only": "✅ Только в наличии",
+        "btn_show_all": "📦 Показать все товары",
         "btn_search": "🔍 Поиск",
         "cat_title": "🛍 <b>Выберите категорию</b>\nВыберите раздел или откройте полный каталог:",
         "prods_title": "🛍 ✨ <b>Выберите товар</b>",
@@ -567,6 +611,8 @@ TR = {
         "btn_refresh": "🔄 تحديث",
         "btn_custom_qty": "✏️ كمية مخصصة",
         "btn_all_items": "🛍 كل المنتجات",
+        "btn_avail_only": "✅ المتوفر فقط",
+        "btn_show_all": "📦 عرض كل المنتجات",
         "btn_search": "🔍 بحث",
         "cat_title": "🛍 <b>اختر الفئة</b>\nاختر قسمًا أو تصفح الكتالوج بالكامل:",
         "prods_title": "🛍 ✨ <b>اختر المنتج</b>",
@@ -629,6 +675,26 @@ def btn(text, data=None, url=None, style=None, emoji_id=None):
 
 def stock_count(pid: int) -> int:
     return db.execute("SELECT COUNT(*) FROM stock WHERE product_id=? AND sold=0", (pid,)).fetchone()[0]
+
+
+def is_product_available(p: sqlite3.Row) -> bool:
+    """Returns True if the product is active and has available stock."""
+    if not p["active"]:
+        return False
+    is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
+    deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
+    sup_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
+    count = stock_count(p["id"]) if not is_auto else None
+
+    if is_auto and sup_stock is not None and sup_stock <= 0:
+        return False
+    if sup_stock is not None and sup_stock <= 0:
+        return False
+    if not is_auto and deliv_type != "manual":
+        has_stock_rows = db.execute("SELECT 1 FROM stock WHERE product_id=?", (p["id"],)).fetchone()
+        if has_stock_rows and count == 0:
+            return False
+    return True
 
 
 async def edit(c: CallbackQuery, text: str, markup=None):
@@ -726,15 +792,24 @@ def categories_kb(uid: int):
 PAGE_SIZE = 15
 
 
-def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_prefix: str, back_cb: str) -> Tuple[str, InlineKeyboardMarkup]:
-    """1-column product list matching Screenshot style with green/red stock status buttons."""
-    total_pages = max(1, (len(prods) + PAGE_SIZE - 1) // PAGE_SIZE)
+def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_prefix: str, back_cb: str, avail_only: int = 0) -> Tuple[str, InlineKeyboardMarkup]:
+    """1-column product list matching Screenshot style with green/red stock status buttons and Available only filter toggle."""
+    if avail_only:
+        display_prods = [p for p in prods if is_product_available(p)]
+    else:
+        display_prods = prods
+
+    if not display_prods:
+        empty_rows = []
+        if avail_only:
+            empty_rows.append([btn(t(uid, "btn_show_all"), f"{cb_prefix}:1:0", style="primary")])
+        empty_rows.append([btn(t(uid, "btn_back"), back_cb, style="danger")])
+        return t(uid, "no_products"), kb(empty_rows)
+
+    total_pages = max(1, (len(display_prods) + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(1, min(page, total_pages))
 
-    if not prods:
-        return t(uid, "no_products"), kb([[btn(t(uid, "btn_back"), back_cb, style="danger")]])
-
-    slice_prods = prods[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
+    slice_prods = display_prods[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
     rows = []
     for p in slice_prods:
         p_cat = p["category"] if "category" in p.keys() else None
@@ -742,35 +817,28 @@ def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_pr
         p_emoji_id = get_custom_emoji_id(cat_key) if cat_key else None
         icon = get_product_icon(p["name"], p_cat)
 
-        is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
-        deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
-        sup_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
-        count = stock_count(p["id"]) if not is_auto else None
-
-        if not p["active"]:
-            is_avail = False
-        elif is_auto and sup_stock is not None and sup_stock <= 0:
-            is_avail = False
-        elif not is_auto and deliv_type != "manual" and db.execute("SELECT 1 FROM stock WHERE product_id=?", (p["id"],)).fetchone() and count == 0:
-            is_avail = False
-        else:
-            is_avail = True
-
-        status_mark = "✅" if is_avail else "❌"
+        is_avail = is_product_available(p)
+        status_mark = "✅" if is_avail else "⛔"
         btn_style = "success" if is_avail else "danger"
 
         btn_text = f"{p['name']} · {usd(p['price'])} {status_mark}" if p_emoji_id else f"{icon} {p['name']} · {usd(p['price'])} {status_mark}"
-        rows.append([btn(btn_text, f"p:{p['id']}:{ctx_prefix}_{page}", style=btn_style, emoji_id=p_emoji_id)])
+        rows.append([btn(btn_text, f"p:{p['id']}:{ctx_prefix}_{avail_only}_{page}", style=btn_style, emoji_id=p_emoji_id)])
 
     if total_pages > 1:
         pag_row = []
-        pag_row.append(btn("◀️", f"{cb_prefix}:{page - 1}" if page > 1 else "noop", style="primary"))
+        pag_row.append(btn("◀️", f"{cb_prefix}:{page - 1}:{avail_only}" if page > 1 else "noop", style="primary"))
         pag_row.append(btn(f"{page}/{total_pages}", "noop", style="primary"))
-        pag_row.append(btn("▶️", f"{cb_prefix}:{page + 1}" if page < total_pages else "noop", style="primary"))
+        pag_row.append(btn("▶️", f"{cb_prefix}:{page + 1}:{avail_only}" if page < total_pages else "noop", style="primary"))
         rows.append(pag_row)
 
+    # Filter toggle button
+    if avail_only:
+        rows.append([btn(t(uid, "btn_show_all"), f"{cb_prefix}:1:0", style="primary")])
+    else:
+        rows.append([btn(t(uid, "btn_avail_only"), f"{cb_prefix}:1:1", style="success")])
+
     rows.append([
-        btn(t(uid, "btn_refresh"), f"{cb_prefix}:{page}", style="primary"),
+        btn(t(uid, "btn_refresh"), f"{cb_prefix}:{page}:{avail_only}", style="primary"),
         btn(t(uid, "btn_back"), back_cb, style="danger")
     ])
     return t(uid, "prods_title"), kb(rows)
@@ -795,8 +863,12 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
         stock_line = f"🟢 📦 In stock: {count} pcs"
         has_stock = True
     elif deliv_type == "manual":
-        stock_line = "🟡 <b>Manual / Assisted Delivery</b>\n<i>⚡ Credentials or setup link delivered via support after payment</i>"
-        has_stock = True
+        if not p["active"] or (sup_stock is not None and sup_stock <= 0):
+            stock_line = "🔴 <b>Out of stock</b>"
+            has_stock = False
+        else:
+            stock_line = "🟡 <b>Manual / Assisted Delivery</b>\n<i>⚡ Credentials or setup link delivered via support after payment</i>"
+            has_stock = True
     else:
         stock_line = "🔴 <b>Out of stock</b>"
         has_stock = False
@@ -837,15 +909,28 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
         back_cb = "home"
     elif ctx.startswith("c_"):
         parts = ctx.split("_")
-        back_cb = f"cat:{parts[1]}:{parts[2]}"
+        if len(parts) >= 4:
+            back_cb = f"cat:{parts[1]}:{parts[3]}:{parts[2]}"
+        elif len(parts) == 3:
+            back_cb = f"cat:{parts[1]}:{parts[2]}:0"
+        else:
+            back_cb = "shop"
     elif ctx.startswith("all_"):
         parts = ctx.split("_")
-        back_cb = f"allprods:{parts[1]}"
+        if len(parts) >= 3:
+            back_cb = f"allprods:{parts[2]}:{parts[1]}"
+        elif len(parts) == 2:
+            back_cb = f"allprods:{parts[1]}:0"
+        else:
+            back_cb = "shop"
     elif ctx.startswith("s_"):
-        parts = ctx.split("_", 2)
-        term = parts[1]
-        page = parts[2] if len(parts) > 2 else "1"
-        back_cb = f"srch:{term}:{page}"
+        parts = ctx.split("_")
+        if len(parts) >= 4:
+            back_cb = f"srch:{parts[1]}:{parts[3]}:{parts[2]}"
+        elif len(parts) == 3:
+            back_cb = f"srch:{parts[1]}:{parts[2]}:0"
+        else:
+            back_cb = "shop"
     else:
         back_cb = "shop"
 
@@ -966,14 +1051,17 @@ async def shop(c: CallbackQuery):
 async def on_category(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
-    _, key, page_str = c.data.split(":")
-    page = int(page_str)
+    parts = c.data.split(":")
+    key = parts[1]
+    page = int(parts[2]) if len(parts) > 2 else 1
+    avail_only = int(parts[3]) if len(parts) > 3 else 0
     prods = get_products_for_category(key)
     text, markup = render_product_list(
         uid, prods, page=page,
         cb_prefix=f"cat:{key}",
         ctx_prefix=f"c_{key}",
-        back_cb="shop"
+        back_cb="shop",
+        avail_only=avail_only
     )
     await edit(c, text, markup)
 
@@ -982,13 +1070,16 @@ async def on_category(c: CallbackQuery):
 async def on_all_prods(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
-    page = int(c.data.split(":")[1])
+    parts = c.data.split(":")
+    page = int(parts[1]) if len(parts) > 1 else 1
+    avail_only = int(parts[2]) if len(parts) > 2 else 0
     prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
     text, markup = render_product_list(
         uid, prods, page=page,
         cb_prefix="allprods",
         ctx_prefix="all",
-        back_cb="shop"
+        back_cb="shop",
+        avail_only=avail_only
     )
     await edit(c, text, markup)
 
@@ -1009,8 +1100,10 @@ async def on_search_start(c: CallbackQuery):
 async def on_search_page(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
-    _, term, page_str = c.data.split(":", 2)
-    page = int(page_str)
+    parts = c.data.split(":")
+    term = parts[1]
+    page = int(parts[2]) if len(parts) > 2 else 1
+    avail_only = int(parts[3]) if len(parts) > 3 else 0
     prods = db.execute(
         "SELECT * FROM products WHERE (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY id",
         (f"%{term.lower()}%", f"%{term.lower()}%")
@@ -1019,7 +1112,8 @@ async def on_search_page(c: CallbackQuery):
         uid, prods, page=page,
         cb_prefix=f"srch:{term}",
         ctx_prefix=f"s_{term}",
-        back_cb="shop"
+        back_cb="shop",
+        avail_only=avail_only
     )
     await edit(c, text, markup)
 
