@@ -274,6 +274,34 @@ def get_product_icon(name: str, cat_name: Optional[str] = None) -> str:
         return "🦈"
     if "discord" in n or "nitro" in n:
         return "👾"
+    if "gmail" in n:
+        return "📧"
+    if "figma" in n:
+        return "🎨"
+    if "scribd" in n or "ilovepdf" in n:
+        return "📚"
+    if "grammarly" in n or "quillbot" in n:
+        return "✍️"
+    if "pocket fm" in n:
+        return "📻"
+    if "flux" in n:
+        return "⚡"
+    if "hbo" in n:
+        return "🎬"
+    if "windows" in n:
+        return "🪟"
+    if "jetbrains" in n:
+        return "💻"
+    if "higgsfield" in n:
+        return "🎥"
+    if "openart" in n:
+        return "🎨"
+    if "coursera" in n or "kiro" in n:
+        return "🎓"
+    if "peacock" in n:
+        return "🦚"
+    if "manus" in n:
+        return "🤖"
     category = cat_name or detect_category(name)
     key = CAT_KEY_BY_NAME.get(category.lower())
     if key and key in CAT_BY_KEY:
@@ -443,6 +471,40 @@ def migrate_db():
         ("Notion Plus 12 Months", "Notion Plus 12 Months subscription.", 250, "Office"),
         ("Canva Pro Add to Team 12 Months", "Canva Pro Add to Team 12 Months membership.", 450, "Design"),
 
+        # Screenshot Page 6
+        ("Adobe Express 4M", "Adobe Express 4 Months subscription.", 881, "Design"),
+        ("Scribd Premium 1M", "Scribd Premium 1 Month subscription.", 220, "Education"),
+        ("Adobe Express 12M", "Adobe Express 12 Months workspace plan.", 350, "Design"),
+        ("Adobe Express 1 Year", "Adobe Express 1 Year access.", 50, "Design"),
+        ("Adobe Express 12M Ready-made Account", "Adobe Express 12 Months ready-made account.", 400, "Design"),
+        ("Adobe All Apps 7D", "Adobe All Apps 7 Days activation access.", 367, "Adobe"),
+        ("iLovePDF Premium 1 Year", "iLovePDF Premium 1 Year subscription.", 150, "Office"),
+        ("ExpressVPN 1M", "ExpressVPN 1 Month high speed VPN.", 587, "VPN"),
+        ("ExpressVPN 3 Days", "ExpressVPN 3 Days quick access.", 110, "VPN"),
+        ("YouTube Premium 3M ROW", "YouTube Premium 3 Months Rest of World.", 574, "Streaming"),
+        ("YouTube Premium 12M Provider Account", "YouTube Premium 12 Months provider account.", 850, "Streaming"),
+        ("AutoCAD EDU 12M", "AutoCAD Educational 12 Months license.", 980, "Autodesk"),
+        ("YouTube Premium 3M Vietnam", "YouTube Premium 3 Months Vietnam region.", 1000, "Streaming"),
+        ("YouTube Premium 3M Abroad", "YouTube Premium 3 Months Abroad region.", 1250, "Streaming"),
+        ("YouTube Premium 3 Months", "YouTube Premium 3 Months individual plan.", 350, "Streaming"),
+
+        # Screenshot Page 7
+        ("Codex API 500M Tokens 6 Days", "Codex API 500M tokens valid 6 days.", 2980, "Codex API"),
+        ("Wordwall Pro 1 Month", "Wordwall Pro 1 Month educational license.", 380, "Education"),
+        ("GitHub Student Developer Pack", "GitHub Student Developer Pack activation.", 1500, "Office"),
+        ("Grammarly AI Pro 1M", "Grammarly AI Pro 1 Month premium writing.", 550, "Office"),
+        ("Krea Basic 5100 Credits 1M", "Krea Basic 5,100 Credits 1 Month video & image.", 550, "AI Tools"),
+        ("Figma Pro EDU 2 Years", "Figma Pro Educational 2 Years membership.", 600, "Design"),
+        ("Pocket FM Premium 3M", "Pocket FM Premium 3 Months audiobook plan.", 60, "Music"),
+        ("Figma EDU 12M", "Figma Educational 12 Months membership.", 1250, "Design"),
+        ("Leonardo AI Essential 8500 Credits 1M", "Leonardo AI Essential 8,500 Credits 1 Month.", 300, "Video AI"),
+        ("Apple Music 6M", "Apple Music individual 6 Months subscription.", 200, "Music"),
+        ("ElevenLabs Creator 3 Months", "ElevenLabs Creator 3 Months full access.", 1749, "ElevenLabs"),
+        ("Claude API 10M Tokens 1D", "Claude API 10M tokens valid 1 day.", 300, "Claude"),
+        ("Claude API 50M Tokens 1 Day", "Claude API 50M tokens valid 1 day.", 500, "Claude"),
+        ("Claude API 100M Tokens 1 Day", "Claude API 100M tokens valid 1 day.", 600, "Claude"),
+        ("Claude API 100M Tokens 3 Days", "Claude API 100M tokens valid 3 days.", 1000, "Claude"),
+
         # Screenshot Page 8
         ("Prime Video 6 Months", "Amazon Prime Video 6 Months private subscription.", 300, "Streaming"),
         ("Apple TV+ 1M Canada", "Apple TV+ 1 Month Canada region access.", 50, "Streaming"),
@@ -537,7 +599,72 @@ def migrate_db():
         ("Windscribe VPN Pro 1Y", "Windscribe VPN Pro 1 Year unlimited data.", 1400, "VPN"),
         ("TradingView Essential 1M", "TradingView Essential 1 Month subscription.", 750, "Office"),
         ("GitHub Copilot 1M", "GitHub Copilot individual 1 Month subscription.", 400, "AI Tools"),
-        ("iCloud 2TB 3M", "Apple iCloud+ 2TB Family storage access 3 months.", 1150, "Office"),
+        # Screenshot Page 13
+        ("MiniMax Redeem 131K", "MiniMax 131,000 character credits instant redeem code.", 260, "AI Tools"),
+        ("Flux 03 1M", "Flux 03 AI 1 Month generator access.", 150, "AI Tools"),
+        ("ExpressVPN 12M", "ExpressVPN 12 Months full access.", 700, "VPN"),
+        ("Canva Education 12M", "Canva Education 12 Months team slot.", 250, "Design"),
+        ("Adobe CC Pro 1M", "Adobe Creative Cloud Pro 1 Month plan.", 2253, "Adobe"),
+        ("AdGuard VPN 7D", "AdGuard VPN 7 Days private access.", 230, "VPN"),
+        ("Surfshark VPN One 7D", "Surfshark VPN One 7 Days security bundle.", 200, "VPN"),
+        ("Hotspot Shield VPN 7D", "Hotspot Shield VPN 7 Days access.", 200, "VPN"),
+        ("IPVanish VPN 7D", "IPVanish VPN 7 Days access.", 200, "VPN"),
+        ("Kaspersky Premium + VPN 1Y", "Kaspersky Premium Security + VPN 1 Year.", 960, "Security"),
+        ("ChatGPT Plus 1M Momo Pay", "ChatGPT Plus 1 Month Momo Pay access.", 600, "ChatGPT", 0),
+        ("ChatGPT Plus 1M 30D", "ChatGPT Plus 1 Month 30 Days account.", 768, "ChatGPT", 0),
+        ("ChatGPT Plus 1M Pix", "ChatGPT Plus 1 Month Pix payment access.", 590, "ChatGPT", 0),
+        ("ChatGPT Plus Your Mail 1M", "ChatGPT Plus 1 Month upgraded on your email.", 1800, "ChatGPT", 0),
+
+        # Screenshot Page 14
+        ("ChatGPT Business 1M", "ChatGPT Business Workspace 1 Month.", 650, "ChatGPT", 0),
+        ("ChatGPT Plus 4M Ready Account", "ChatGPT Plus 4 Months ready-made account.", 5750, "ChatGPT", 0),
+        ("Admin Netflix 4K Premium 1M 5 Profiles", "Netflix 4K Premium 1 Month 5 Profiles Admin.", 250, "Streaming", 0),
+        ("Admin Netflix 4K 1M", "Netflix 4K Admin 1 Month access.", 380, "Streaming", 0),
+        ("ExpressVPN 1 Month Private", "ExpressVPN 1 Month Private dedicated slot.", 350, "VPN", 0),
+        ("Codex API 500M Tokens 6D", "Codex API 500M tokens 6 Days access.", 3400, "Codex API", 0),
+        ("Apple Music 5M", "Apple Music 5 Months subscription.", 200, "Music", 0),
+        ("Apple TV+ 12 Months", "Apple TV+ 12 Months full plan.", 600, "Streaming", 0),
+        ("Capcut 6M Personal", "CapCut Pro 6 Months personal account.", 1635, "Design", 0),
+        ("Gamma Pro 1 Year", "Gamma Pro AI presentation maker 1 Year.", 2900, "AI Tools", 0),
+        ("ElevenLabs Creator 1 Year", "ElevenLabs Creator 1 Year plan.", 3700, "ElevenLabs", 0),
+        ("ChatGPT Plus 1M Google Pay", "ChatGPT Plus 1 Month Google Pay.", 870, "ChatGPT", 0),
+        ("ChatGPT Plus 1M GPAY", "ChatGPT Plus 1 Month GPAY.", 830, "ChatGPT", 0),
+        ("ChatGPT Plus 1M UPI", "ChatGPT Plus 1 Month UPI account.", 600, "ChatGPT", 0),
+        ("Kling 66 Credits", "Kling AI 66 Credits pack.", 55, "Video AI", 0),
+
+        # Screenshot Page 15
+        ("Gmail account new", "Gmail freshly created PVA account.", 62, "Office", 0),
+        ("HBO Max Standard 3 Months", "HBO Max Standard 3 Months private slot.", 200, "Streaming", 0),
+        ("HBO Max Standard 5 Months", "HBO Max Standard 5 Months private slot.", 250, "Streaming", 0),
+        ("CapCut Pro 7D", "CapCut Pro 7 Days quick access.", 50, "Design", 0),
+        ("CapCut Pro 7 Days", "CapCut Pro 7 Days standard license.", 65, "Design", 0),
+        ("Adobe Full App Bypass Version 1M", "Adobe Full App Bypass Version 1 Month.", 550, "Adobe", 0),
+        ("Loveable Pro 1M Redeem Link", "Loveable Pro 1 Month official redeem link.", 120, "AI Tools", 0),
+        ("Windows 10 Pro Retail Key", "Windows 10 Pro Retail digital license key.", 300, "Office", 0),
+        ("Duolingo Super 2M", "Duolingo Super 2 Months subscription.", 50, "Education", 0),
+        ("Notion Business 1 Year", "Notion Business Workspace 1 Year.", 1250, "Office", 0),
+        ("Autodesk Education Plan 1 Year", "Autodesk Education Plan 1 Year access.", 200, "Autodesk", 0),
+        ("YouTube Ready Account 3M", "YouTube Premium Ready Account 3 Months.", 220, "Streaming", 0),
+        ("JetBrains EDU 1 Year", "JetBrains All Products EDU 1 Year.", 450, "Office", 0),
+        ("Higgsfield Starter 1M", "Higgsfield AI Video Starter 1 Month.", 1000, "Video AI", 0),
+        ("OpenArt Starter 4K Credits 1M", "OpenArt Starter 4K Credits 1 Month.", 450, "AI Tools", 0),
+
+        # Screenshot Page 16
+        ("Coursera Premium 12 Months", "Coursera Plus/Premium 12 Months learning.", 350, "Education", 0),
+        ("Spotify Premium 3M", "Spotify Premium 3 Months private account.", 150, "Music", 0),
+        ("Kiro Pro Edu Official Owner 1Y", "Kiro Pro EDU Official Owner 1 Year.", 7300, "Education", 0),
+        ("Spotify Individual 12M", "Spotify Individual 12 Months subscription.", 2200, "Music", 0),
+        ("Spotify Premium 6 Months", "Spotify Premium 6 Months subscription.", 980, "Music", 0),
+        ("Claude API 50M Tokens 3 Days", "Claude API 50M tokens valid 3 days.", 600, "Claude", 0),
+        ("Apple TV+ 6 Months", "Apple TV+ 6 Months subscription.", 450, "Streaming", 0),
+        ("Amazon Prime Video 1 Month", "Amazon Prime Video 1 Month private slot.", 200, "Streaming", 0),
+        ("QuillBot Premium 1M", "QuillBot Premium 1 Month paraphrase tool.", 300, "Office", 0),
+        ("Snapchat Plus+ 3 Months", "Snapchat Plus 3 Months access.", 500, "Social", 0),
+        ("Peacock Official Subscription 1 Year", "Peacock Official TV 1 Year subscription.", 500, "Streaming", 0),
+        ("Gamma AI 20K Credits 10 Years", "Gamma AI 20K Credits 10 Years lifetime.", 1100, "AI Tools", 0),
+        ("Manus Pro 12 Months", "Manus Pro AI agent 12 Months access.", 3500, "AI Tools", 0),
+        ("KlingAI 750-1100 Credits 1M", "KlingAI 750-1100 Credits 1 Month video plan.", 1138, "Video AI", 0),
+        ("Kling Random 700-1000 Credits 1M", "Kling Random 700-1000 Credits 1 Month video plan.", 850, "Video AI", 0),
 
         # Out-of-stock products shown in catalog (Page 17)
         ("Snapchat Plus+ 6 Months", "Snapchat Plus 6 Months subscription access.", 800, "Social", 0),
