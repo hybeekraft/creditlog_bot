@@ -161,6 +161,11 @@ def set_setting(key: str, value: str):
         )
 
 
+def get_default_margin() -> int:
+    """Returns the persistent default profit margin (defaults to PROFIT_MARGIN / 45%)."""
+    return parse_profit_margin(get_setting("profit_margin", str(PROFIT_MARGIN)), default=45)
+
+
 # --------------------------------------------------------------------------
 # Force Subscribe (Mandatory Channel/Group Join Gate)
 # --------------------------------------------------------------------------
@@ -819,21 +824,34 @@ def migrate_db():
     for item in MANUAL_CATALOG_SEEDS:
         m_name, m_desc, m_price, m_cat = item[0], item[1], item[2], item[3]
         m_stock = item[4] if len(item) > 4 else None
-        exists = db.execute("SELECT id FROM products WHERE name=?", (m_name,)).fetchone()
+        retail = max(100, round(m_price * (1 + PROFIT_MARGIN / 100.0)))
+        exists = db.execute("SELECT id, margin, price, supplier_price FROM products WHERE name=?", (m_name,)).fetchone()
         if not exists:
             db.execute("""
-                INSERT INTO products(name, description, price, category, auto_fulfill, active, supplier_stock, delivery_type)
-                VALUES(?,?,?,?,0,1,?,'manual')
-            """, (m_name, m_desc, m_price, m_cat, m_stock))
+                INSERT INTO products(name, description, price, supplier_price, category, auto_fulfill, active, supplier_stock, delivery_type)
+                VALUES(?,?,?,?,?,0,1,?,'manual')
+            """, (m_name, m_desc, retail, m_price, m_cat, m_stock))
         else:
+            # If product has no supplier_price or was stored with raw wholesale price, update to retail with PROFIT_MARGIN
+            if exists["supplier_price"] is None or exists["price"] == m_price:
+                db.execute("""
+                    UPDATE products SET price=?, supplier_price=? WHERE id=?
+                """, (retail, m_price, exists["id"]))
             if m_stock is not None:
                 db.execute("""
-                    UPDATE products SET category=?, description=COALESCE(description, ?), price=?, supplier_stock=? WHERE id=?
-                """, (m_cat, m_desc, m_price, m_stock, exists["id"]))
+                    UPDATE products SET category=?, description=COALESCE(description, ?), supplier_stock=? WHERE id=?
+                """, (m_cat, m_desc, m_stock, exists["id"]))
             else:
                 db.execute("""
                     UPDATE products SET category=?, description=COALESCE(description, ?) WHERE id=?
                 """, (m_cat, m_desc, exists["id"]))
+
+    # Backfill legacy products: if price equals raw supplier cost, restore retail price with 45% profit margin
+    db.execute("""
+        UPDATE products
+        SET price = max(100, round(supplier_price * (1 + ? / 100.0)))
+        WHERE supplier_price IS NOT NULL AND price = supplier_price
+    """, (PROFIT_MARGIN,))
 
     # Custom emojis table for original brand logos (Telegram custom emoji IDs)
     db.execute("""
@@ -2913,7 +2931,7 @@ async def admin_supplier_products(m: Message, command: CommandObject):
 
 async def perform_supplier_sync(
     target_suppliers: Optional[List[str]] = None,
-    markup: int = PROFIT_MARGIN,
+    markup: Optional[int] = None,
 ) -> Tuple[int, int, int, List[str]]:
     """
     Synchronizes catalog and live inventory from reseller API.
@@ -2921,6 +2939,9 @@ async def perform_supplier_sync(
     and reconciles unlisted or depleted items as out of stock.
     Returns: (total_added, total_updated, total_items, errors)
     """
+    if markup is None:
+        markup = get_default_margin()
+
     registered = supplier_registry.list_suppliers()
     if not registered:
         return 0, 0, 0, ["No suppliers registered"]
@@ -2972,7 +2993,8 @@ async def perform_supplier_sync(
                 elif "duolingo" in clean_sp_name and ("12" in clean_sp_name or "super" in clean_sp_name):
                     existing = db.execute("SELECT id, margin FROM products WHERE supplier_product_id IS NULL AND name LIKE '%Duolingo%'").fetchone()
 
-            item_margin = existing["margin"] if (existing and existing["margin"] is not None) else markup
+            saved_margin = existing["margin"] if existing else None
+            item_margin = saved_margin if (saved_margin is not None) else markup
             retail_cents = max(100, round(cost_cents * (1 + item_margin / 100)))
             is_active = 0 if (stock is not None and stock == 0) else 1
 
@@ -2980,15 +3002,15 @@ async def perform_supplier_sync(
                 db.execute("""
                     UPDATE products
                     SET name=?, description=?, price=?, supplier_price=?, auto_fulfill=1, active=?, category=?, supplier=?,
-                        supplier_stock=?, delivery_type='auto', supplier_product_id=?
+                        supplier_stock=?, delivery_type='auto', supplier_product_id=?, margin=?
                     WHERE id=?
-                """, (sp["name"], sp["description"], retail_cents, cost_cents, is_active, cat, sup_name, stock, sp_id, existing["id"]))
+                """, (sp["name"], sp["description"], retail_cents, cost_cents, is_active, cat, sup_name, stock, sp_id, saved_margin, existing["id"]))
                 total_updated += 1
             else:
                 db.execute("""
-                    INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type)
-                    VALUES(?,?,?,?,?,1,?,?,?,?, 'auto')
-                """, (sp["name"], sp["description"], retail_cents, sp_id, cost_cents, is_active, cat, sup_name, stock))
+                    INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type, margin)
+                    VALUES(?,?,?,?,?,1,?,?,?,?, 'auto', ?)
+                """, (sp["name"], sp["description"], retail_cents, sp_id, cost_cents, is_active, cat, sup_name, stock, None))
                 total_added += 1
 
         # Mark products linked to this supplier that are no longer in feed as out of stock / inactive
@@ -3012,7 +3034,7 @@ async def admin_supplier_sync(m: Message, command: CommandObject):
 
     args = (command.args or "").strip().split()
     target_suppliers = []
-    markup = PROFIT_MARGIN
+    markup = get_default_margin()
 
     if not args:
         target_suppliers = [supplier_registry.default_name()]
@@ -3020,12 +3042,15 @@ async def admin_supplier_sync(m: Message, command: CommandObject):
         target_suppliers = list(registered.keys())
         if len(args) > 1:
             markup = parse_profit_margin(args[1], default=markup)
+            set_setting("profit_margin", str(markup))
     elif args[0].lower() in registered:
         target_suppliers = [args[0].lower()]
         if len(args) > 1:
             markup = parse_profit_margin(args[1], default=markup)
+            set_setting("profit_margin", str(markup))
     else:
         markup = parse_profit_margin(args[0], default=markup)
+        set_setting("profit_margin", str(markup))
         target_suppliers = [supplier_registry.default_name()]
 
     total_added, total_updated, total_items, errors = await perform_supplier_sync(target_suppliers, markup)
