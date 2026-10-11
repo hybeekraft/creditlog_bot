@@ -139,7 +139,53 @@ CREATE TABLE IF NOT EXISTS orders(
   invoice_id TEXT DEFAULT NULL,
   status TEXT DEFAULT 'completed',
   created TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS settings(
+  key TEXT PRIMARY KEY,
+  value TEXT);
 """)
+
+
+def get_setting(key: str, default: str = "") -> str:
+    try:
+        row = db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+    except sqlite3.OperationalError:
+        db.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
+        return default
+
+
+def set_setting(key: str, value: str):
+    try:
+        db.execute(
+            "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value)
+        )
+    except sqlite3.OperationalError:
+        db.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
+        db.execute(
+            "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value)
+        )
+
+
+async def check_supplier_balance_sufficient(sup_client: ResellerClient, cost_usd: float) -> Tuple[bool, float]:
+    """
+    Checks if the supplier account has enough balance to cover the wholesale purchase.
+    Returns (has_sufficient_balance: bool, current_balance: float).
+    """
+    mode = get_setting("fulfillment_mode", "auto").lower()
+    if mode in ("manual", "model_a", "a"):
+        return False, 0.0
+    if mode in ("instant", "model_b", "b"):
+        return True, 999.0
+
+    try:
+        bal_info = await sup_client.get_balance()
+        bal = float(bal_info.get("balance", 0.0))
+        return (bal >= cost_usd and bal > 0.0), bal
+    except Exception as e:
+        log.warning("Could not check supplier balance: %s", e)
+        return False, 0.0
 
 # --------------------------------------------------------------------------
 # Categories & Icons Definition (24 Categories from Reference Design)
@@ -1212,11 +1258,13 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
 # --------------------------------------------------------------------------
 # Order Fulfillment Logic (with Quantity Support)
 # --------------------------------------------------------------------------
-async def fulfill_order(bot: Bot, oid: int) -> Tuple[Optional[str], Optional[str]]:
+async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tuple[Optional[str], Optional[str]]:
     """
-    Fulfills an order automatically:
-      - If supplier catalog item: calls Reseller API POST /orders with quantity, saves order.value.
-      - If manual stock: pulls available stock items from database for specified quantity.
+    Fulfills an order:
+      - Model B (when top-up balance > 0): Calls supplier API POST /orders immediately and auto-delivers.
+      - Model A (when top-up balance is empty / 0): Pauses automated delivery and notifies admin to
+        use customer's payment to top up, then tap /approve_<oid>.
+      - If local stock: pulls available stock items from database.
     Returns (payload, error_key).
     """
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
@@ -1235,6 +1283,32 @@ async def fulfill_order(bot: Bot, oid: int) -> Tuple[Optional[str], Optional[str
     if p["auto_fulfill"] and p["supplier_product_id"]:
         sup_name = p["supplier"] if ("supplier" in p.keys() and p["supplier"]) else "default"
         sup_client = supplier_registry.get(sup_name) or reseller
+
+        unit_cost = (p["supplier_price"] / 100.0) if ("supplier_price" in p.keys() and p["supplier_price"]) else (p["price"] * 0.65 / 100.0)
+        total_cost = unit_cost * qty
+
+        # If not manually approved by admin via /approve, verify top-up account has sufficient float (Model B)
+        if not force_supplier:
+            has_bal, cur_bal = await check_supplier_balance_sufficient(sup_client, total_cost)
+            if not has_bal:
+                # Top-up account is empty: Pause automated fulfillment & fallback to Model A!
+                db.execute("UPDATE orders SET status='manual_pending' WHERE id=?", (oid,))
+                await notify_admins(
+                    bot,
+                    f"🟡 <b>Model A Active (Supplier Balance Empty) — Order #{oid}</b>\n"
+                    f"• <b>Product:</b> {esc(p['name'])} x{qty}\n"
+                    f"• <b>Customer Paid:</b> {usd(o['price'])} USDT (in your wallet)\n"
+                    f"• <b>Wholesale Cost:</b> ${total_cost:.2f} USDT\n"
+                    f"• <b>Supplier Balance:</b> ${cur_bal:.2f} USDT (Empty)\n\n"
+                    f"⚡ <b>Next Step (Customer Money Top-Up):</b>\n"
+                    f"1. The customer's funds are now in your wallet.\n"
+                    f"2. Top up your supplier account with <b>${total_cost:.2f} USDT</b>.\n"
+                    f"3. Send <code>/approve_{oid}</code> to buy & deliver automatically to the customer.\n"
+                    f"   <i>(Or send <code>/deliver {oid} &lt;item&gt;</code> to deliver manually)</i>"
+                )
+                return "MANUAL_PENDING", None
+
+        # Either has sufficient balance (Model B) or admin explicitly triggered /approve_{oid} after topping up:
         try:
             order_res = await sup_client.create_order(product_id=p["supplier_product_id"], quantity=qty)
             payload = order_res.get("value")
@@ -1244,7 +1318,12 @@ async def fulfill_order(bot: Bot, oid: int) -> Tuple[Optional[str], Optional[str
         except Exception as e:
             log.exception("Supplier order failed for order %s (supplier: %s)", oid, sup_name)
             db.execute("UPDATE orders SET status='failed' WHERE id=?", (oid,))
-            await notify_admins(bot, f"⚠️ Supplier order failed for order #{oid} (user {o['user_id']}, product #{p['id']}, supplier '{sup_name}', qty {qty}):\n<code>{esc(str(e))}</code>")
+            await notify_admins(
+                bot,
+                f"⚠️ Supplier order failed for order #{oid} (user {o['user_id']}, product #{p['id']}, supplier '{sup_name}', qty {qty}):\n"
+                f"<code>{esc(str(e))}</code>\n\n"
+                f"👉 Top up your supplier balance, then retry with <code>/approve_{oid}</code> or deliver with <code>/deliver {oid} &lt;item&gt;</code>."
+            )
             return None, "supplier_error"
 
         db.execute(
@@ -2115,7 +2194,7 @@ async def admin_approve_order(m: Message, command: CommandObject = None):
     if o["status"] == "completed" and o["payload"]:
         return await m.answer(f"Order #{oid} is already completed.")
 
-    payload, err = await fulfill_order(m.bot, oid)
+    payload, err = await fulfill_order(m.bot, oid, force_supplier=True)
     if err:
         return await m.answer(f"⚠️ Failed to fulfill order #{oid}: {err}")
 
@@ -2344,11 +2423,15 @@ async def admin_help(m: Message):
         "/delemoji &lt;key&gt; - Remove custom emoji\n\n"
         "🌐 <b>Supplier Catalog (Automated)</b>\n"
         "/supplier - Supplier balance & account info\n"
+        "/mode [auto|manual|instant] - View or switch Model B / Model A\n"
         "/s_products - List available supplier products\n"
         "/s_sync [markup_%] - Auto-sync catalog with profit margin\n"
         "/s_link &lt;local_id&gt; &lt;supplier_id&gt; - Link item to supplier\n"
         "/s_unlink &lt;local_id&gt; - Revert to manual stock\n"
-        "/s_orders - Recent supplier orders"
+        "/s_orders - Recent supplier orders\n\n"
+        "⚡ <b>Fulfillment & Approval</b>\n"
+        "/approve &lt;order_id&gt; - Approve & buy from supplier after top-up\n"
+        "/deliver &lt;order_id&gt; &lt;item&gt; - Deliver manually to buyer"
     )
 
 
@@ -2675,6 +2758,45 @@ async def admin_supplier_info(m: Message, command: CommandObject):
 
     lines.append("<i>Tip: Type <code>/supplier &lt;name&gt;</code> for details or <code>/s_sync &lt;name&gt; [margin]</code> to sync products.</i>")
     await m.answer("\n".join(lines))
+
+
+@dp.message(Command("mode"), is_admin)
+async def admin_mode(m: Message, command: CommandObject = None):
+    """View or change fulfillment mode (Model B vs Model A)."""
+    arg = command.args.strip().lower() if command and command.args else None
+    if arg:
+        if arg in ("auto", "automatic"):
+            set_setting("fulfillment_mode", "auto")
+            return await m.answer("✅ Fulfillment mode set to <b>AUTO (Dynamic)</b>.\n• Model B (Instant delivery) when supplier balance > 0.\n• Falls back to Model A (Manual top-up & /approve) when supplier balance is empty.")
+        elif arg in ("manual", "a", "model_a"):
+            set_setting("fulfillment_mode", "manual")
+            return await m.answer("✅ Fulfillment mode set to <b>MODEL A (Manual)</b>.\n• All automated supplier deliveries are paused.\n• All orders wait for you to top up and /approve.")
+        elif arg in ("instant", "b", "model_b"):
+            set_setting("fulfillment_mode", "instant")
+            return await m.answer("✅ Fulfillment mode set to <b>MODEL B (Instant)</b>.\n• Bot will always attempt instant supplier fulfillment.")
+        else:
+            return await m.answer("<b>Usage:</b>\n• <code>/mode auto</code> - Dynamic (Model B if funded, Model A if empty)\n• <code>/mode manual</code> - Force Model A (pause instant deliveries)\n• <code>/mode instant</code> - Force Model B (always instant)")
+
+    current_mode = get_setting("fulfillment_mode", "auto").lower()
+    bal = 0.0
+    try:
+        bal_res = await reseller.get_balance()
+        bal = float(bal_res.get("balance", 0.0))
+    except Exception as e:
+        log.warning("Could not fetch balance in /mode: %s", e)
+
+    active_model = "Model B (Instant Auto-Delivery)" if (bal > 0 and current_mode != "manual") else "Model A (Manual Top-Up & /approve)"
+    await m.answer(
+        f"⚙️ <b>Store Fulfillment Strategy</b>\n\n"
+        f"• <b>Configured Mode:</b> <code>{current_mode.upper()}</code>\n"
+        f"• <b>Current Supplier Balance:</b> <b>${bal:.2f} USDT</b>\n"
+        f"• <b>Currently Active:</b> <b>{active_model}</b>\n\n"
+        f"<i>When balance is $0.00, orders automatically pause automated delivery so you can use the customer's funds to top up before approving.</i>\n\n"
+        f"<b>Switch Mode:</b>\n"
+        f"• <code>/mode auto</code> - Dynamic (Recommended)\n"
+        f"• <code>/mode manual</code> - Force Model A (Pause all auto-delivery)\n"
+        f"• <code>/mode instant</code> - Force Model B (Instant only)"
+    )
 
 
 @dp.message(Command("s_products"), is_admin)

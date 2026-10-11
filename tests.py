@@ -156,7 +156,11 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
           key TEXT PRIMARY KEY,
           emoji_id TEXT NOT NULL,
           created TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS settings(
+          key TEXT PRIMARY KEY,
+          value TEXT);
         """)
+        bot.set_setting("fulfillment_mode", "instant")
 
     async def test_guest_checkout_direct_supplier_fulfillment(self):
         pid = bot.db.execute("""
@@ -1280,6 +1284,82 @@ class TestBinancePayIntegration(unittest.IsolatedAsyncioTestCase):
             o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
             self.assertEqual(o["status"], "completed")
             self.assertEqual(o["payload"], "WEBHOOK-TOKEN-999")
+
+
+class TestFulfillmentStrategyModelAAndB(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        bot.db.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
+        bot.db.execute("DELETE FROM settings")
+
+    async def test_model_a_fallback_when_supplier_balance_empty(self):
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_price) VALUES(91, 'Supplier Item A', 1000, 1, 1, 'sup-91', 650)")
+        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, status) VALUES(333, 91, 'Supplier Item A', 1000, 1, 'pending')")
+        oid = cur.lastrowid
+
+        bot.set_setting("fulfillment_mode", "auto")
+
+        # Mock supplier balance to be 0.0 (empty top-up account)
+        with patch.object(bot.reseller, "get_balance", new=AsyncMock(return_value={"balance": 0.0, "currency": "USD"})), \
+             patch("bot.notify_admins", new=AsyncMock()) as mock_notify:
+            mock_bot = AsyncMock()
+            payload, err = await bot.fulfill_order(mock_bot, oid, force_supplier=False)
+
+            # Automated fulfillment must be PAUSED
+            self.assertEqual(payload, "MANUAL_PENDING")
+            self.assertIsNone(err)
+
+            # Order status set to manual_pending
+            o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+            self.assertEqual(o["status"], "manual_pending")
+
+            # Admin notified with Model A instructions
+            self.assertTrue(mock_notify.called)
+            notify_text = mock_notify.call_args[0][1]
+            self.assertIn("Model A Active", notify_text)
+            self.assertIn("6.50", notify_text)
+            self.assertIn(f"/approve_{oid}", notify_text)
+
+    async def test_admin_approve_forces_supplier_purchase_after_topup(self):
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active, auto_fulfill, supplier_product_id) VALUES(92, 'Supplier Item B', 1000, 1, 1, 'sup-92')")
+        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, status) VALUES(333, 92, 'Supplier Item B', 1000, 1, 'manual_pending')")
+        oid = cur.lastrowid
+
+        m = MagicMock()
+        m.text = f"/approve_{oid}"
+        m.from_user.id = 111222333  # admin id
+        m.bot = AsyncMock()
+        m.answer = AsyncMock()
+
+        # Admin tops up, so now supplier API order succeeds
+        with patch.object(bot.reseller, "create_order", new=AsyncMock(return_value={"order_code": "ORD-123", "value": "DELIVERED-KEY-999"})):
+            await bot.admin_approve_order(m)
+
+            o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+            self.assertEqual(o["status"], "completed")
+            self.assertEqual(o["payload"], "DELIVERED-KEY-999")
+            self.assertTrue(m.bot.send_message.called)
+            delivered_text = m.bot.send_message.call_args[0][1]
+            self.assertIn("DELIVERED-KEY-999", delivered_text)
+
+    async def test_admin_mode_command_toggle(self):
+        m = MagicMock()
+        m.answer = AsyncMock()
+
+        # Switch to manual
+        cmd = MagicMock()
+        cmd.args = "manual"
+        await bot.admin_mode(m, cmd)
+        self.assertEqual(bot.get_setting("fulfillment_mode"), "manual")
+
+        # Switch to auto
+        cmd.args = "auto"
+        await bot.admin_mode(m, cmd)
+        self.assertEqual(bot.get_setting("fulfillment_mode"), "auto")
+
+        # Switch to instant
+        cmd.args = "instant"
+        await bot.admin_mode(m, cmd)
+        self.assertEqual(bot.get_setting("fulfillment_mode"), "instant")
 
 
 if __name__ == "__main__":
