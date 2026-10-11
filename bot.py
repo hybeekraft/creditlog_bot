@@ -216,10 +216,11 @@ def render_fsub_gate(channels: List[str]) -> Tuple[str, InlineKeyboardMarkup]:
 async def check_user_fsub(bot_inst: Bot, uid: int) -> Tuple[bool, List[str]]:
     """
     Checks if user has joined all required channels/groups.
-    Admins are always exempt.
+    Admins are exempt by default unless fsub_check_admin is enabled for testing.
     Returns (passed: bool, missing_channels: List[str]).
     """
-    if uid in ADMIN_IDS:
+    check_admin = get_setting("fsub_check_admin", "0") == "1"
+    if uid in ADMIN_IDS and not check_admin:
         return True, []
     if not is_fsub_enabled():
         return True, []
@@ -2493,8 +2494,20 @@ async def admin_fsub(m: Message, command: CommandObject = None):
         set_fsub_channels(new_channels)
         set_fsub_enabled(True)
         return await m.answer(f"✅ Configured {len(new_channels)} required channels: {', '.join(new_channels)}")
+    elif subcmd in ("preview", "test"):
+        channels = get_fsub_channels()
+        if not channels:
+            return await m.answer("⚠️ No channels configured yet. Use <code>/fsub add @channel</code> first.")
+        text, markup = render_fsub_gate(channels)
+        return await m.answer(text, reply_markup=markup)
+    elif subcmd in ("testmode", "checkadmin"):
+        current = get_setting("fsub_check_admin", "0")
+        new_val = "0" if current == "1" else "1"
+        set_setting("fsub_check_admin", new_val)
+        status = "ENABLED (Admins will now see the join gate on /start)" if new_val == "1" else "DISABLED (Admins bypass the gate)"
+        return await m.answer(f"⚙️ Admin Gate Check is now <b>{status}</b>.")
     else:
-        return await m.answer("Usage: /fsub [on | off | add <@channel> | remove <@channel> | set <@c1,@c2>]")
+        return await m.answer("Usage: /fsub [on | off | preview | checkadmin | add <@channel> | remove <@channel> | set <@c1,@c2>]")
 
 
 @dp.message(Command("setemoji"), is_admin)
