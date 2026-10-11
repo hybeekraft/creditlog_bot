@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import sqlite3
-from typing import Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 from aiohttp import web
@@ -230,6 +230,50 @@ def get_product_icon(name: str, cat_name: Optional[str] = None) -> str:
         return "🎥"
     if "autodesk" in n or "autocad" in n:
         return "🅰️"
+    if "prime video" in n or "prime" in n:
+        return "📺"
+    if "apple tv" in n:
+        return "📺"
+    if "fallout" in n or "game pass" in n or "xbox" in n:
+        return "🎮"
+    if "avast" in n or "mcafee" in n:
+        return "🛡️"
+    if "gamma" in n:
+        return "✨"
+    if "framer" in n or "magic patterns" in n or "mobbin" in n or "supercut" in n or "krea" in n or "leonardo" in n:
+        return "🎨"
+    if "n8n" in n:
+        return "⚙️"
+    if "brain.fm" in n:
+        return "🎵"
+    if "customer.io" in n:
+        return "📬"
+    if "fin ai" in n:
+        return "🤖"
+    if "warp" in n:
+        return "💻"
+    if "wink" in n:
+        return "✨"
+    if "readwise" in n:
+        return "📖"
+    if "veo" in n or "heygen" in n:
+        return "🎥"
+    if "icloud" in n:
+        return "☁️"
+    if "wordwall" in n or "quizlet" in n:
+        return "📚"
+    if "notion" in n:
+        return "📝"
+    if "gemini" in n:
+        return "✨"
+    if "qwen" in n:
+        return "🔮"
+    if "deepseek" in n:
+        return "🐳"
+    if "surfshark" in n:
+        return "🦈"
+    if "discord" in n or "nitro" in n:
+        return "👾"
     category = cat_name or detect_category(name)
     key = CAT_KEY_BY_NAME.get(category.lower())
     if key and key in CAT_BY_KEY:
@@ -399,7 +443,92 @@ def migrate_db():
         ("Notion Plus 12 Months", "Notion Plus 12 Months subscription.", 250, "Office"),
         ("Canva Pro Add to Team 12 Months", "Canva Pro Add to Team 12 Months membership.", 450, "Design"),
 
-        # Page 12 / Additional catalog services
+        # Screenshot Page 8
+        ("Prime Video 6 Months", "Amazon Prime Video 6 Months private subscription.", 300, "Streaming"),
+        ("Apple TV+ 1M Canada", "Apple TV+ 1 Month Canada region access.", 50, "Streaming"),
+        ("Claude API 500M Tokens 1 Day", "Claude API 500M tokens 1 Day high volume access.", 3300, "Claude"),
+        ("Microsoft Office 365 Plus 1 Year", "Microsoft Office 365 Plus 1 Year account license.", 160, "Office"),
+        ("Apple TV+ 12 Months Activation Link", "Apple TV+ 12 Months official activation link.", 290, "Streaming"),
+        ("CapCut Pro 1 Month", "CapCut Pro 1 Month membership access.", 250, "Design"),
+        ("CapCut Pro 1M 1600 AI Credits", "CapCut Pro 1 Month with 1600 AI credits.", 250, "Design"),
+        ("Fallout 76 MS Store", "Fallout 76 Microsoft Store digital edition key.", 259, "Games"),
+        ("PC Game Pass 1M", "Xbox PC Game Pass 1 Month subscription.", 816, "Games"),
+        ("Avast Premium Security 1Y", "Avast Premium Security 1 Year activation license.", 539, "Security"),
+        ("McAfee Total Protection 1Y", "McAfee Total Protection 1 Year security subscription.", 625, "Security"),
+        ("McAfee AntiVirus 1 Device 1Y", "McAfee AntiVirus 1 Device 1 Year license.", 656, "Security"),
+        ("CapCut Pro 6M Personal", "CapCut Pro 6 Months personal account subscription.", 1450, "Design"),
+        ("Gamma Pro 1M", "Gamma Pro AI presentation maker 1 Month subscription.", 1400, "AI Tools"),
+        ("Gamma Pro 12 Months", "Gamma Pro AI presentation maker 12 Months subscription.", 2700, "AI Tools"),
+
+        # Screenshot Page 9
+        ("Gamma Pro 12M Coupon Code", "Gamma Pro 12 Months coupon redeem code.", 4600, "AI Tools"),
+        ("Framer Pro 12 Months", "Framer Pro 12 Months workspace plan.", 1700, "Design"),
+        ("Prime Video Ultra 6M 6 Profiles", "Prime Video Ultra 6 Months 6 Profiles private slot.", 260, "Streaming"),
+        ("ElevenLabs Free 10k Credits", "ElevenLabs 10,000 character credits access.", 150, "ElevenLabs"),
+        ("Gamma Plus 1M", "Gamma Plus 1 Month subscription access.", 800, "AI Tools"),
+        ("Gamma AI Plus 1 Month", "Gamma AI Plus 1 Month subscription access.", 1100, "AI Tools"),
+        ("ElevenLabs Creator 12 Months", "ElevenLabs Creator 12 Months full plan.", 4298, "ElevenLabs"),
+        ("Magic Patterns Starter 12M", "Magic Patterns Starter 12 Months subscription.", 350, "Design"),
+        ("Mobbin 10x Seat 12M", "Mobbin Design Library 10x Seat 12 Months.", 800, "Design"),
+        ("N8N Starter 12 Months", "n8n Cloud Starter 12 Months subscription.", 1500, "AI Tools"),
+        ("N8N Starter 1 Year", "n8n Cloud Starter 1 Year subscription.", 1500, "AI Tools"),
+        ("Brain.fm 1 Year", "Brain.fm Focus Music 1 Year subscription.", 670, "Music"),
+        ("Kling Pro 3K3 Credits 1M", "Kling Pro 3,300 Credits 1 Month video plan.", 2600, "Video AI"),
+        ("Customer.io Essentials 1Y", "Customer.io Essentials 1 Year account access.", 350, "Office"),
+        ("Fin AI + Advanced", "Fin AI Copilot + Advanced 1 Month access.", 350, "AI Tools"),
+
+        # Screenshot Page 10
+        ("Warp Build 1 Year", "Warp Terminal Build 1 Year membership.", 1100, "Office"),
+        ("Wink Smile+ 7 Days", "Wink Smile+ Video AI 7 Days access.", 230, "Design"),
+        ("Readwise 1 Year", "Readwise Reader 1 Year subscription.", 550, "Office"),
+        ("Supercut Pro 10 Seats 12M", "Supercut Pro 10 Seats 12 Months team license.", 550, "Design"),
+        ("Autodesk Admin Access", "Autodesk Admin Console Access license.", 1400, "Autodesk"),
+        ("Veo Ultra X20 25K Credits Share 1M", "Veo Ultra X20 25K Credits shared 1 Month access.", 2300, "Video AI"),
+        ("ElevenLabs Redeem 300K Credits", "ElevenLabs 300,000 character credits redeem code.", 700, "ElevenLabs"),
+        ("ElevenLabs Redeem 1M Credits", "ElevenLabs 1,000,000 character credits redeem code.", 1250, "ElevenLabs"),
+        ("ElevenLabs Redeem 3M Credits", "ElevenLabs 3,000,000 character credits redeem code.", 3450, "ElevenLabs"),
+        ("HeyGen Creator 1M 28D", "HeyGen Creator 1 Month 28 Days active account.", 2500, "Video AI"),
+        ("HeyGen Creator 1M 48H", "HeyGen Creator 1 Month 48 Hours fast access.", 1850, "Video AI"),
+        ("Leonardo AI Video Gen", "Leonardo AI Video Generation 1 Month access.", 290, "Video AI"),
+        ("iCloud 400GB Your Mail 12M", "Apple iCloud+ 400GB activated on your email 12 Months.", 2400, "Office"),
+        ("Wordwall Pro 12M", "Wordwall Pro Teaching Resources 12 Months.", 1950, "Education"),
+        ("Wordwall Pro 1M", "Wordwall Pro Teaching Resources 1 Month.", 400, "Education"),
+
+        # Screenshot Page 11
+        ("KREA Basic", "KREA AI Basic 1 Month subscription.", 750, "AI Tools"),
+        ("KREA Max", "KREA AI Max 1 Month subscription.", 3650, "AI Tools"),
+        ("Notion Business 6M", "Notion Business Workspace 6 Months access.", 1750, "Office"),
+        ("Quizlet Plus Ultimate 12M", "Quizlet Plus Ultimate 12 Months subscription.", 950, "Education"),
+        ("Quizlet Plus 12M", "Quizlet Plus 12 Months individual plan.", 950, "Education"),
+        ("Gemini Pro 400GB 12M", "Google Gemini Pro 400GB storage 12 Months.", 600, "Gemini"),
+        ("Gemini Pro 5TB 12M", "Google Gemini Pro 5TB storage 12 Months.", 1950, "Gemini"),
+        ("Gemini Pro 2TB 12M", "Google Gemini Pro 2TB storage 12 Months.", 900, "Gemini"),
+        ("API Kimi 15M Tokens 1D", "Kimi API 15M tokens 1 Day access.", 300, "Kimi"),
+        ("API Kimi 100M Tokens 7D", "Kimi API 100M tokens 7 Days access.", 600, "Kimi"),
+        ("API Kimi 300M Tokens 30D", "Kimi API 300M tokens 30 Days access.", 1000, "Kimi"),
+        ("API Qwen $10 1 Month", "Qwen API $10 balance credits 1 Month.", 220, "Qwen API"),
+        ("API Qwen $30 1 Month", "Qwen API $30 balance credits 1 Month.", 290, "Qwen API"),
+        ("API Qwen $50 1 Month", "Qwen API $50 balance credits 1 Month.", 400, "Qwen API"),
+        ("API Qwen $100 1 Month", "Qwen API $100 balance credits 1 Month.", 650, "Qwen API"),
+
+        # Screenshot Page 12
+        ("DeepSeek API $10 1 Month", "DeepSeek API $10 credit balance valid 1 Month.", 220, "DeepSeek AI"),
+        ("DeepSeek API $30 1 Month", "DeepSeek API $30 credit balance valid 1 Month.", 290, "DeepSeek AI"),
+        ("DeepSeek API $50 1 Month", "DeepSeek API $50 credit balance valid 1 Month.", 410, "DeepSeek AI"),
+        ("DeepSeek API $100 1 Month", "DeepSeek API $100 credit balance valid 1 Month.", 610, "DeepSeek AI"),
+        ("Cursor Pro API 2600 Credits 1 Month", "Cursor Pro API 2600 Credits 1 Month plan.", 1150, "Cursor API"),
+        ("Cursor Pro API 400 Credits/day 1 Month", "Cursor Pro dedicated API key with 400 credits/day refresh.", 1550, "Cursor API"),
+        ("Cursor Pro API 6500 Credits 1 Month", "Cursor Pro high-volume 6500 credits 1 month plan.", 1550, "Cursor API"),
+        ("Kimi GLM DeepSeek API 50M Tokens 2D", "High speed Kimi GLM DeepSeek API 50M Tokens 2 Days.", 300, "Codex API"),
+        ("API QWEN Unlimited Tokens 7D", "Qwen API Unlimited tokens 7-day access.", 500, "AI Tools"),
+        ("Kimi GLM DeepSeek API 100M Tokens 4D", "High speed Kimi GLM DeepSeek API 100M Tokens 4-day access.", 650, "Codex API"),
+        ("Surfshark VPN 18M", "Surfshark VPN 18 Months unlimited devices.", 700, "VPN"),
+        ("Freepik Magnific API Panel 30D", "Freepik Magnific AI upscale & generator panel 30 days.", 500, "AI Tools"),
+        ("MiniMax Redeem 300K", "MiniMax 300,000 tokens instant redeem code.", 600, "AI Tools"),
+        ("Discord Nitro 2M", "Discord Nitro 2 months subscription gift link.", 900, "Discord"),
+        ("Notion Business Admin 1M", "Notion Business Workspace Admin 1 month.", 770, "Office"),
+
+        # Additional services
         ("Cursor Pro 1M", "Cursor Pro 1 Month premium subscription.", 990, "AI Tools"),
         ("iCloud 2TB 1M", "Apple iCloud+ 2TB family slot 1 month.", 400, "Office"),
         ("Apple Music 1M", "Apple Music individual 1 month subscription.", 200, "Music"),
@@ -408,17 +537,6 @@ def migrate_db():
         ("Windscribe VPN Pro 1Y", "Windscribe VPN Pro 1 Year unlimited data.", 1400, "VPN"),
         ("TradingView Essential 1M", "TradingView Essential 1 Month subscription.", 750, "Office"),
         ("GitHub Copilot 1M", "GitHub Copilot individual 1 Month subscription.", 400, "AI Tools"),
-        ("Perplexity Pro 1M", "Perplexity Pro 1 Month subscription access.", 500, "AI Tools"),
-
-        # Additional Assisted / API Keys
-        ("Cursor Pro API 400 Credits/day 1 Month", "Cursor Pro dedicated API key with 400 credits/day refresh.", 1550, "AI Tools"),
-        ("Cursor Pro API 6500 Credits 1 Month", "Cursor Pro high-volume 6500 credits 1 month plan.", 1550, "AI Tools"),
-        ("Kimi GLM DeepSeek API 50M Tokens 2D", "High speed Kimi GLM DeepSeek API 50M Tokens 2 Days.", 300, "Codex API"),
-        ("API QWEN Unlimited Tokens 7D", "Qwen API Unlimited tokens 7-day access.", 500, "AI Tools"),
-        ("Kimi GLM DeepSeek API 100M Tokens 4D", "High speed Kimi GLM DeepSeek API 100M Tokens 4-day access.", 650, "Codex API"),
-        ("Freepik Magnific API Panel 30D", "Freepik Magnific AI upscale & generator panel 30 days.", 500, "AI Tools"),
-        ("Discord Nitro 2M", "Discord Nitro 2 months subscription gift link.", 900, "Discord"),
-        ("Notion Business Admin 1M", "Notion Business Workspace Admin 1 month.", 770, "Office"),
         ("iCloud 2TB 3M", "Apple iCloud+ 2TB Family storage access 3 months.", 1150, "Office"),
 
         # Out-of-stock products shown in catalog (Page 17)
@@ -1485,7 +1603,7 @@ async def on_buy_qty(c: CallbackQuery):
     _, pid_str, qty_str, ctx = c.data.split(":", 3)
     pid, qty = int(pid_str), int(qty_str)
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
-    if not p:
+    if not p or not is_product_available(p):
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
     await start_checkout(c, uid, p, qty, ctx)
 
@@ -1496,7 +1614,7 @@ async def buy(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid, pid = c.from_user.id, int(c.data[4:])
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
-    if not p:
+    if not p or not is_product_available(p):
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
     await start_checkout(c, uid, p, qty=1, ctx="shop")
 
@@ -1508,7 +1626,7 @@ async def on_custom_qty(c: CallbackQuery):
     pid = int(parts[1])
     ctx = parts[2] if len(parts) > 2 else "shop"
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
-    if not p:
+    if not p or not is_product_available(p):
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
 
     pending_inputs[uid] = {"action": "cqty", "pid": pid, "ctx": ctx}
@@ -1552,7 +1670,7 @@ async def handle_user_text_input(m: Message):
         pid = state["pid"]
         ctx = state.get("ctx", "shop")
         p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
-        if not p:
+        if not p or not is_product_available(p):
             return await m.answer(t(uid, "out_of_stock"), reply_markup=kb([[btn(t(uid, "btn_back"), "shop", style="danger")]]))
 
         try:
@@ -2176,29 +2294,22 @@ async def admin_supplier_products(m: Message, command: CommandObject):
         await m.answer(text)
 
 
-@dp.message(Command("s_sync"), is_admin)
-async def admin_supplier_sync(m: Message, command: CommandObject):
+async def perform_supplier_sync(
+    target_suppliers: Optional[List[str]] = None,
+    markup: int = PROFIT_MARGIN,
+) -> Tuple[int, int, int, List[str]]:
+    """
+    Synchronizes catalog and live inventory from reseller API.
+    Updates retail prices with markup, updates supplier_stock, sets auto delivery,
+    and reconciles unlisted or depleted items as out of stock.
+    Returns: (total_added, total_updated, total_items, errors)
+    """
     registered = supplier_registry.list_suppliers()
     if not registered:
-        return await m.answer("⚠️ No suppliers configured in .env.")
+        return 0, 0, 0, ["No suppliers registered"]
 
-    args = (command.args or "").strip().split()
-    target_suppliers = []
-    markup = PROFIT_MARGIN
-
-    if not args:
-        target_suppliers = [supplier_registry.default_name()]
-    elif args[0].lower() == "all":
+    if not target_suppliers:
         target_suppliers = list(registered.keys())
-        if len(args) > 1:
-            markup = parse_profit_margin(args[1], default=markup)
-    elif args[0].lower() in registered:
-        target_suppliers = [args[0].lower()]
-        if len(args) > 1:
-            markup = parse_profit_margin(args[1], default=markup)
-    else:
-        markup = parse_profit_margin(args[0], default=markup)
-        target_suppliers = [supplier_registry.default_name()]
 
     total_added = 0
     total_updated = 0
@@ -2272,6 +2383,35 @@ async def admin_supplier_sync(m: Message, command: CommandObject):
             )
 
         total_items += len(sup_products)
+
+    return total_added, total_updated, total_items, errors
+
+
+@dp.message(Command("s_sync"), is_admin)
+async def admin_supplier_sync(m: Message, command: CommandObject):
+    registered = supplier_registry.list_suppliers()
+    if not registered:
+        return await m.answer("⚠️ No suppliers configured in .env.")
+
+    args = (command.args or "").strip().split()
+    target_suppliers = []
+    markup = PROFIT_MARGIN
+
+    if not args:
+        target_suppliers = [supplier_registry.default_name()]
+    elif args[0].lower() == "all":
+        target_suppliers = list(registered.keys())
+        if len(args) > 1:
+            markup = parse_profit_margin(args[1], default=markup)
+    elif args[0].lower() in registered:
+        target_suppliers = [args[0].lower()]
+        if len(args) > 1:
+            markup = parse_profit_margin(args[1], default=markup)
+    else:
+        markup = parse_profit_margin(args[0], default=markup)
+        target_suppliers = [supplier_registry.default_name()]
+
+    total_added, total_updated, total_items, errors = await perform_supplier_sync(target_suppliers, markup)
 
     # Gather color-coded status of all products in DB
     all_prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
@@ -2399,6 +2539,19 @@ async def admin_supplier_orders(m: Message):
         await m.answer(f"Failed to fetch supplier orders: {esc(str(e))}")
 
 
+async def periodic_supplier_sync(interval_sec: int = 600):
+    """Background task to periodically synchronize supplier products and inventory."""
+    while True:
+        try:
+            await asyncio.sleep(interval_sec)
+            added, updated, total, errors = await perform_supplier_sync()
+            log.info("Periodic supplier sync completed: %d updated, %d added of %d total (errors: %s)", updated, added, total, len(errors))
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.warning("Periodic supplier sync encountered error: %s", e)
+
+
 # --------------------------------------------------------------------------
 # Entrypoint
 # --------------------------------------------------------------------------
@@ -2411,6 +2564,15 @@ async def main():
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
     log.info("Health check server listening on :%s", PORT)
 
+    # Initial sync with reseller API on startup
+    try:
+        init_added, init_updated, init_total, init_errs = await perform_supplier_sync()
+        log.info("Initial supplier sync: %d updated, %d added of %d total (errors: %d)", init_updated, init_added, init_total, len(init_errs))
+    except Exception as e:
+        log.warning("Initial supplier sync on startup failed: %s", e)
+
+    sync_task = asyncio.create_task(periodic_supplier_sync(600))
+
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_my_commands([
@@ -2419,6 +2581,12 @@ async def main():
         ])
         await dp.start_polling(bot)
     finally:
+        sync_task.cancel()
+        try:
+            await sync_task
+        except asyncio.CancelledError:
+            pass
+        await supplier_registry.close_all()
         await reseller.close()
         await runner.cleanup()
 

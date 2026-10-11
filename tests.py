@@ -813,6 +813,87 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🔴 [OUT OF STOCK]", text)
 
 
+    async def test_perform_supplier_sync_and_reconciliation(self):
+        bot.db.execute("DELETE FROM products")
+        # Existing item to be updated
+        bot.db.execute("INSERT INTO products(id, name, price, supplier_product_id, supplier, auto_fulfill, active, delivery_type, supplier_stock) VALUES(1, 'Old Item', 100, 'sp-1', 'default', 1, 1, 'auto', 10)")
+        # Product not in feed to be marked out of stock
+        bot.db.execute("INSERT INTO products(id, name, price, supplier_product_id, supplier, auto_fulfill, active, delivery_type, supplier_stock) VALUES(2, 'Delisted Item', 200, 'sp-delisted', 'default', 1, 1, 'auto', 5)")
+
+        mock_products = [
+            {"id": "sp-1", "name": "Updated Item", "description": "Desc", "price_cents": 1000, "stock": 25},
+            {"id": "sp-2", "name": "New Feed Item", "description": "New Desc", "price_cents": 500, "stock": 0},
+        ]
+        mock_client = AsyncMock()
+        mock_client.api_key = "test_key"
+        mock_client.get_products = AsyncMock(return_value=mock_products)
+
+        with patch.object(bot.supplier_registry, "get", return_value=mock_client), \
+             patch.object(bot.supplier_registry, "list_suppliers", return_value={"default": mock_client}):
+            added, updated, total, errors = await bot.perform_supplier_sync(target_suppliers=["default"], markup=50)
+
+        self.assertEqual(len(errors), 0)
+        self.assertEqual(added, 1)
+        self.assertEqual(updated, 1)
+        self.assertEqual(total, 2)
+
+        # Check updated item
+        p1 = bot.db.execute("SELECT * FROM products WHERE id=1").fetchone()
+        self.assertEqual(p1["name"], "Updated Item")
+        self.assertEqual(p1["supplier_stock"], 25)
+        self.assertEqual(p1["price"], 1500)  # 1000 * 1.50
+        self.assertEqual(p1["active"], 1)
+
+        # Check delisted item marked out-of-stock
+        p2 = bot.db.execute("SELECT * FROM products WHERE id=2").fetchone()
+        self.assertEqual(p2["supplier_stock"], 0)
+        self.assertEqual(p2["active"], 0)
+
+        # Check new item inserted with stock 0 marked inactive
+        p3 = bot.db.execute("SELECT * FROM products WHERE supplier_product_id='sp-2'").fetchone()
+        self.assertIsNotNone(p3)
+        self.assertEqual(p3["supplier_stock"], 0)
+        self.assertEqual(p3["active"], 0)
+
+    def test_catalog_buttons_green_available_and_red_out_of_stock(self):
+        bot.db.execute("DELETE FROM products")
+        bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES(1, 'Prime Video 6 Months', 300, 1, 1, 'pv1', 20, 'auto')")
+        bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES(2, 'Snapchat Plus+ 6 Months', 800, 1, 0, NULL, 0, 'manual')")
+
+        prods = bot.db.execute("SELECT * FROM products ORDER BY id").fetchall()
+
+        # Render all products (avail_only=0)
+        text_all, kb_all = bot.render_product_list(1001, prods, page=1, cb_prefix="allprods", ctx_prefix="all", back_cb="shop", avail_only=0)
+        buttons = [row[0] for row in kb_all.inline_keyboard if row[0].callback_data.startswith("p:")]
+        self.assertEqual(len(buttons), 2)
+
+        # Product 1 is available -> green style 'success' and '✅'
+        self.assertEqual(buttons[0].style, "success")
+        self.assertIn("✅", buttons[0].text)
+
+        # Product 2 is out of stock -> red style 'danger' and '⛔'
+        self.assertEqual(buttons[1].style, "danger")
+        self.assertIn("⛔", buttons[1].text)
+
+        # Render available only (avail_only=1)
+        text_avail, kb_avail = bot.render_product_list(1001, prods, page=1, cb_prefix="allprods", ctx_prefix="all", back_cb="shop", avail_only=1)
+        avail_buttons = [row[0] for row in kb_avail.inline_keyboard if row[0].callback_data.startswith("p:")]
+        self.assertEqual(len(avail_buttons), 1)
+        self.assertIn("Prime Video 6 Months", avail_buttons[0].text)
+        self.assertEqual(avail_buttons[0].style, "success")
+
+    async def test_checkout_blocks_out_of_stock_item(self):
+        bot.db.execute("DELETE FROM products")
+        bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES(99, 'Out of Stock Game', 500, 1, 1, 'game99', 0, 'auto')")
+
+        mock_cb = AsyncMock()
+        mock_cb.from_user.id = 1001
+        mock_cb.data = "buyqty:99:1:shop"
+
+        await bot.on_buy_qty(mock_cb)
+        mock_cb.answer.assert_called_once_with(bot.t(1001, "out_of_stock"), show_alert=True)
+
+
 if __name__ == "__main__":
     unittest.main()
 
