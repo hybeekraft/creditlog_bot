@@ -125,7 +125,9 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
           auto_fulfill INTEGER DEFAULT 0,
           margin INTEGER DEFAULT NULL,
           category TEXT DEFAULT 'AI Tools',
-          supplier TEXT DEFAULT 'default');
+          supplier TEXT DEFAULT 'default',
+          supplier_stock INTEGER DEFAULT NULL,
+          delivery_type TEXT DEFAULT 'auto');
         CREATE TABLE IF NOT EXISTS stock(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           product_id INTEGER NOT NULL,
@@ -670,9 +672,97 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Send only USDT on TRC20 (Tron)", call_text)
             self.assertIn("Delivery is instant once the transaction is confirmed on-chain", call_text)
 
+    async def test_admin_supplier_sync_color_coded_report_and_stock_reconciliation(self):
+        # Existing product linked to supplier
+        bot.db.execute("""
+            INSERT INTO products(name, price, supplier_product_id, auto_fulfill, active, delivery_type, supplier_stock)
+            VALUES('Old Delisted Product', 500, 'old-99', 1, 1, 'auto', 5)
+        """)
+        # Manual product
+        bot.db.execute("""
+            INSERT INTO products(name, price, auto_fulfill, active, delivery_type)
+            VALUES('Cursor Pro 1M', 1500, 0, 1, 'manual')
+        """)
+
+        # Feed only returns new product (so old-99 should be marked out of stock)
+        mock_products = [
+            {"id": "new-1", "name": "New In-Stock Item", "description": "", "price_cents": 200, "stock": 15},
+        ]
+        mock_msg = AsyncMock()
+        mock_cmd = MagicMock()
+        mock_cmd.args = "50%"
+
+        with patch.object(bot.reseller, "get_products", new=AsyncMock(return_value=mock_products)):
+            await bot.admin_supplier_sync(mock_msg, mock_cmd)
+
+            # Check that old-99 was marked out of stock and inactive
+            p_old = bot.db.execute("SELECT * FROM products WHERE supplier_product_id='old-99'").fetchone()
+            self.assertEqual(p_old["supplier_stock"], 0)
+            self.assertEqual(p_old["active"], 0)
+
+            # Check new product was inserted with active stock
+            p_new = bot.db.execute("SELECT * FROM products WHERE supplier_product_id='new-1'").fetchone()
+            self.assertIsNotNone(p_new)
+            self.assertEqual(p_new["active"], 1)
+            self.assertEqual(p_new["supplier_stock"], 15)
+
+            # Verify response message contains color coded sections
+            resp = mock_msg.answer.call_args[0][0]
+            self.assertIn("🟢 <b>In Stock (Auto-Fulfill):</b>", resp)
+            self.assertIn("🟡 <b>Manual / Assisted Services:</b>", resp)
+            self.assertIn("🔴 <b>Out of Stock / Unavailable:</b>", resp)
+
+    async def test_manual_order_fulfillment_and_deliver_command(self):
+        # Create manual product
+        pid = bot.db.execute("""
+            INSERT INTO products(name, price, active, auto_fulfill, delivery_type)
+            VALUES('iCloud 2TB 3M', 1150, 1, 0, 'manual')
+        """).lastrowid
+
+        oid = bot.db.execute("""
+            INSERT INTO orders(user_id, product_id, product_name, price, status)
+            VALUES(9001, ?, 'iCloud 2TB 3M', 1150, 'pending')
+        """, (pid,)).lastrowid
+
+        mock_bot = AsyncMock()
+        payload, err = await bot.fulfill_order(mock_bot, oid)
+        self.assertIsNone(err)
+        self.assertEqual(payload, "MANUAL_PENDING")
+
+        ord_rec = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(ord_rec["status"], "manual_pending")
+
+        # Now test /deliver command
+        mock_msg = AsyncMock()
+        mock_msg.bot = mock_bot
+        mock_cmd = MagicMock()
+        mock_cmd.args = f"{oid} https://apple.com/family-invite-link"
+
+        await bot.admin_deliver(mock_msg, mock_cmd)
+
+        ord_delivered = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(ord_delivered["status"], "completed")
+        self.assertEqual(ord_delivered["payload"], "https://apple.com/family-invite-link")
+        self.assertEqual(mock_bot.send_message.call_count, 2)
+        self.assertEqual(mock_bot.send_message.call_args_list[1][0][0], 9001)
+
+    async def test_admin_products_color_coded_badges(self):
+        bot.db.execute("DELETE FROM products")
+        bot.db.execute("INSERT INTO products(name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES('Auto In-Stock', 100, 1, 1, 'p1', 5, 'auto')")
+        bot.db.execute("INSERT INTO products(name, price, active, auto_fulfill, delivery_type) VALUES('Manual Service', 200, 1, 0, 'manual')")
+        bot.db.execute("INSERT INTO products(name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES('Auto Out Of Stock', 300, 0, 1, 'p3', 0, 'auto')")
+
+        mock_msg = AsyncMock()
+        await bot.admin_products(mock_msg)
+        text = mock_msg.answer.call_args[0][0]
+        self.assertIn("🟢 [AUTO (5 pcs)]", text)
+        self.assertIn("🟡 [MANUAL]", text)
+        self.assertIn("🔴 [OUT OF STOCK]", text)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

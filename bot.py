@@ -102,7 +102,9 @@ CREATE TABLE IF NOT EXISTS products(
   auto_fulfill INTEGER DEFAULT 0,
   margin INTEGER DEFAULT NULL,
   category TEXT DEFAULT 'AI Tools',
-  supplier TEXT DEFAULT 'default');
+  supplier TEXT DEFAULT 'default',
+  supplier_stock INTEGER DEFAULT NULL,
+  delivery_type TEXT DEFAULT 'auto');
 CREATE TABLE IF NOT EXISTS stock(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   product_id INTEGER NOT NULL,
@@ -251,6 +253,10 @@ def migrate_db():
         db.execute("ALTER TABLE products ADD COLUMN category TEXT DEFAULT 'AI Tools'")
     if "supplier" not in cols_p:
         db.execute("ALTER TABLE products ADD COLUMN supplier TEXT DEFAULT 'default'")
+    if "supplier_stock" not in cols_p:
+        db.execute("ALTER TABLE products ADD COLUMN supplier_stock INTEGER DEFAULT NULL")
+    if "delivery_type" not in cols_p:
+        db.execute("ALTER TABLE products ADD COLUMN delivery_type TEXT DEFAULT 'auto'")
 
     cols_o = {row["name"] for row in db.execute("PRAGMA table_info(orders)").fetchall()}
     if "supplier_order_id" not in cols_o:
@@ -278,18 +284,38 @@ def migrate_db():
                 db.execute("UPDATE products SET category=? WHERE id=?", (detected, row["id"]))
 
     # Ensure default showcase products (Gemini 18 Months and Duolingo Super 12 Months)
-    g = db.execute("SELECT id FROM products WHERE name LIKE '%Gemini 18 Months%'").fetchone()
+    g = db.execute("SELECT id FROM products WHERE name LIKE '%Gemini%'").fetchone()
     if not g:
         db.execute("""
-            INSERT INTO products(name, description, price, category, auto_fulfill, active)
-            VALUES('Gemini 18 Months', 'Gemini Advanced & Pro 18 Months Subscription', 72, 'Gemini', 1, 1)
+            INSERT INTO products(name, description, price, category, auto_fulfill, active, delivery_type)
+            VALUES('Gemini Pro 18 Months', 'Gemini Advanced & Pro 18 Months Subscription', 72, 'Gemini', 1, 1, 'auto')
         """)
     d = db.execute("SELECT id FROM products WHERE name LIKE '%Duolingo%'").fetchone()
     if not d:
         db.execute("""
-            INSERT INTO products(name, description, price, category, auto_fulfill, active)
-            VALUES('Duolingo Super 12 Months', 'Duolingo Super 12 Months Plan', 90, 'Education', 1, 1)
+            INSERT INTO products(name, description, price, category, auto_fulfill, active, delivery_type)
+            VALUES('Duolingo Super 12M', 'Duolingo Super 12 Months Plan', 90, 'Education', 1, 1, 'auto')
         """)
+
+    # Seed known manual / assisted services from reseller master catalog
+    MANUAL_CATALOG_SEEDS = [
+        ("Cursor Pro API 400 Credits/day 1 Month", "Cursor Pro dedicated API key with 400 credits/day refresh.", 1550, "AI Tools"),
+        ("Cursor Pro API 6500 Credits 1 Month", "Cursor Pro high-volume 6500 credits 1 month plan.", 1550, "AI Tools"),
+        ("Kimi GLM DeepSeek API 50M Tokens 2D", "High speed Kimi GLM DeepSeek API 50M Tokens 2 Days.", 300, "Codex API"),
+        ("API QWEN Unlimited Tokens 7D", "Qwen API Unlimited tokens 7-day access.", 500, "AI Tools"),
+        ("Kimi GLM DeepSeek API 100M Tokens 4D", "High speed Kimi GLM DeepSeek API 100M Tokens 4-day access.", 650, "Codex API"),
+        ("Freepik Magnific API Panel 30D", "Freepik Magnific AI upscale & generator panel 30 days.", 500, "AI Tools"),
+        ("Discord Nitro 2M", "Discord Nitro 2 months subscription gift link.", 900, "Subscriptions"),
+        ("Notion Business Admin 1M", "Notion Business Workspace Admin 1 month.", 770, "Work & Office"),
+        ("iCloud 2TB 3M", "Apple iCloud+ 2TB Family storage access 3 months.", 1150, "Subscriptions"),
+    ]
+    for m_name, m_desc, m_price, m_cat in MANUAL_CATALOG_SEEDS:
+        exists = db.execute("SELECT id FROM products WHERE name=?", (m_name,)).fetchone()
+        if not exists:
+            db.execute("""
+                INSERT INTO products(name, description, price, category, auto_fulfill, active, delivery_type)
+                VALUES(?,?,?,?,0,1,'manual')
+            """, (m_name, m_desc, m_price, m_cat))
 
     # Custom emojis table for original brand logos (Telegram custom emoji IDs)
     db.execute("""
@@ -637,13 +663,26 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
     """Detailed product card and quantity selector matching Screenshot 1."""
     is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
     count = stock_count(p["id"]) if not is_auto else None
+    deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
+    sup_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
 
     if is_auto:
-        stock_line = f"⚡ <b>{t(uid, 'stock_auto')}</b>"
+        if sup_stock is not None and sup_stock <= 0:
+            stock_line = "🔴 <b>Out of stock at supplier</b>"
+            has_stock = False
+        else:
+            stock_info = f" ({sup_stock} pcs)" if sup_stock is not None else ""
+            stock_line = f"🟢 ⚡ <b>{t(uid, 'stock_auto')}</b>{stock_info}"
+            has_stock = True
     elif count and count > 0:
-        stock_line = f"📦 In stock: {count} pcs"
+        stock_line = f"🟢 📦 In stock: {count} pcs"
+        has_stock = True
+    elif deliv_type == "manual":
+        stock_line = "🟡 <b>Manual / Assisted Delivery</b>\n<i>⚡ Credentials or setup link delivered via support after payment</i>"
+        has_stock = True
     else:
-        stock_line = "❌ Out of stock"
+        stock_line = "🔴 <b>Out of stock</b>"
+        has_stock = False
 
     desc = (p["description"] or "").strip()
     if desc:
@@ -661,7 +700,6 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
         )
 
     rows = []
-    has_stock = is_auto or (count and count > 0)
     if has_stock:
         qty_row = []
         qty_row.append(btn("1", f"buyqty:{p['id']}:1:{ctx}", style="success"))
@@ -752,19 +790,35 @@ async def fulfill_order(bot: Bot, oid: int) -> Tuple[Optional[str], Optional[str
             "SELECT * FROM stock WHERE product_id=? AND sold=0 ORDER BY id LIMIT ?",
             (p["id"], qty)
         ).fetchall()
-        if len(s_items) < qty:
+        if len(s_items) >= qty:
+            ids = [item["id"] for item in s_items]
+            db.execute(f"UPDATE stock SET sold=1 WHERE id IN ({','.join(['?']*len(ids))})", ids)
+            payload = "\n".join(item["payload"] for item in s_items)
+            db.execute("UPDATE orders SET payload=?, status='completed' WHERE id=?", (payload, oid))
+            db.execute("COMMIT")
+            return payload, None
+        else:
             db.execute("ROLLBACK")
-            db.execute("UPDATE orders SET status='failed' WHERE id=?", (oid,))
-            return None, "out_of_stock"
-        ids = [item["id"] for item in s_items]
-        db.execute(f"UPDATE stock SET sold=1 WHERE id IN ({','.join(['?']*len(ids))})", ids)
-        payload = "\n".join(item["payload"] for item in s_items)
-        db.execute("UPDATE orders SET payload=?, status='completed' WHERE id=?", (payload, oid))
-        db.execute("COMMIT")
-        return payload, None
     except Exception:
         db.execute("ROLLBACK")
         raise
+
+    # Option C: Manual / Assisted Fulfillment
+    deliv = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else "auto"
+    if deliv == "manual" or not p["auto_fulfill"]:
+        db.execute("UPDATE orders SET status='manual_pending' WHERE id=?", (oid,))
+        await notify_admins(
+            bot,
+            f"🔔 <b>New Manual Order #{oid}</b>\n"
+            f"• Item: <b>{esc(p['name'])}</b> (Qty: {qty})\n"
+            f"• User ID: <code>{o['user_id']}</code>\n"
+            f"• Amount: <b>{usd(o['price'])}</b>\n\n"
+            f"👉 Use <code>/deliver {oid} &lt;credentials/link&gt;</code> to send item to user."
+        )
+        return "MANUAL_PENDING", None
+
+    db.execute("UPDATE orders SET status='failed' WHERE id=?", (oid,))
+    return None, "out_of_stock"
 
 
 # --------------------------------------------------------------------------
@@ -1379,6 +1433,16 @@ async def admin_approve_order(m: Message, command: CommandObject = None):
 
     try:
         buyer_uid = o["user_id"]
+        if payload == "MANUAL_PENDING":
+            await m.bot.send_message(
+                buyer_uid,
+                f"🎉 <b>Payment Confirmed for Order #{oid}!</b>\n\n"
+                f"Item: <b>{esc(o['product_name'])}</b>\n\n"
+                f"🟡 <i>This product is an assisted/manual setup service. Our support team has received your order and will deliver your credentials or setup link directly to you here shortly!</i>\n\n"
+                f"If you have any questions, contact Support: {SUPPORT_URL}"
+            )
+            await m.answer(f"✅ Order #{oid} approved. Awaiting manual fulfillment with: <code>/deliver {oid} &lt;item&gt;</code>")
+            return
         await m.bot.send_message(buyer_uid, t(buyer_uid, "purchased", oid=oid, payload=esc(payload)))
         await m.answer(f"✅ Order #{oid} approved and delivered to user {buyer_uid}!")
     except Exception as e:
@@ -1431,7 +1495,16 @@ async def check_cryptobot_payment(c: CallbackQuery):
     paid = await check_cryptobot_invoice(inv_id)
     if paid:
         payload, err = await fulfill_order(c.bot, oid)
-        if payload:
+        if payload == "MANUAL_PENDING":
+            await c.message.answer(
+                f"🎉 <b>Payment Confirmed for Order #{oid}!</b>\n\n"
+                f"Item: <b>{esc(o['product_name'])}</b>\n\n"
+                f"🟡 <i>This product is an assisted/manual setup service. Our support team has received your order and will deliver your credentials or setup link directly to you here shortly!</i>\n\n"
+                f"If you have any questions, contact Support: {SUPPORT_URL}"
+            )
+            await notify_admins(c.bot, f"🔔 <b>New Paid Manual Order #{oid}</b>\n• Item: <b>{esc(o['product_name'])}</b>\n• Buyer: <code>{uid}</code>\n• Paid: {usd(o['price'])}\n👉 Use <code>/deliver {oid} &lt;credentials/link&gt;</code> to complete.")
+            await c.answer()
+        elif payload:
             await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
             await notify_admins(c.bot, f"✅ Order #{oid} paid via @CryptoBot & delivered: {esc(o['product_name'])} ({usd(o['price'])}) to user {uid}")
             await c.answer()
@@ -1612,12 +1685,27 @@ async def admin_products(m: Message):
     rows = db.execute("SELECT * FROM products ORDER BY id").fetchall()
     if not rows:
         return await m.answer("No products.")
-    lines = []
+    lines = ["📦 <b>Store Products (Color-Coded Status):</b>\n"]
     for p in rows:
-        if p["auto_fulfill"] and p["supplier_product_id"]:
-            stock_info = f"⚡Auto ({p['supplier_product_id']})"
+        is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
+        sup_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
+        deliv = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
+
+        if deliv == "manual":
+            status_badge = "🟡 [MANUAL]"
+        elif is_auto and sup_stock is not None and sup_stock == 0:
+            status_badge = "🔴 [OUT OF STOCK]"
+        elif is_auto and not p["active"]:
+            status_badge = "🔴 [OUT OF STOCK]"
+        elif is_auto:
+            stock_str = f" ({sup_stock} pcs)" if sup_stock is not None else ""
+            status_badge = f"🟢 [AUTO{stock_str}]"
         else:
-            stock_info = f"stock {stock_count(p['id'])}"
+            local_cnt = stock_count(p["id"])
+            if local_cnt > 0:
+                status_badge = f"🟢 [LOCAL ({local_cnt} pcs)]"
+            else:
+                status_badge = "🔴 [OUT OF STOCK]"
 
         margin_info = ""
         if p["margin"] is not None:
@@ -1630,10 +1718,15 @@ async def admin_products(m: Message):
         cost_disp = f" (cost {usd(p['supplier_price'])})" if p["supplier_price"] else ""
         cat_disp = f" [{p['category']}]" if ("category" in p.keys() and p["category"]) else ""
         lines.append(
-            f"{p['id']}. {esc(p['name'])}{cat_disp} · {usd(p['price'])}{cost_disp}{margin_info} · {stock_info} · "
-            f"{'on' if p['active'] else 'off'}"
+            f"{status_badge} #{p['id']}. <b>{esc(p['name'])}</b>{cat_disp} · {usd(p['price'])}{cost_disp}{margin_info}"
         )
-    await m.answer("\n".join(lines))
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        for i in range(0, len(text), 3800):
+            await m.answer(text[i:i+3800])
+    else:
+        await m.answer(text)
 
 
 @dp.message(Command("addproduct"), is_admin)
@@ -1717,6 +1810,33 @@ async def admin_refund(m: Message, command: CommandObject):
         await m.answer(f"Order #{oid} marked as refunded.")
     except ValueError:
         await m.answer("Usage: /refund <order_id>")
+
+
+@dp.message(Command("deliver"), is_admin)
+async def admin_deliver(m: Message, command: CommandObject):
+    try:
+        oid_str, payload = command.args.split(None, 1)
+        oid = int(oid_str)
+        o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        if not o:
+            return await m.answer(f"Order #{oid} not found.")
+
+        db.execute("UPDATE orders SET payload=?, status='completed' WHERE id=?", (payload.strip(), oid))
+
+        try:
+            await m.bot.send_message(
+                o["user_id"],
+                f"🎉 <b>Your Order #{oid} is Ready!</b>\n\n"
+                f"Item: <b>{esc(o['product_name'])}</b>\n\n"
+                f"📦 <b>Delivered Item / Credentials:</b>\n"
+                f"<code>{esc(payload.strip())}</code>\n\n"
+                f"Thank you for shopping with us!"
+            )
+            await m.answer(f"✅ Order #{oid} delivered to user {o['user_id']}!")
+        except Exception as e:
+            await m.answer(f"✅ Order #{oid} marked completed, but could not message user: {e}\nPayload: <code>{esc(payload)}</code>")
+    except Exception:
+        await m.answer("Usage: /deliver <order_id> <delivered_content_or_link>")
 
 
 @dp.message(Command("stats"), is_admin)
@@ -1886,45 +2006,132 @@ async def admin_supplier_sync(m: Message, command: CommandObject):
             errors.append(f"'{sup_name}': {e}")
             continue
 
+        seen_supplier_ids = set()
         for sp in sup_products:
-            sp_id = sp["id"]
+            sp_id = str(sp["id"])
+            seen_supplier_ids.add(sp_id)
             cost_cents = sp["price_cents"]
+            stock = sp.get("stock")
             cat = detect_category(sp["name"])
 
             existing = db.execute(
                 "SELECT id, margin FROM products WHERE supplier_product_id=? AND supplier=?",
                 (sp_id, sup_name)
             ).fetchone()
+
+            # If not matched by supplier_product_id, check if unlinked product exists with identical or similar name
+            if not existing:
+                existing = db.execute(
+                    "SELECT id, margin FROM products WHERE supplier_product_id IS NULL AND LOWER(name)=LOWER(?)",
+                    (sp["name"],)
+                ).fetchone()
+
+            if not existing:
+                clean_sp_name = sp["name"].lower()
+                if "gemini" in clean_sp_name and "18" in clean_sp_name:
+                    existing = db.execute("SELECT id, margin FROM products WHERE supplier_product_id IS NULL AND name LIKE '%Gemini%18%'").fetchone()
+                elif "duolingo" in clean_sp_name and ("12" in clean_sp_name or "super" in clean_sp_name):
+                    existing = db.execute("SELECT id, margin FROM products WHERE supplier_product_id IS NULL AND name LIKE '%Duolingo%'").fetchone()
+
             item_margin = existing["margin"] if (existing and existing["margin"] is not None) else markup
             retail_cents = max(100, round(cost_cents * (1 + item_margin / 100)))
+            is_active = 0 if (stock is not None and stock == 0) else 1
 
             if existing:
                 db.execute("""
                     UPDATE products
-                    SET name=?, description=?, price=?, supplier_price=?, auto_fulfill=1, active=1, category=?, supplier=?
+                    SET name=?, description=?, price=?, supplier_price=?, auto_fulfill=1, active=?, category=?, supplier=?,
+                        supplier_stock=?, delivery_type='auto', supplier_product_id=?
                     WHERE id=?
-                """, (sp["name"], sp["description"], retail_cents, cost_cents, cat, sup_name, existing["id"]))
+                """, (sp["name"], sp["description"], retail_cents, cost_cents, is_active, cat, sup_name, stock, sp_id, existing["id"]))
                 total_updated += 1
             else:
                 db.execute("""
-                    INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier)
-                    VALUES(?,?,?,?,?,1,1,?,?)
-                """, (sp["name"], sp["description"], retail_cents, sp_id, cost_cents, cat, sup_name))
+                    INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type)
+                    VALUES(?,?,?,?,?,1,?,?,?,?, 'auto')
+                """, (sp["name"], sp["description"], retail_cents, sp_id, cost_cents, is_active, cat, sup_name, stock))
                 total_added += 1
+
+        # Mark products linked to this supplier that are no longer in feed as out of stock / inactive
+        if seen_supplier_ids:
+            placeholders = ",".join(["?"] * len(seen_supplier_ids))
+            db.execute(
+                f"UPDATE products SET supplier_stock=0, active=0 WHERE supplier=? AND delivery_type='auto' AND supplier_product_id NOT IN ({placeholders})",
+                [sup_name] + list(seen_supplier_ids)
+            )
 
         total_items += len(sup_products)
 
-    res_msg = (
-        f"✅ <b>Catalog Sync Complete!</b>\n"
-        f"• Suppliers synced: <b>{', '.join(target_suppliers)}</b>\n"
-        f"• Default profit margin: <b>{markup}%</b>\n"
-        f"• New products imported: <b>{total_added}</b>\n"
-        f"• Existing products updated: <b>{total_updated}</b>\n"
-        f"• Total catalog items processed: <b>{total_items}</b>"
-    )
-    if errors:
-        res_msg += "\n\n⚠️ <b>Errors:</b>\n" + "\n".join(f"• {esc(err)}" for err in errors)
+    # Gather color-coded status of all products in DB
+    all_prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
+    in_stock_auto = []
+    manual_items = []
+    out_of_stock_items = []
 
+    for p in all_prods:
+        deliv = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if (p["auto_fulfill"] and p["supplier_product_id"]) else "manual")
+        is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
+        s_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
+
+        if deliv == "manual":
+            manual_items.append(p)
+        elif is_auto and (s_stock is not None and s_stock == 0):
+            out_of_stock_items.append(p)
+        elif is_auto and not p["active"]:
+            out_of_stock_items.append(p)
+        elif is_auto:
+            in_stock_auto.append(p)
+        else:
+            if stock_count(p["id"]) > 0:
+                in_stock_auto.append(p)
+            else:
+                out_of_stock_items.append(p)
+
+    lines = [
+        "🔄 <b>Catalog Sync & Health Report</b>\n",
+        f"• Suppliers Synced: <b>{', '.join(target_suppliers)}</b>",
+        f"• Default Margin: <b>{markup}%</b>",
+        f"• Total Processed from Feed: <b>{total_items}</b>\n",
+        "📊 <b>Status Breakdown:</b>",
+        f"🟢 <b>In Stock (Auto-Fulfill):</b> <b>{len(in_stock_auto)}</b> items",
+        f"🟡 <b>Manual / Assisted Services:</b> <b>{len(manual_items)}</b> items",
+        f"🔴 <b>Out of Stock / Unavailable:</b> <b>{len(out_of_stock_items)}</b> items\n",
+    ]
+
+    if in_stock_auto:
+        lines.append("🟢 <b>Available Auto-Delivery (Samples):</b>")
+        for p in in_stock_auto[:8]:
+            s_disp = f" (Stock: {p['supplier_stock']})" if ("supplier_stock" in p.keys() and p['supplier_stock'] is not None) else ""
+            lines.append(f" • <code>#{p['id']}</code> {esc(p['name'])} · {usd(p['price'])}{s_disp}")
+        if len(in_stock_auto) > 8:
+            lines.append(f" <i>...and {len(in_stock_auto) - 8} more in-stock items</i>\n")
+        else:
+            lines.append("")
+
+    if manual_items:
+        lines.append("🟡 <b>Manual / Assisted Services:</b>")
+        for p in manual_items[:8]:
+            lines.append(f" • <code>#{p['id']}</code> {esc(p['name'])} · {usd(p['price'])}")
+        if len(manual_items) > 8:
+            lines.append(f" <i>...and {len(manual_items) - 8} more manual services</i>\n")
+        else:
+            lines.append("")
+
+    if out_of_stock_items:
+        lines.append("🔴 <b>Out of Stock at Supplier:</b>")
+        for p in out_of_stock_items[:8]:
+            lines.append(f" • <code>#{p['id']}</code> {esc(p['name'])}")
+        if len(out_of_stock_items) > 8:
+            lines.append(f" <i>...and {len(out_of_stock_items) - 8} more out-of-stock items</i>\n")
+        else:
+            lines.append("")
+
+    if errors:
+        lines.append("⚠️ <b>Sync Warnings / Errors:</b>")
+        for err in errors:
+            lines.append(f" • {esc(err)}")
+
+    res_msg = "\n".join(lines).strip()
     await m.answer(res_msg)
 
 
