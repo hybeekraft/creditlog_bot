@@ -27,6 +27,7 @@ from aiogram.types import (BotCommand, CallbackQuery, InlineKeyboardButton,
 from dotenv import load_dotenv
 
 from reseller import ResellerClient, ResellerAPIError, SupplierRegistry
+import onchain
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -1719,6 +1720,82 @@ async def on_submit_tx(c: CallbackQuery):
     await c.answer()
 
 
+async def check_and_fulfill_onchain(oid: int, txid: str, uid: int, bot_instance: Bot) -> Tuple[bool, str]:
+    """
+    Attempts on-chain verification for USDT BEP20 or TRC20 transactions.
+    If valid, marks order paid and triggers fulfillment.
+    Returns (verified: bool, status_message: str).
+    """
+    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o:
+        return False, "Order not found."
+    if o["status"] == "completed" and o["payload"]:
+        return True, "Order already completed."
+
+    # Prevent replay attack: check if this txid was already used for a completed order
+    dup = db.execute(
+        "SELECT id FROM orders WHERE txid=? AND status='completed' AND id != ?",
+        (txid, oid)
+    ).fetchone()
+    if dup:
+        return False, f"⚠️ This Transaction ID was already claimed for Order #{dup['id']}."
+
+    method = (o["payment_method"] or "").lower()
+    total_cents = o["price"]
+    required_usd = total_cents / 100.0
+
+    verified = False
+    details = ""
+    detected_amount = None
+
+    if "bep20" in method:
+        if not CRYPTO_USDT_BEP20 or not CRYPTO_USDT_BEP20.startswith("0x"):
+            return False, "BEP-20 wallet address is not configured."
+        verified, details, detected_amount = await onchain.verify_bep20_usdt(
+            tx_hash=txid,
+            expected_recipient=CRYPTO_USDT_BEP20,
+            expected_usd=required_usd
+        )
+    elif "trc20" in method:
+        if not CRYPTO_USDT_TRC20:
+            return False, "TRC-20 wallet address is not configured."
+        verified, details, detected_amount = await onchain.verify_trc20_usdt(
+            tx_hash=txid,
+            expected_recipient=CRYPTO_USDT_TRC20,
+            expected_usd=required_usd
+        )
+    else:
+        return False, "This payment method requires manual confirmation."
+
+    if verified:
+        db.execute("UPDATE orders SET txid=?, status='paid' WHERE id=?", (txid, oid))
+        payload, err = await fulfill_order(bot_instance, oid)
+        if err:
+            log.error("Failed to fulfill auto-verified order %s: %s", oid, err)
+            await notify_admins(
+                bot_instance,
+                f"⚠️ Payment verified on-chain for Order #{oid}, but auto-fulfillment failed: {err}\n"
+                f"• Method: {esc(method.upper())}\n"
+                f"• TxID: <code>{esc(txid)}</code>\n"
+                f"👉 Use <code>/deliver {oid} &lt;item&gt;</code> to deliver manually."
+            )
+            return True, "Payment verified on-chain! Our support team is completing your delivery shortly."
+
+        user_mention = f"User {uid}"
+        await notify_admins(
+            bot_instance,
+            f"⚡ <b>Auto-Verified & Delivered!</b>\n"
+            f"• <b>Order:</b> #{oid}\n"
+            f"• <b>Product:</b> {esc(o['product_name'])}\n"
+            f"• <b>Amount:</b> ${detected_amount:.2f} USDT (Required: {usd(o['price'])})\n"
+            f"• <b>Method:</b> {esc(method.upper())}\n"
+            f"• <b>TxID:</b> <code>{esc(txid)}</code>"
+        )
+        return True, "VERIFIED_AND_DELIVERED"
+
+    return False, details
+
+
 @dp.callback_query(F.data.startswith("chk_manual:"))
 async def on_check_manual_status(c: CallbackQuery):
     oid = int(c.data.split(":")[1])
@@ -1731,9 +1808,18 @@ async def on_check_manual_status(c: CallbackQuery):
         return await c.answer("✅ Order completed and delivered!", show_alert=True)
 
     if not o["txid"]:
-        return await c.answer("⚠️ Please tap 'Submit Transaction ID' first so admins can verify your payment.", show_alert=True)
-    else:
-        return await c.answer("⏳ Your payment is currently under verification by admin. You will receive your item automatically once confirmed!", show_alert=True)
+        return await c.answer("⚠️ Please tap 'Submit Transaction ID' first so we can verify your payment.", show_alert=True)
+
+    method = (o["payment_method"] or "").lower()
+    if "bep20" in method or "trc20" in method:
+        verified, result = await check_and_fulfill_onchain(oid, o["txid"], uid, c.bot)
+        if verified and result == "VERIFIED_AND_DELIVERED":
+            comp_o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+            if comp_o and comp_o["payload"] and comp_o["payload"] != "MANUAL_PENDING":
+                await edit(c, t(uid, "purchased", oid=oid, payload=esc(comp_o["payload"])), kb([[btn(t(uid, "btn_back"), "home", style="primary")]]))
+                return await c.answer("✅ Verified on blockchain and delivered!", show_alert=True)
+
+    return await c.answer("⏳ Your payment is currently under verification. You will receive your item automatically once confirmed!", show_alert=True)
 
 
 @dp.callback_query(F.data.startswith("cancel_order:"))
@@ -1859,7 +1945,35 @@ async def handle_user_text_input(m: Message):
         o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         if not o:
             return await m.answer("⚠️ Order not found.")
+
         db.execute("UPDATE orders SET txid=? WHERE id=?", (txid, oid))
+        method = (o["payment_method"] or "").lower()
+
+        # Attempt instant on-chain verification for USDT BEP20 or TRC20
+        if "bep20" in method or "trc20" in method:
+            verif_msg = await m.answer("🔍 <i>Verifying transaction on the blockchain...</i>")
+            verified, result = await check_and_fulfill_onchain(oid, txid, uid, m.bot)
+            try:
+                await verif_msg.delete()
+            except Exception:
+                pass
+
+            if verified:
+                if result == "VERIFIED_AND_DELIVERED":
+                    comp_o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+                    if comp_o and comp_o["payload"] == "MANUAL_PENDING":
+                        return await m.answer(
+                            f"🎉 <b>Payment Verified On-Chain for Order #{oid}!</b>\n\n"
+                            f"Item: <b>{esc(o['product_name'])}</b>\n\n"
+                            f"🟡 <i>This product is an assisted/manual setup service. Our support team has received your order and will deliver your credentials or setup link directly to you here shortly!</i>\n\n"
+                            f"If you have any questions, contact Support: {SUPPORT_URL}"
+                        )
+                    elif comp_o and comp_o["payload"]:
+                        return await m.answer(t(uid, "purchased", oid=oid, payload=esc(comp_o["payload"])))
+                else:
+                    return await m.answer(f"✅ {result}")
+
+        # Fallback to admin review (e.g. for Binance Pay or if block confirmation is still pending)
         await m.answer(
             f"✅ <b>Transaction ID Received!</b>\n\n"
             f"• <b>Order:</b> #{oid}\n"

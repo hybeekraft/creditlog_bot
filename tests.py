@@ -984,6 +984,104 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(kwargs.get("reply_markup"))
 
 
+class TestOnChainVerification(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        bot.db.execute("DELETE FROM orders")
+        bot.db.execute("DELETE FROM products")
+        bot.db.execute("DELETE FROM stock")
+
+    async def test_verify_bep20_usdt_success(self):
+        import onchain
+        valid_hash = "0x" + "a" * 64
+        recipient = "0xe37301d1cb7E1d479a1F1A78d6A2EAed317412Db"
+        # 10 USDT with 18 decimals in hex = 10 * 10^18
+        amount_hex = hex(10 * 10**18)
+        recipient_padded = "0x" + "0" * 24 + recipient[2:].lower()
+
+        mock_receipt = {
+            "status": "0x1",
+            "logs": [
+                {
+                    "address": onchain.USDT_BEP20_CONTRACT,
+                    "topics": [
+                        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                        "0x" + "0" * 64,
+                        recipient_padded
+                    ],
+                    "data": amount_hex
+                }
+            ]
+        }
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"result": mock_receipt})
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_resp
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.post.return_value = cm
+
+        ok, msg, amt = await onchain.verify_bep20_usdt(valid_hash, recipient, 10.0, session=mock_session)
+        self.assertTrue(ok)
+        self.assertEqual(amt, 10.0)
+
+    async def test_verify_trc20_usdt_success(self):
+        import onchain
+        valid_hash = "b" * 64
+        recipient = "TUaDYFz2fBRXSRDm9d6kN9j2J7bi7ZsBLW"
+        mock_data = {
+            "data": [
+                {
+                    "event_name": "Transfer",
+                    "contract_address": onchain.USDT_TRC20_CONTRACT,
+                    "result": {
+                        "from": "TOriginWallet123",
+                        "to": recipient,
+                        "value": "15000000"  # 15 USDT with 6 decimals
+                    }
+                }
+            ]
+        }
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=mock_data)
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_resp
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.get.return_value = cm
+
+        ok, msg, amt = await onchain.verify_trc20_usdt(valid_hash, recipient, 15.0, session=mock_session)
+        self.assertTrue(ok)
+        self.assertEqual(amt, 15.0)
+
+    async def test_check_and_fulfill_onchain_auto_fulfills(self):
+        # Create product with local stock
+        bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, delivery_type) VALUES(99, 'Test Pro', 500, 1, 0, 'auto')")
+        bot.db.execute("INSERT INTO stock(product_id, payload, sold) VALUES(99, 'KEY-AUTO-123', 0)")
+        bot.db.execute("INSERT INTO orders(id, user_id, product_id, product_name, price, status, payment_method) VALUES(501, 777, 99, 'Test Pro', 500, 'pending', 'USDT BEP20')")
+
+        valid_hash = "0x" + "c" * 64
+        with patch("onchain.verify_bep20_usdt", new=AsyncMock(return_value=(True, "Verified", 5.0))):
+            mock_bot = AsyncMock()
+            ok, res = await bot.check_and_fulfill_onchain(501, valid_hash, 777, mock_bot)
+            self.assertTrue(ok)
+            self.assertEqual(res, "VERIFIED_AND_DELIVERED")
+
+            # Check order is completed with payload
+            o = bot.db.execute("SELECT * FROM orders WHERE id=501").fetchone()
+            self.assertEqual(o["status"], "completed")
+            self.assertEqual(o["payload"], "KEY-AUTO-123")
+
+            # Prevent replay attack with same txid
+            bot.db.execute("INSERT INTO orders(id, user_id, product_id, product_name, price, status, payment_method) VALUES(502, 888, 99, 'Test Pro', 500, 'pending', 'USDT BEP20')")
+            ok2, res2 = await bot.check_and_fulfill_onchain(502, valid_hash, 888, mock_bot)
+            self.assertFalse(ok2)
+            self.assertIn("already claimed", res2)
+
+
 if __name__ == "__main__":
     unittest.main()
 
