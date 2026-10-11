@@ -590,15 +590,7 @@ def migrate_db():
         ("Discord Nitro 2M", "Discord Nitro 2 months subscription gift link.", 900, "Discord"),
         ("Notion Business Admin 1M", "Notion Business Workspace Admin 1 month.", 770, "Office"),
 
-        # Additional services
-        ("Cursor Pro 1M", "Cursor Pro 1 Month premium subscription.", 990, "AI Tools"),
-        ("iCloud 2TB 1M", "Apple iCloud+ 2TB family slot 1 month.", 400, "Office"),
-        ("Apple Music 1M", "Apple Music individual 1 month subscription.", 200, "Music"),
-        ("Spotify Premium 12M", "Spotify Premium 12 Months individual plan.", 1200, "Music"),
-        ("YouTube Premium 12M", "YouTube Premium 12 Months individual subscription.", 1500, "Streaming"),
-        ("Windscribe VPN Pro 1Y", "Windscribe VPN Pro 1 Year unlimited data.", 1400, "VPN"),
-        ("TradingView Essential 1M", "TradingView Essential 1 Month subscription.", 750, "Office"),
-        ("GitHub Copilot 1M", "GitHub Copilot individual 1 Month subscription.", 400, "AI Tools"),
+        ("iCloud 2TB 3M", "Apple iCloud+ 2TB Family storage access 3 months.", 1150, "Office"),
         # Screenshot Page 13
         ("MiniMax Redeem 131K", "MiniMax 131,000 character credits instant redeem code.", 260, "AI Tools"),
         ("Flux 03 1M", "Flux 03 AI 1 Month generator access.", 150, "AI Tools"),
