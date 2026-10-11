@@ -2559,23 +2559,14 @@ async def admin_supplier_sync(m: Message, command: CommandObject):
     out_of_stock_items = []
 
     for p in all_prods:
-        deliv = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if (p["auto_fulfill"] and p["supplier_product_id"]) else "manual")
         is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
-        s_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
 
-        if deliv == "manual":
-            manual_items.append(p)
-        elif is_auto and (s_stock is not None and s_stock == 0):
-            out_of_stock_items.append(p)
-        elif is_auto and not p["active"]:
+        if not is_product_available(p):
             out_of_stock_items.append(p)
         elif is_auto:
             in_stock_auto.append(p)
         else:
-            if stock_count(p["id"]) > 0:
-                in_stock_auto.append(p)
-            else:
-                out_of_stock_items.append(p)
+            manual_items.append(p)
 
     lines = [
         "🔄 <b>Catalog Sync & Health Report</b>\n",
