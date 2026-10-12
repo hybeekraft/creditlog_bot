@@ -1963,10 +1963,10 @@ async def check_and_fulfill_onchain(oid: int, txid: str, uid: int, bot_instance:
     if o["status"] == "completed" and o["payload"]:
         return True, "Order already completed."
 
-    # Prevent replay attack: check if this txid was already used for a completed order
+    # Prevent replay attack: check if this txid was already used for a completed or in-flight order
     dup = db.execute(
-        "SELECT id FROM orders WHERE txid=? AND status='completed' AND id != ?",
-        (txid, oid)
+        "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending') AND id != ?",
+        (txid.strip(), oid)
     ).fetchone()
     if dup:
         return False, f"⚠️ This Transaction ID was already claimed for Order #{dup['id']}."
@@ -2179,6 +2179,14 @@ async def handle_user_text_input(m: Message):
         o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         if not o:
             return await m.answer("⚠️ Order not found.")
+
+        # Check for replay attack before accepting txid
+        dup = db.execute(
+            "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending') AND id != ?",
+            (txid, oid)
+        ).fetchone()
+        if dup:
+            return await m.answer(f"⚠️ This Transaction ID was already submitted for Order #{dup['id']}. Please provide a valid, unique transaction reference.")
 
         db.execute("UPDATE orders SET txid=? WHERE id=?", (txid, oid))
         method = (o["payment_method"] or "").lower()

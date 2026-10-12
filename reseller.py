@@ -140,7 +140,10 @@ class ResellerClient:
             raw_price = item.get("price") or item.get("cost") or item.get("unit_price") or 0
             try:
                 price_val = float(raw_price)
-                price_cents = round(price_val * 100) if price_val < 100 else int(price_val)
+                if isinstance(raw_price, float) or "." in str(raw_price):
+                    price_cents = round(price_val * 100)
+                else:
+                    price_cents = round(price_val * 100) if price_val < 100 else int(price_val)
                 price_usd = price_cents / 100.0
             except (ValueError, TypeError):
                 price_cents = 0
@@ -176,7 +179,10 @@ class ResellerClient:
         raw_price = item.get("price") or item.get("cost") or 0
         try:
             price_val = float(raw_price)
-            price_cents = round(price_val * 100) if price_val < 100 else int(price_val)
+            if isinstance(raw_price, float) or "." in str(raw_price):
+                price_cents = round(price_val * 100)
+            else:
+                price_cents = round(price_val * 100) if price_val < 100 else int(price_val)
             price_usd = price_cents / 100.0
         except (ValueError, TypeError):
             price_cents = 0

@@ -1080,9 +1080,9 @@ class TestOnChainVerification(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(o["status"], "completed")
             self.assertEqual(o["payload"], "KEY-AUTO-123")
 
-            # Prevent replay attack with same txid
+            # Prevent replay attack with uppercase / lowercase txid
             bot.db.execute("INSERT INTO orders(id, user_id, product_id, product_name, price, status, payment_method) VALUES(502, 888, 99, 'Test Pro', 500, 'pending', 'USDT BEP20')")
-            ok2, res2 = await bot.check_and_fulfill_onchain(502, valid_hash, 888, mock_bot)
+            ok2, res2 = await bot.check_and_fulfill_onchain(502, valid_hash.upper(), 888, mock_bot)
             self.assertFalse(ok2)
             self.assertIn("already claimed", res2)
 
