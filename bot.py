@@ -1127,9 +1127,25 @@ async def edit(c: CallbackQuery, text: str, markup=None):
     try:
         await c.message.edit_text(text, reply_markup=markup)
     except TelegramBadRequest as e:
-        if "not modified" not in str(e):
+        err = str(e).lower()
+        if "not modified" in err:
+            pass
+        elif any(phrase in err for phrase in ("message to edit not found", "message can't be edited", "message is not modified")):
+            try:
+                await c.message.answer(text, reply_markup=markup)
+            except Exception:
+                pass
+        else:
             raise
-    await c.answer()
+    except Exception:
+        try:
+            await c.message.answer(text, reply_markup=markup)
+        except Exception:
+            pass
+    try:
+        await c.answer()
+    except Exception:
+        pass
 
 
 async def notify_admins(bot: Bot, text: str):
@@ -1338,14 +1354,14 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
     if has_stock:
         qty_row = []
         qty_row.append(btn("1", f"buyqty:{p['id']}:1:{ctx}", style="success"))
-        if is_auto:
+        if is_auto or deliv_type == "manual":
             qty_row.append(btn("5", f"buyqty:{p['id']}:5:{ctx}", style="success"))
             qty_row.append(btn("10", f"buyqty:{p['id']}:10:{ctx}", style="success"))
         else:
-            if count >= 5:
+            if count and count >= 5:
                 qty_row.append(btn("5", f"buyqty:{p['id']}:5:{ctx}", style="success"))
                 qty_row.append(btn(f"All {count}", f"buyqty:{p['id']}:{count}:{ctx}", style="success"))
-            elif count > 1:
+            elif count and count > 1:
                 qty_row.append(btn(f"All {count}", f"buyqty:{p['id']}:{count}:{ctx}", style="success"))
         rows.append(qty_row)
         rows.append([btn(t(uid, "btn_custom_qty"), f"cqty:{p['id']}:{ctx}", style="primary")])
@@ -1759,7 +1775,11 @@ async def initialize_paystack_transaction(
                 "Content-Type": "application/json"
             }
         ) as r:
-            data = await r.json()
+            try:
+                data = await r.json()
+            except Exception:
+                text_resp = await r.text()
+                raise RuntimeError(f"Paystack API HTTP {r.status}: {text_resp[:200]}")
             if not data.get("status"):
                 raise RuntimeError(f"Paystack API error: {data.get('message', 'Unknown error')}")
             return data["data"]
@@ -1771,20 +1791,26 @@ async def verify_paystack_transaction(reference: str) -> Tuple[bool, dict]:
     Returns (is_successful: bool, data: dict).
     """
     key = get_paystack_key()
-    if not key:
+    if not key or not reference:
         return False, {}
 
-    timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as s:
-        async with s.get(
-            f"https://api.paystack.co/transaction/verify/{reference}",
-            headers={"Authorization": f"Bearer {key}"}
-        ) as r:
-            data = await r.json()
-            if data.get("status") and data.get("data"):
-                tx_data = data["data"]
-                return tx_data.get("status") == "success", tx_data
-            return False, {}
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.get(
+                f"https://api.paystack.co/transaction/verify/{reference}",
+                headers={"Authorization": f"Bearer {key}"}
+            ) as r:
+                if r.status != 200:
+                    return False, {}
+                data = await r.json()
+                if data.get("status") and data.get("data"):
+                    tx_data = data["data"]
+                    return tx_data.get("status") == "success", tx_data
+                return False, {}
+    except Exception as e:
+        log.warning("Paystack verify transaction exception: %s", e)
+        return False, {}
 
 
 
@@ -1839,13 +1865,16 @@ async def start_checkout(event: Message | CallbackQuery, uid: int, p: sqlite3.Ro
     """Entrypoint to order summary screen."""
     pid = p["id"]
     is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
-    if not is_auto:
-        avail = stock_count(pid)
-        if avail < qty:
-            msg = f"⚠️ Not enough stock available ({avail} left)."
-            if isinstance(event, CallbackQuery):
-                return await event.answer(msg, show_alert=True)
-            return await event.answer(msg)
+    deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
+    if not is_auto and deliv_type != "manual":
+        has_stock_rows = db.execute("SELECT 1 FROM stock WHERE product_id=?", (pid,)).fetchone()
+        if has_stock_rows:
+            avail = stock_count(pid)
+            if avail < qty:
+                msg = f"⚠️ Not enough stock available ({avail} left)."
+                if isinstance(event, CallbackQuery):
+                    return await event.answer(msg, show_alert=True)
+                return await event.answer(msg)
 
     text, markup = render_order_summary(uid, p, qty, ctx)
     if isinstance(event, CallbackQuery):
@@ -1889,10 +1918,13 @@ async def on_pay_option_selected(c: CallbackQuery):
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
 
     is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
-    if not is_auto:
-        avail = stock_count(pid)
-        if avail < qty:
-            return await c.answer(f"⚠️ Not enough stock available ({avail} left).", show_alert=True)
+    deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
+    if not is_auto and deliv_type != "manual":
+        has_stock_rows = db.execute("SELECT 1 FROM stock WHERE product_id=?", (pid,)).fetchone()
+        if has_stock_rows:
+            avail = stock_count(pid)
+            if avail < qty:
+                return await c.answer(f"⚠️ Not enough stock available ({avail} left).", show_alert=True)
 
     total_cents = p["price"] * qty
     total_usdt = f"{total_cents / 100:.2f}"
@@ -1925,7 +1957,8 @@ async def on_pay_option_selected(c: CallbackQuery):
             log.exception("Paystack initialization failed: %s", e)
 
         if not pay_url:
-            pay_url = f"https://checkout.paystack.com/pay/{oid}"
+            db.execute("DELETE FROM orders WHERE id=?", (oid,))
+            return await c.answer("⚠️ Paystack checkout could not be initialized. Please try again or choose another payment method.", show_alert=True)
 
         text = (
             "<u>🇳🇬 <b>Pay with Naira (Card / Bank Transfer)</b></u>\n"
@@ -2105,8 +2138,10 @@ async def check_and_fulfill_onchain(oid: int, txid: str, uid: int, bot_instance:
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return False, "Order not found."
-    if o["status"] == "completed" and o["payload"]:
+    if o["status"] == "completed":
         return True, "Order already completed."
+    if o["status"] in ("paid", "manual_pending"):
+        return True, "Payment already received and pending fulfillment."
 
     # Prevent replay attack: check if this txid was already used for a completed or in-flight order
     dup = db.execute(
@@ -2179,9 +2214,14 @@ async def on_check_manual_status(c: CallbackQuery):
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return await c.answer("Order not found.", show_alert=True)
-    if o["status"] == "completed" and o["payload"]:
-        await edit(c, t(uid, "purchased", oid=oid, payload=esc(o["payload"])), kb([[btn(t(uid, "btn_back"), "home", style="primary")]]))
+    if o["status"] == "completed":
+        if o["payload"]:
+            await edit(c, t(uid, "purchased", oid=oid, payload=esc(o["payload"])), kb([[btn(t(uid, "btn_back"), "home", style="primary")]]))
         return await c.answer("✅ Order completed and delivered!", show_alert=True)
+    if o["status"] == "manual_pending":
+        return await c.answer("⏳ Payment received! Your order is currently pending fulfillment by support.", show_alert=True)
+    if o["refunded"] or o["status"] in ("refunded", "rejected"):
+        return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
     method = (o["payment_method"] or "").lower()
     if not o["txid"]:
@@ -2242,7 +2282,8 @@ async def on_custom_qty(c: CallbackQuery):
 
     pending_inputs[uid] = {"action": "cqty", "pid": pid, "ctx": ctx}
     is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
-    count = stock_count(pid) if not is_auto else 999
+    deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
+    count = stock_count(pid) if (not is_auto and deliv_type != "manual") else 999
 
     await c.message.answer(
         f"✏️ <b>Enter Custom Quantity for {esc(p['name'])}:</b>\n\n"
@@ -2293,11 +2334,14 @@ async def handle_user_text_input(m: Message):
             return await m.answer("⚠️ Please enter a valid positive number (e.g. 1, 2, 5) or send /cancel:")
 
         is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
-        if not is_auto:
-            avail = stock_count(pid)
-            if qty > avail:
-                pending_inputs[uid] = state
-                return await m.answer(f"⚠️ Only {avail} in stock. Please enter a quantity up to {avail} (or send /cancel):")
+        deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
+        if not is_auto and deliv_type != "manual":
+            has_stock_rows = db.execute("SELECT 1 FROM stock WHERE product_id=?", (pid,)).fetchone()
+            if has_stock_rows:
+                avail = stock_count(pid)
+                if qty > avail:
+                    pending_inputs[uid] = state
+                    return await m.answer(f"⚠️ Only {avail} in stock. Please enter a quantity up to {avail} (or send /cancel):")
 
         await start_checkout(m, uid, p, qty, ctx)
 
@@ -2468,9 +2512,14 @@ async def check_cryptobot_payment(c: CallbackQuery):
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return await c.answer("Order not found.", show_alert=True)
-    if o["status"] == "completed" and o["payload"]:
-        await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
-        return await c.answer()
+    if o["status"] == "completed":
+        if o["payload"]:
+            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
+        return await c.answer("✅ Order already completed!", show_alert=False)
+    if o["status"] == "manual_pending":
+        return await c.answer("⏳ Payment confirmed! Your order is currently pending fulfillment by support.", show_alert=True)
+    if o["refunded"] or o["status"] in ("refunded", "rejected"):
+        return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
     paid = await check_cryptobot_invoice(inv_id)
     if paid:
@@ -2506,9 +2555,14 @@ async def check_paystack_payment_callback(c: CallbackQuery):
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return await c.answer("Order not found.", show_alert=True)
-    if o["status"] == "completed" and o["payload"]:
-        await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
+    if o["status"] == "completed":
+        if o["payload"]:
+            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
         return await c.answer("✅ Order already completed!", show_alert=False)
+    if o["status"] == "manual_pending":
+        return await c.answer("⏳ Payment confirmed! Your order is currently pending fulfillment by support.", show_alert=True)
+    if o["refunded"] or o["status"] in ("refunded", "rejected"):
+        return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
     ref_to_check = ref or o["txid"] or o["invoice_id"]
     if not ref_to_check:
@@ -2601,23 +2655,23 @@ async def recent_purchases(event: Message | CallbackQuery):
             return await event.answer(text, reply_markup=markup)
 
     rows = db.execute(
-        "SELECT * FROM orders WHERE user_id=? AND payload IS NOT NULL AND status='completed' ORDER BY id DESC LIMIT 10",
+        "SELECT * FROM orders WHERE user_id=? AND status IN ('completed', 'manual_pending', 'paid') ORDER BY id DESC LIMIT 10",
         (uid,)
     ).fetchall()
 
     if not rows:
         text = t(uid, "no_orders")
     else:
-        text = t(uid, "orders_title") + "\n\n" + "\n\n".join(
-            f"📦 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {usd(o['price'])}\n<code>{esc(o['payload'])}</code>"
-            for o in rows
-        )
+        def render_order_item(o):
+            if o["status"] == "completed" and o["payload"]:
+                return f"📦 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {usd(o['price'])}\n<code>{esc(o['payload'])}</code>"
+            else:
+                return f"🟡 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {usd(o['price'])}\n<i>Status: Processing / Awaiting support delivery</i>"
+
+        text = t(uid, "orders_title") + "\n\n" + "\n\n".join(render_order_item(o) for o in rows)
         while len(text) > 3900 and len(rows) > 1:
             rows = rows[:-1]
-            text = t(uid, "orders_title") + "\n\n" + "\n\n".join(
-                f"📦 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {usd(o['price'])}\n<code>{esc(o['payload'])}</code>"
-                for o in rows
-            )
+            text = t(uid, "orders_title") + "\n\n" + "\n\n".join(render_order_item(o) for o in rows)
 
     markup = kb([[btn(t(uid, "btn_back"), "home", style="danger")]])
     if isinstance(event, CallbackQuery):
@@ -2924,9 +2978,14 @@ async def admin_addproduct(m: Message, command: CommandObject):
 @dp.message(Command("setprice"), is_admin)
 async def admin_setprice(m: Message, command: CommandObject):
     try:
+        if not command or not command.args:
+            return await m.answer("Usage: /setprice <product_id> <price_usd>\nExample: /setprice 1 12.50")
         pid, price = command.args.split()
         pid = int(pid)
         new_price_cents = round(float(price) * 100)
+        if new_price_cents <= 0:
+            return await m.answer("⚠️ Price must be greater than $0.00.")
+
         p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
         if not p:
             return await m.answer(f"Product #{pid} not found.")
@@ -2952,6 +3011,8 @@ async def admin_setprice(m: Message, command: CommandObject):
 @dp.message(Command("setmargin"), is_admin)
 async def admin_setmargin(m: Message, command: CommandObject):
     try:
+        if not command or not command.args:
+            return await m.answer("Usage: /setmargin <product_id> <margin_percent>\nExamples: /setmargin 1 50% or /setmargin 1 35")
         pid, raw_margin = command.args.split()
         pid = int(pid)
         margin = parse_profit_margin(raw_margin)
@@ -2976,8 +3037,16 @@ async def admin_setmargin(m: Message, command: CommandObject):
 @dp.message(Command("toggle"), is_admin)
 async def admin_toggle(m: Message, command: CommandObject):
     try:
-        db.execute("UPDATE products SET active=1-active WHERE id=?", (int(command.args),))
-        await m.answer("Toggled.")
+        if not command or not command.args:
+            return await m.answer("Usage: /toggle <product_id>")
+        pid = int(command.args.strip())
+        p = db.execute("SELECT id, name, active FROM products WHERE id=?", (pid,)).fetchone()
+        if not p:
+            return await m.answer(f"Product #{pid} not found.")
+        new_active = 1 - p["active"]
+        db.execute("UPDATE products SET active=? WHERE id=?", (new_active, pid))
+        status_str = "🟢 Active (Enabled)" if new_active else "🔴 Inactive (Disabled)"
+        await m.answer(f"Product #{pid} (<b>{esc(p['name'])}</b>) is now {status_str}.")
     except Exception:
         await m.answer("Usage: /toggle <product_id>")
 
@@ -2985,10 +3054,18 @@ async def admin_toggle(m: Message, command: CommandObject):
 @dp.message(Command("addstock"), is_admin)
 async def admin_addstock(m: Message, command: CommandObject):
     try:
+        if not command or not command.args:
+            return await m.answer("Usage: /addstock <product_id> <item>  (one item per line)")
         pid, items = command.args.split(None, 1)
+        pid = int(pid)
+        p = db.execute("SELECT id, name FROM products WHERE id=?", (pid,)).fetchone()
+        if not p:
+            return await m.answer(f"Product #{pid} not found.")
         lines = [x.strip() for x in items.splitlines() if x.strip()]
-        db.executemany("INSERT INTO stock(product_id, payload) VALUES(?,?)", [(int(pid), x) for x in lines])
-        await m.answer(f"Added {len(lines)} item(s). Stock now {stock_count(int(pid))}.")
+        if not lines:
+            return await m.answer("⚠️ No stock items provided.")
+        db.executemany("INSERT INTO stock(product_id, payload) VALUES(?,?)", [(pid, x) for x in lines])
+        await m.answer(f"Added {len(lines)} item(s) to #{pid} (<b>{esc(p['name'])}</b>). Stock now {stock_count(pid)}.")
     except Exception:
         await m.answer("Usage: /addstock <product_id> <item>  (one item per line)")
 
@@ -2996,7 +3073,9 @@ async def admin_addstock(m: Message, command: CommandObject):
 @dp.message(Command("refund"), is_admin)
 async def admin_refund(m: Message, command: CommandObject):
     try:
-        oid = int(command.args)
+        if not command or not command.args:
+            return await m.answer("Usage: /refund <order_id>")
+        oid = int(command.args.strip())
         db.execute("BEGIN IMMEDIATE")
         o = db.execute("SELECT * FROM orders WHERE id=? AND refunded=0", (oid,)).fetchone()
         if not o:
@@ -3005,13 +3084,15 @@ async def admin_refund(m: Message, command: CommandObject):
         db.execute("UPDATE orders SET refunded=1 WHERE id=?", (oid,))
         db.execute("COMMIT")
         await m.answer(f"Order #{oid} marked as refunded.")
-    except ValueError:
+    except (ValueError, TypeError):
         await m.answer("Usage: /refund <order_id>")
 
 
 @dp.message(Command("deliver"), is_admin)
 async def admin_deliver(m: Message, command: CommandObject):
     try:
+        if not command or not command.args:
+            return await m.answer("Usage: /deliver <order_id> <delivered_content_or_link>")
         oid_str, payload = command.args.split(None, 1)
         oid = int(oid_str)
         o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
@@ -3459,6 +3540,8 @@ async def admin_supplier_sync(m: Message, command: CommandObject):
 @dp.message(Command("s_link"), is_admin)
 async def admin_supplier_link(m: Message, command: CommandObject):
     try:
+        if not command or not command.args:
+            return await m.answer("Usage: /s_link <local_product_id> <supplier_product_id> [supplier_name]")
         parts = command.args.split()
         local_id = int(parts[0])
         sup_id = parts[1].strip()
@@ -3480,7 +3563,9 @@ async def admin_supplier_link(m: Message, command: CommandObject):
 @dp.message(Command("s_unlink"), is_admin)
 async def admin_supplier_unlink(m: Message, command: CommandObject):
     try:
-        local_id = int(command.args)
+        if not command or not command.args:
+            return await m.answer("Usage: /s_unlink <local_product_id>")
+        local_id = int(command.args.strip())
         p = db.execute("SELECT * FROM products WHERE id=?", (local_id,)).fetchone()
         if not p:
             return await m.answer(f"Product #{local_id} not found.")

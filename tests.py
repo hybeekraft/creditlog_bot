@@ -1411,9 +1411,115 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
                 updated_o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
                 self.assertEqual(updated_o["status"], "paid")
 
+    async def test_manual_delivery_product_checkout_not_blocked(self):
+        # Insert a manual assisted setup product with 0 local stock rows
+        cur = bot.db.execute(
+            "INSERT INTO products(name, description, price, delivery_type, auto_fulfill, active) VALUES(?,?,?,?,?,?)",
+            ("Test Assisted Service", "Assisted manual setup", 5000, "manual", 0, 1)
+        )
+        pid = cur.lastrowid
+        p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+
+        # 1. Product card should render 1, 5, 10
+        card_text, card_kb = bot.render_product_card(12345, p, "shop")
+        self.assertIn("Manual / Assisted Delivery", card_text)
+        qty_btn_texts = [b.text for row in card_kb.inline_keyboard for b in row]
+        self.assertIn("1", qty_btn_texts)
+        self.assertIn("5", qty_btn_texts)
+        self.assertIn("10", qty_btn_texts)
+
+        # 2. start_checkout should not block with out of stock
+        event = AsyncMock()
+        event.answer = AsyncMock()
+        event.message = AsyncMock()
+        with patch.object(bot, "render_order_summary", return_value=("Summary", bot.InlineKeyboardMarkup(inline_keyboard=[]))):
+            await bot.start_checkout(event, 12345, p, 5, "shop")
+            self.assertTrue(event.answer.called)
+            # Ensure it didn't call answer with "Not enough stock"
+            called_args = event.answer.call_args[0] if event.answer.call_args else ()
+            if called_args:
+                self.assertNotIn("Not enough stock", called_args[0])
+
+    async def test_payment_callbacks_repeat_click_on_manual_pending(self):
+        cur = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, txid) VALUES(?,?,?,?,?,?,'manual_pending',?)",
+            (12345, 1, "Manual Item", 1000, 1, "paystack", "REF_REPEAT_123")
+        )
+        oid = cur.lastrowid
+
+        c = AsyncMock()
+        c.data = f"chk_paystack:{oid}:REF_REPEAT_123"
+        c.from_user.id = 12345
+        c.answer = AsyncMock()
+
+        with patch.object(bot, "fulfill_order") as mock_fulfill:
+            await bot.check_paystack_payment_callback(c)
+            # Must NOT call fulfill_order again
+            self.assertFalse(mock_fulfill.called)
+            c.answer.assert_called_with("⏳ Payment confirmed! Your order is currently pending fulfillment by support.", show_alert=True)
+
+    async def test_payment_callbacks_rejected_or_refunded(self):
+        cur = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, txid) VALUES(?,?,?,?,?,?,'rejected',?)",
+            (12345, 1, "Item", 1000, 1, "paystack", "REF_REJ_123")
+        )
+        oid = cur.lastrowid
+
+        c = AsyncMock()
+        c.data = f"chk_paystack:{oid}:REF_REJ_123"
+        c.from_user.id = 12345
+        c.answer = AsyncMock()
+
+        await bot.check_paystack_payment_callback(c)
+        c.answer.assert_called_with("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
+
+    async def test_admin_commands_empty_args_do_not_crash(self):
+        m = AsyncMock()
+        m.answer = AsyncMock()
+        cmd = AsyncMock()
+        cmd.args = None
+
+        await bot.admin_refund(m, cmd)
+        m.answer.assert_called_with("Usage: /refund <order_id>")
+
+        await bot.admin_toggle(m, cmd)
+        m.answer.assert_called_with("Usage: /toggle <product_id>")
+
+        await bot.admin_setprice(m, cmd)
+        self.assertIn("Usage: /setprice", m.answer.call_args[0][0])
+
+        await bot.admin_setmargin(m, cmd)
+        self.assertIn("Usage: /setmargin", m.answer.call_args[0][0])
+
+        await bot.admin_supplier_link(m, cmd)
+        self.assertIn("Usage: /s_link", m.answer.call_args[0][0])
+
+        await bot.admin_supplier_unlink(m, cmd)
+        self.assertIn("Usage: /s_unlink", m.answer.call_args[0][0])
+
+    async def test_recent_purchases_includes_manual_pending(self):
+        cur = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status) VALUES(?,?,?,?,?,?,'manual_pending')",
+            (99999, 1, "Assisted Subscription", 2500, 1, "paystack")
+        )
+        oid = cur.lastrowid
+
+        event = AsyncMock()
+        event.from_user.id = 99999
+        event.bot = AsyncMock()
+        event.answer = AsyncMock()
+
+        with patch.object(bot, "check_user_fsub", new=AsyncMock(return_value=(True, []))):
+            await bot.recent_purchases(event)
+            self.assertTrue(event.answer.called)
+            ans_text = event.answer.call_args[0][0]
+            self.assertIn(f"Order #{oid}", ans_text)
+            self.assertIn("Processing / Awaiting support delivery", ans_text)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
