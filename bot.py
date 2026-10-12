@@ -1600,9 +1600,9 @@ async def on_search_page(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
     parts = c.data.split(":")
-    term = parts[1]
-    page = int(parts[2]) if len(parts) > 2 else 1
-    avail_only = int(parts[3]) if len(parts) > 3 else 0
+    term = parts[1] if len(parts) > 1 else ""
+    page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+    avail_only = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
     prods = db.execute(
         "SELECT * FROM products WHERE (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY id",
         (f"%{term.lower()}%", f"%{term.lower()}%")
@@ -2157,15 +2157,18 @@ async def handle_user_text_input(m: Message):
         await start_checkout(m, uid, p, qty, ctx)
 
     elif action == "search":
-        term = m.text.strip()
+        raw_term = m.text.strip()
+        clean_term = "".join(c for c in raw_term if c.isalnum() or c in (" ", "-", ".")).strip()[:24]
+        if not clean_term:
+            return await m.answer("⚠️ Please enter a valid search keyword (or send /cancel):")
         prods = db.execute(
-            "SELECT * FROM products WHERE LOWER(name) LIKE ? OR LOWER(description) LIKE ? ORDER BY id",
-            (f"%{term.lower()}%", f"%{term.lower()}%")
+            "SELECT * FROM products WHERE (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY id",
+            (f"%{clean_term.lower()}%", f"%{clean_term.lower()}%")
         ).fetchall()
         text, markup = render_product_list(
             uid, prods, page=1,
-            cb_prefix=f"srch:{term}",
-            ctx_prefix=f"s_{term}",
+            cb_prefix=f"srch:{clean_term}",
+            ctx_prefix=f"s_{clean_term}",
             back_cb="shop"
         )
         await m.answer(text, reply_markup=markup)
@@ -2382,6 +2385,12 @@ async def recent_purchases(event: Message | CallbackQuery):
             f"📦 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {usd(o['price'])}\n<code>{esc(o['payload'])}</code>"
             for o in rows
         )
+        while len(text) > 3900 and len(rows) > 1:
+            rows = rows[:-1]
+            text = t(uid, "orders_title") + "\n\n" + "\n\n".join(
+                f"📦 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {usd(o['price'])}\n<code>{esc(o['payload'])}</code>"
+                for o in rows
+            )
 
     markup = kb([[btn(t(uid, "btn_back"), "home", style="danger")]])
     if isinstance(event, CallbackQuery):
@@ -2605,6 +2614,25 @@ async def admin_del_emoji(m: Message, command: CommandObject):
     await m.answer(f"Custom emoji for <b>{esc(key)}</b> removed.")
 
 
+def chunk_lines(lines: List[str], max_chars: int = 3500) -> List[str]:
+    """Chunks HTML lines without splitting across tags."""
+    chunks = []
+    current_chunk = []
+    current_len = 0
+    for line in lines:
+        line_len = len(line) + 1
+        if current_len + line_len > max_chars and current_chunk:
+            chunks.append("\n".join(current_chunk))
+            current_chunk = [line]
+            current_len = line_len
+        else:
+            current_chunk.append(line)
+            current_len += line_len
+    if current_chunk:
+        chunks.append("\n".join(current_chunk))
+    return chunks
+
+
 @dp.message(Command("products"), is_admin)
 async def admin_products(m: Message):
     rows = db.execute("SELECT * FROM products ORDER BY id").fetchall()
@@ -2646,12 +2674,8 @@ async def admin_products(m: Message):
             f"{status_badge} #{p['id']}. <b>{esc(p['name'])}</b>{cat_disp} · {usd(p['price'])}{cost_disp}{margin_info}"
         )
 
-    text = "\n".join(lines)
-    if len(text) > 4000:
-        for i in range(0, len(text), 3800):
-            await m.answer(text[i:i+3800])
-    else:
-        await m.answer(text)
+    for chunk in chunk_lines(lines):
+        await m.answer(chunk)
 
 
 @dp.message(Command("addproduct"), is_admin)
@@ -2921,12 +2945,8 @@ async def admin_supplier_products(m: Message, command: CommandObject):
             f"  Cost: {usd(p['price_cents'])}{stock_disp} · {status}"
         )
 
-    text = "\n".join(lines)
-    if len(text) > 4000:
-        for i in range(0, len(text), 3800):
-            await m.answer(text[i:i+3800])
-    else:
-        await m.answer(text)
+    for chunk in chunk_lines(lines):
+        await m.answer(chunk)
 
 
 async def perform_supplier_sync(

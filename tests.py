@@ -1279,6 +1279,22 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
         await bot.admin_fsub(m, cmd)
         self.assertNotIn("@chan1", bot.get_fsub_channels())
 
+    def test_chunk_lines_preserves_tags(self):
+        sample_lines = [f"#{i}. <b>Item {i}</b> · $10.00" for i in range(100)]
+        chunks = bot.chunk_lines(sample_lines, max_chars=500)
+        self.assertTrue(len(chunks) > 1)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), 600)
+            self.assertEqual(chunk.count("<b>"), chunk.count("</b>"))
+
+    async def test_search_special_chars_and_length(self):
+        m = AsyncMock()
+        m.from_user.id = 99999
+        m.text = "ChatGPT: Plus_Edition / Extra long query text that exceeds limits"
+        bot.pending_inputs[99999] = {"action": "search"}
+        await bot.handle_user_text_input(m)
+        self.assertTrue(m.answer.called)
+
 
 if __name__ == "__main__":
     unittest.main()
