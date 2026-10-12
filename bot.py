@@ -86,7 +86,7 @@ if not CRYPTO_USDT_TRC20 or CRYPTO_USDT_TRC20.startswith("TYour") or CRYPTO_USDT
 
 # Paystack (Naira / Card / Bank Transfer)
 PAYSTACK_SECRET_KEY = (os.environ.get("PAYSTACK_SECRET_KEY", "") or "").strip()
-DEFAULT_USD_NGN_RATE = int(os.environ.get("USD_NGN_RATE", "1650"))
+DEFAULT_USD_NGN_RATE = int(os.environ.get("USD_NGN_RATE", "1450"))
 PAYSTACK_CALLBACK_URL = os.environ.get("PAYSTACK_CALLBACK_URL", "https://t.me/creditlogbot")
 
 # --------------------------------------------------------------------------
@@ -3068,7 +3068,7 @@ async def admin_setrate(m: Message, command: CommandObject):
         return await m.answer(
             f"💱 <b>USD / NGN Exchange Rate:</b>\n"
             f"• Current rate: <b>₦{current_rate:,} / USD</b>\n\n"
-            f"To update, send:\n<code>/setrate &lt;rate_in_naira&gt;</code> (e.g. <code>/setrate 1650</code>)"
+            f"To update, send:\n<code>/setrate &lt;rate_in_naira&gt;</code> (e.g. <code>/setrate 1450</code>)"
         )
     try:
         new_rate = int("".join(c for c in args if c.isdigit()))
@@ -3077,7 +3077,7 @@ async def admin_setrate(m: Message, command: CommandObject):
         set_usd_ngn_rate(new_rate)
         await m.answer(f"✅ USD to NGN exchange rate updated to <b>₦{new_rate:,} / USD</b>.")
     except Exception:
-        await m.answer("⚠️ Please specify a valid integer rate, e.g. <code>/setrate 1650</code>")
+        await m.answer("⚠️ Please specify a valid integer rate, e.g. <code>/setrate 1450</code>")
 
 
 @dp.message(Command("setpaystack"), is_admin)
