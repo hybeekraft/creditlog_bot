@@ -1516,6 +1516,77 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"Order #{oid}", ans_text)
             self.assertIn("Processing / Awaiting support delivery", ans_text)
 
+    def test_manual_delivery_products_not_blocked_when_stock_none(self):
+        bot.db.execute("DELETE FROM products")
+        bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES(101, 'Cursor Pro 1M', 1500, 1, 0, NULL, NULL, 'manual')")
+        p = bot.db.execute("SELECT * FROM products WHERE id=101").fetchone()
+        self.assertTrue(bot.is_product_available(p))
+
+    def test_manual_delivery_out_of_stock_when_stock_zero(self):
+        bot.db.execute("DELETE FROM products")
+        bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES(102, 'Snapchat Plus 6M', 800, 1, 0, NULL, 0, 'manual')")
+        p = bot.db.execute("SELECT * FROM products WHERE id=102").fetchone()
+        self.assertFalse(bot.is_product_available(p))
+
+    async def test_check_and_fulfill_onchain_manual_pending(self):
+        bot.db.execute("DELETE FROM products")
+        bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_stock, delivery_type) VALUES(201, 'Manual Assisted Setup', 1000, 1, 0, NULL, NULL, 'manual')")
+        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status) VALUES(3333, 201, 'Manual Assisted Setup', 1000, 1, 'bep20', 'pending')")
+        oid = cur.lastrowid
+
+        mock_bot = AsyncMock()
+        with patch.object(bot.onchain, "verify_bep20_usdt", new=AsyncMock(return_value=(True, "Verified", 10.0))):
+            verified, result = await bot.check_and_fulfill_onchain(oid, "0xhash123", 3333, mock_bot)
+            self.assertTrue(verified)
+            self.assertEqual(result, "MANUAL_PENDING")
+            o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+            self.assertEqual(o["status"], "manual_pending")
+
+    async def test_cancel_order_clears_pending_inputs(self):
+        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status) VALUES(4444, 1, 'Item', 1000, 1, 'bep20', 'pending')")
+        oid = cur.lastrowid
+        bot.pending_inputs[4444] = {"action": "txid", "oid": oid}
+
+        c = AsyncMock()
+        c.from_user.id = 4444
+        c.data = f"cancel_order:{oid}"
+        c.message.edit_text = AsyncMock()
+
+        await bot.on_cancel_order(c)
+        self.assertNotIn(4444, bot.pending_inputs)
+        o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(o["status"], "cancelled")
+
+    async def test_admin_refund_sets_status_and_notifies_user(self):
+        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, refunded) VALUES(5555, 1, 'Refundable Item', 1000, 1, 'paystack', 'completed', 0)")
+        oid = cur.lastrowid
+
+        m = AsyncMock()
+        cmd = AsyncMock()
+        cmd.args = str(oid)
+        m.bot.send_message = AsyncMock()
+
+        await bot.admin_refund(m, cmd)
+        o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(o["refunded"], 1)
+        self.assertEqual(o["status"], "refunded")
+        self.assertTrue(m.bot.send_message.called)
+        self.assertEqual(m.bot.send_message.call_args[0][0], 5555)
+        self.assertIn("Refund Processed", m.bot.send_message.call_args[0][1])
+
+    async def test_admin_mode_forced_instant_displays_model_a(self):
+        bot.set_setting("fulfillment_mode", "instant")
+        m = AsyncMock()
+        cmd = AsyncMock()
+        cmd.args = None
+
+        with patch.object(bot.reseller, "get_balance", new=AsyncMock(return_value={"balance": 0.0})):
+            await bot.admin_mode(m, cmd)
+            self.assertTrue(m.answer.called)
+            ans = m.answer.call_args[0][0]
+            self.assertIn("INSTANT", ans)
+            self.assertIn("Model A (Instant Auto-Delivery)", ans)
+
 
 if __name__ == "__main__":
     unittest.main()

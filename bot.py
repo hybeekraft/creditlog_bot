@@ -46,7 +46,9 @@ SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/your_support")
 CHANNEL_URL = os.environ.get("CHANNEL_URL", "https://t.me/your_channel")
 REQUIRED_CHANNELS_RAW = os.environ.get("REQUIRED_CHANNELS", "").strip()
 LOW_STOCK = int(os.environ.get("LOW_STOCK", "2"))
-DB_PATH = os.environ.get("DB_PATH", "store.db")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+db_env = os.environ.get("DB_PATH", "store.db")
+DB_PATH = db_env if db_env == ":memory:" else (db_env if os.path.isabs(db_env) else os.path.join(BASE_DIR, db_env))
 PORT = int(os.environ.get("PORT", "8080"))
 
 def parse_profit_margin(val: Optional[str], default: int = 45) -> int:
@@ -778,61 +780,61 @@ def migrate_db():
         ("Hotspot Shield VPN 7D", "Hotspot Shield VPN 7 Days access.", 200, "VPN"),
         ("IPVanish VPN 7D", "IPVanish VPN 7 Days access.", 200, "VPN"),
         ("Kaspersky Premium + VPN 1Y", "Kaspersky Premium Security + VPN 1 Year.", 960, "Security"),
-        ("ChatGPT Plus 1M Momo Pay", "ChatGPT Plus 1 Month Momo Pay access.", 600, "ChatGPT", 0),
-        ("ChatGPT Plus 1M 30D", "ChatGPT Plus 1 Month 30 Days account.", 768, "ChatGPT", 0),
-        ("ChatGPT Plus 1M Pix", "ChatGPT Plus 1 Month Pix payment access.", 590, "ChatGPT", 0),
-        ("ChatGPT Plus Your Mail 1M", "ChatGPT Plus 1 Month upgraded on your email.", 1800, "ChatGPT", 0),
+        ("ChatGPT Plus 1M Momo Pay", "ChatGPT Plus 1 Month Momo Pay access.", 600, "ChatGPT"),
+        ("ChatGPT Plus 1M 30D", "ChatGPT Plus 1 Month 30 Days account.", 768, "ChatGPT"),
+        ("ChatGPT Plus 1M Pix", "ChatGPT Plus 1 Month Pix payment access.", 590, "ChatGPT"),
+        ("ChatGPT Plus Your Mail 1M", "ChatGPT Plus 1 Month upgraded on your email.", 1800, "ChatGPT"),
 
         # Screenshot Page 14
-        ("ChatGPT Business 1M", "ChatGPT Business Workspace 1 Month.", 650, "ChatGPT", 0),
-        ("ChatGPT Plus 4M Ready Account", "ChatGPT Plus 4 Months ready-made account.", 5750, "ChatGPT", 0),
-        ("Admin Netflix 4K Premium 1M 5 Profiles", "Netflix 4K Premium 1 Month 5 Profiles Admin.", 250, "Streaming", 0),
-        ("Admin Netflix 4K 1M", "Netflix 4K Admin 1 Month access.", 380, "Streaming", 0),
-        ("ExpressVPN 1 Month Private", "ExpressVPN 1 Month Private dedicated slot.", 350, "VPN", 0),
-        ("Codex API 500M Tokens 6D", "Codex API 500M tokens 6 Days access.", 3400, "Codex API", 0),
-        ("Apple Music 5M", "Apple Music 5 Months subscription.", 200, "Music", 0),
-        ("Apple TV+ 12 Months", "Apple TV+ 12 Months full plan.", 600, "Streaming", 0),
-        ("Capcut 6M Personal", "CapCut Pro 6 Months personal account.", 1635, "Design", 0),
-        ("Gamma Pro 1 Year", "Gamma Pro AI presentation maker 1 Year.", 2900, "AI Tools", 0),
-        ("ElevenLabs Creator 1 Year", "ElevenLabs Creator 1 Year plan.", 3700, "ElevenLabs", 0),
-        ("ChatGPT Plus 1M Google Pay", "ChatGPT Plus 1 Month Google Pay.", 870, "ChatGPT", 0),
-        ("ChatGPT Plus 1M GPAY", "ChatGPT Plus 1 Month GPAY.", 830, "ChatGPT", 0),
-        ("ChatGPT Plus 1M UPI", "ChatGPT Plus 1 Month UPI account.", 600, "ChatGPT", 0),
-        ("Kling 66 Credits", "Kling AI 66 Credits pack.", 55, "Video AI", 0),
+        ("ChatGPT Business 1M", "ChatGPT Business Workspace 1 Month.", 650, "ChatGPT"),
+        ("ChatGPT Plus 4M Ready Account", "ChatGPT Plus 4 Months ready-made account.", 5750, "ChatGPT"),
+        ("Admin Netflix 4K Premium 1M 5 Profiles", "Netflix 4K Premium 1 Month 5 Profiles Admin.", 250, "Streaming"),
+        ("Admin Netflix 4K 1M", "Netflix 4K Admin 1 Month access.", 380, "Streaming"),
+        ("ExpressVPN 1 Month Private", "ExpressVPN 1 Month Private dedicated slot.", 350, "VPN"),
+        ("Codex API 500M Tokens 6D", "Codex API 500M tokens 6 Days access.", 3400, "Codex API"),
+        ("Apple Music 5M", "Apple Music 5 Months subscription.", 200, "Music"),
+        ("Apple TV+ 12 Months", "Apple TV+ 12 Months full plan.", 600, "Streaming"),
+        ("Capcut 6M Personal", "CapCut Pro 6 Months personal account.", 1635, "Design"),
+        ("Gamma Pro 1 Year", "Gamma Pro AI presentation maker 1 Year.", 2900, "AI Tools"),
+        ("ElevenLabs Creator 1 Year", "ElevenLabs Creator 1 Year plan.", 3700, "ElevenLabs"),
+        ("ChatGPT Plus 1M Google Pay", "ChatGPT Plus 1 Month Google Pay.", 870, "ChatGPT"),
+        ("ChatGPT Plus 1M GPAY", "ChatGPT Plus 1 Month GPAY.", 830, "ChatGPT"),
+        ("ChatGPT Plus 1M UPI", "ChatGPT Plus 1 Month UPI account.", 600, "ChatGPT"),
+        ("Kling 66 Credits", "Kling AI 66 Credits pack.", 55, "Video AI"),
 
         # Screenshot Page 15
-        ("Gmail account new", "Gmail freshly created PVA account.", 62, "Office", 0),
-        ("HBO Max Standard 3 Months", "HBO Max Standard 3 Months private slot.", 200, "Streaming", 0),
-        ("HBO Max Standard 5 Months", "HBO Max Standard 5 Months private slot.", 250, "Streaming", 0),
-        ("CapCut Pro 7D", "CapCut Pro 7 Days quick access.", 50, "Design", 0),
-        ("CapCut Pro 7 Days", "CapCut Pro 7 Days standard license.", 65, "Design", 0),
-        ("Adobe Full App Bypass Version 1M", "Adobe Full App Bypass Version 1 Month.", 550, "Adobe", 0),
-        ("Loveable Pro 1M Redeem Link", "Loveable Pro 1 Month official redeem link.", 120, "AI Tools", 0),
-        ("Windows 10 Pro Retail Key", "Windows 10 Pro Retail digital license key.", 300, "Office", 0),
-        ("Duolingo Super 2M", "Duolingo Super 2 Months subscription.", 50, "Education", 0),
-        ("Notion Business 1 Year", "Notion Business Workspace 1 Year.", 1250, "Office", 0),
-        ("Autodesk Education Plan 1 Year", "Autodesk Education Plan 1 Year access.", 200, "Autodesk", 0),
-        ("YouTube Ready Account 3M", "YouTube Premium Ready Account 3 Months.", 220, "Streaming", 0),
-        ("JetBrains EDU 1 Year", "JetBrains All Products EDU 1 Year.", 450, "Office", 0),
-        ("Higgsfield Starter 1M", "Higgsfield AI Video Starter 1 Month.", 1000, "Video AI", 0),
-        ("OpenArt Starter 4K Credits 1M", "OpenArt Starter 4K Credits 1 Month.", 450, "AI Tools", 0),
+        ("Gmail account new", "Gmail freshly created PVA account.", 62, "Office"),
+        ("HBO Max Standard 3 Months", "HBO Max Standard 3 Months private slot.", 200, "Streaming"),
+        ("HBO Max Standard 5 Months", "HBO Max Standard 5 Months private slot.", 250, "Streaming"),
+        ("CapCut Pro 7D", "CapCut Pro 7 Days quick access.", 50, "Design"),
+        ("CapCut Pro 7 Days", "CapCut Pro 7 Days standard license.", 65, "Design"),
+        ("Adobe Full App Bypass Version 1M", "Adobe Full App Bypass Version 1 Month.", 550, "Adobe"),
+        ("Loveable Pro 1M Redeem Link", "Loveable Pro 1 Month official redeem link.", 120, "AI Tools"),
+        ("Windows 10 Pro Retail Key", "Windows 10 Pro Retail digital license key.", 300, "Office"),
+        ("Duolingo Super 2M", "Duolingo Super 2 Months subscription.", 50, "Education"),
+        ("Notion Business 1 Year", "Notion Business Workspace 1 Year.", 1250, "Office"),
+        ("Autodesk Education Plan 1 Year", "Autodesk Education Plan 1 Year access.", 200, "Autodesk"),
+        ("YouTube Ready Account 3M", "YouTube Premium Ready Account 3 Months.", 220, "Streaming"),
+        ("JetBrains EDU 1 Year", "JetBrains All Products EDU 1 Year.", 450, "Office"),
+        ("Higgsfield Starter 1M", "Higgsfield AI Video Starter 1 Month.", 1000, "Video AI"),
+        ("OpenArt Starter 4K Credits 1M", "OpenArt Starter 4K Credits 1 Month.", 450, "AI Tools"),
 
         # Screenshot Page 16
-        ("Coursera Premium 12 Months", "Coursera Plus/Premium 12 Months learning.", 350, "Education", 0),
-        ("Spotify Premium 3M", "Spotify Premium 3 Months private account.", 150, "Music", 0),
-        ("Kiro Pro Edu Official Owner 1Y", "Kiro Pro EDU Official Owner 1 Year.", 7300, "Education", 0),
-        ("Spotify Individual 12M", "Spotify Individual 12 Months subscription.", 2200, "Music", 0),
-        ("Spotify Premium 6 Months", "Spotify Premium 6 Months subscription.", 980, "Music", 0),
-        ("Claude API 50M Tokens 3 Days", "Claude API 50M tokens valid 3 days.", 600, "Claude", 0),
-        ("Apple TV+ 6 Months", "Apple TV+ 6 Months subscription.", 450, "Streaming", 0),
-        ("Amazon Prime Video 1 Month", "Amazon Prime Video 1 Month private slot.", 200, "Streaming", 0),
-        ("QuillBot Premium 1M", "QuillBot Premium 1 Month paraphrase tool.", 300, "Office", 0),
-        ("Snapchat Plus+ 3 Months", "Snapchat Plus 3 Months access.", 500, "Social", 0),
-        ("Peacock Official Subscription 1 Year", "Peacock Official TV 1 Year subscription.", 500, "Streaming", 0),
-        ("Gamma AI 20K Credits 10 Years", "Gamma AI 20K Credits 10 Years lifetime.", 1100, "AI Tools", 0),
-        ("Manus Pro 12 Months", "Manus Pro AI agent 12 Months access.", 3500, "AI Tools", 0),
-        ("KlingAI 750-1100 Credits 1M", "KlingAI 750-1100 Credits 1 Month video plan.", 1138, "Video AI", 0),
-        ("Kling Random 700-1000 Credits 1M", "Kling Random 700-1000 Credits 1 Month video plan.", 850, "Video AI", 0),
+        ("Coursera Premium 12 Months", "Coursera Plus/Premium 12 Months learning.", 350, "Education"),
+        ("Spotify Premium 3M", "Spotify Premium 3 Months private account.", 150, "Music"),
+        ("Kiro Pro Edu Official Owner 1Y", "Kiro Pro EDU Official Owner 1 Year.", 7300, "Education"),
+        ("Spotify Individual 12M", "Spotify Individual 12 Months subscription.", 2200, "Music"),
+        ("Spotify Premium 6 Months", "Spotify Premium 6 Months subscription.", 980, "Music"),
+        ("Claude API 50M Tokens 3 Days", "Claude API 50M tokens valid 3 days.", 600, "Claude"),
+        ("Apple TV+ 6 Months", "Apple TV+ 6 Months subscription.", 450, "Streaming"),
+        ("Amazon Prime Video 1 Month", "Amazon Prime Video 1 Month private slot.", 200, "Streaming"),
+        ("QuillBot Premium 1M", "QuillBot Premium 1 Month paraphrase tool.", 300, "Office"),
+        ("Snapchat Plus+ 3 Months", "Snapchat Plus 3 Months access.", 500, "Social"),
+        ("Peacock Official Subscription 1 Year", "Peacock Official TV 1 Year subscription.", 500, "Streaming"),
+        ("Gamma AI 20K Credits 10 Years", "Gamma AI 20K Credits 10 Years lifetime.", 1100, "AI Tools"),
+        ("Manus Pro 12 Months", "Manus Pro AI agent 12 Months access.", 3500, "AI Tools"),
+        ("KlingAI 750-1100 Credits 1M", "KlingAI 750-1100 Credits 1 Month video plan.", 1138, "Video AI"),
+        ("Kling Random 700-1000 Credits 1M", "Kling Random 700-1000 Credits 1 Month video plan.", 850, "Video AI"),
 
         # Out-of-stock products shown in catalog (Page 17)
         ("Snapchat Plus+ 6 Months", "Snapchat Plus 6 Months subscription access.", 800, "Social", 0),
@@ -866,14 +868,9 @@ def migrate_db():
                 db.execute("""
                     UPDATE products SET price=?, supplier_price=? WHERE id=?
                 """, (retail, m_price, exists["id"]))
-            if m_stock is not None:
-                db.execute("""
-                    UPDATE products SET category=?, description=COALESCE(description, ?), supplier_stock=? WHERE id=?
-                """, (m_cat, m_desc, m_stock, exists["id"]))
-            else:
-                db.execute("""
-                    UPDATE products SET category=?, description=COALESCE(description, ?) WHERE id=?
-                """, (m_cat, m_desc, exists["id"]))
+            db.execute("""
+                UPDATE products SET category=?, description=COALESCE(description, ?), supplier_stock=? WHERE id=?
+            """, (m_cat, m_desc, m_stock, exists["id"]))
 
     # Backfill legacy products: if price equals raw supplier cost, restore retail price with 45% profit margin
     db.execute("""
@@ -881,6 +878,9 @@ def migrate_db():
         SET price = max(100, round(supplier_price * (1 + ? / 100.0)))
         WHERE supplier_price IS NOT NULL AND price = supplier_price
     """, (PROFIT_MARGIN,))
+
+    # Clean up manual delivery products so dummy supplier_stock does not block them
+    db.execute("UPDATE products SET supplier_stock=NULL WHERE delivery_type='manual' AND supplier_stock=0")
 
     # Custom emojis table for original brand logos (Telegram custom emoji IDs)
     db.execute("""
@@ -1112,8 +1112,6 @@ def is_product_available(p: sqlite3.Row) -> bool:
     sup_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
     count = stock_count(p["id"]) if not is_auto else None
 
-    if is_auto and sup_stock is not None and sup_stock <= 0:
-        return False
     if sup_stock is not None and sup_stock <= 0:
         return False
     if not is_auto and deliv_type != "manual":
@@ -2195,6 +2193,19 @@ async def check_and_fulfill_onchain(oid: int, txid: str, uid: int, bot_instance:
             )
             return True, "Payment verified on-chain! Our support team is completing your delivery shortly."
 
+        if payload == "MANUAL_PENDING":
+            await notify_admins(
+                bot_instance,
+                f"⚡ <b>Payment Auto-Verified On-Chain!</b>\n"
+                f"• <b>Order:</b> #{oid}\n"
+                f"• <b>Product:</b> {esc(o['product_name'])}\n"
+                f"• <b>Amount:</b> ${detected_amount:.2f} USDT (Required: {usd(o['price'])})\n"
+                f"• <b>Method:</b> {esc(method.upper())}\n"
+                f"• <b>TxID:</b> <code>{esc(txid)}</code>\n"
+                f"• <b>Status:</b> Awaiting support fulfillment / Model B top-up"
+            )
+            return True, "MANUAL_PENDING"
+
         user_mention = f"User {uid}"
         await notify_admins(
             bot_instance,
@@ -2237,12 +2248,15 @@ async def on_check_manual_status(c: CallbackQuery):
             if comp_o and comp_o["payload"] and comp_o["payload"] != "MANUAL_PENDING":
                 await edit(c, t(uid, "purchased", oid=oid, payload=esc(comp_o["payload"])), kb([[btn(t(uid, "btn_back"), "home", style="primary")]]))
                 return await c.answer("✅ Verified on blockchain and delivered!", show_alert=True)
+        elif verified and result == "MANUAL_PENDING":
+            return await c.answer("⏳ Payment verified on blockchain! Our support team is fulfilling your order shortly.", show_alert=True)
 
     return await c.answer("⏳ Your payment is currently under verification. You will receive your item automatically once confirmed!", show_alert=True)
 
 
 @dp.callback_query(F.data.startswith("cancel_order:"))
 async def on_cancel_order(c: CallbackQuery):
+    pending_inputs.pop(c.from_user.id, None)
     oid = int(c.data.split(":")[1])
     db.execute("UPDATE orders SET status='cancelled' WHERE id=? AND status='pending'", (oid,))
     await c.answer("❌ Order cancelled.", show_alert=True)
@@ -2393,16 +2407,16 @@ async def handle_user_text_input(m: Message):
                 pass
 
             if verified:
-                if result == "VERIFIED_AND_DELIVERED":
+                if result == "MANUAL_PENDING":
+                    return await m.answer(
+                        f"🎉 <b>Payment Verified On-Chain for Order #{oid}!</b>\n\n"
+                        f"Item: <b>{esc(o['product_name'])}</b>\n\n"
+                        f"🟡 <i>Your order has been queued and is being processed by our support team. Your credentials/items will be delivered directly to you here shortly!</i>\n\n"
+                        f"If you have any questions, contact Support: {SUPPORT_URL}"
+                    )
+                elif result == "VERIFIED_AND_DELIVERED":
                     comp_o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
-                    if comp_o and comp_o["payload"] == "MANUAL_PENDING":
-                        return await m.answer(
-                            f"🎉 <b>Payment Verified On-Chain for Order #{oid}!</b>\n\n"
-                            f"Item: <b>{esc(o['product_name'])}</b>\n\n"
-                            f"🟡 <i>This product is an assisted/manual setup service. Our support team has received your order and will deliver your credentials or setup link directly to you here shortly!</i>\n\n"
-                            f"If you have any questions, contact Support: {SUPPORT_URL}"
-                        )
-                    elif comp_o and comp_o["payload"]:
+                    if comp_o and comp_o["payload"]:
                         return await m.answer(t(uid, "purchased", oid=oid, payload=esc(comp_o["payload"])))
                 else:
                     return await m.answer(f"✅ {result}")
@@ -2532,10 +2546,9 @@ async def check_cryptobot_payment(c: CallbackQuery):
             await c.message.answer(
                 f"🎉 <b>Payment Confirmed for Order #{oid}!</b>\n\n"
                 f"Item: <b>{esc(o['product_name'])}</b>\n\n"
-                f"🟡 <i>This product is an assisted/manual setup service. Our support team has received your order and will deliver your credentials or setup link directly to you here shortly!</i>\n\n"
+                f"🟡 <i>Your order has been queued and is being processed by our support team. Your credentials/items will be delivered directly to you here shortly!</i>\n\n"
                 f"If you have any questions, contact Support: {SUPPORT_URL}"
             )
-            await notify_admins(c.bot, f"🔔 <b>New Paid Manual Order #{oid}</b>\n• Item: <b>{esc(o['product_name'])}</b>\n• Buyer: <code>{uid}</code>\n• Paid: {usd(o['price'])}\n👉 Use <code>/deliver {oid} &lt;credentials/link&gt;</code> to complete.")
             await c.answer()
         elif payload:
             await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
@@ -2595,17 +2608,8 @@ async def check_paystack_payment_callback(c: CallbackQuery):
             await c.message.answer(
                 f"🎉 <b>Payment Confirmed via Paystack for Order #{oid}!</b>\n\n"
                 f"Item: <b>{esc(o['product_name'])}</b>\n\n"
-                f"🟡 <i>This product is an assisted/manual setup service. Our support team has received your order and will deliver your credentials or setup link directly to you here shortly!</i>\n\n"
+                f"🟡 <i>Your order has been queued and is being processed by our support team. Your credentials/items will be delivered directly to you here shortly!</i>\n\n"
                 f"If you have any questions, contact Support: {SUPPORT_URL}"
-            )
-            await notify_admins(
-                c.bot,
-                f"🔔 <b>New Paid Manual Order #{oid} (Paystack)</b>\n"
-                f"• Item: <b>{esc(o['product_name'])}</b>\n"
-                f"• Buyer: <code>{uid}</code>\n"
-                f"• Paid: {usd(o['price'])}\n"
-                f"• Ref: <code>{esc(ref_to_check)}</code>\n"
-                f"👉 Use <code>/deliver {oid} &lt;credentials/link&gt;</code> to complete."
             )
             await c.answer("✅ Payment confirmed!", show_alert=False)
         elif payload:
@@ -3084,8 +3088,16 @@ async def admin_refund(m: Message, command: CommandObject):
         if not o:
             db.execute("ROLLBACK")
             return await m.answer("Order not found or already refunded.")
-        db.execute("UPDATE orders SET refunded=1 WHERE id=?", (oid,))
+        db.execute("UPDATE orders SET refunded=1, status='refunded' WHERE id=?", (oid,))
         db.execute("COMMIT")
+        try:
+            await m.bot.send_message(
+                o["user_id"],
+                f"↩️ <b>Refund Processed for Order #{oid}</b>\n\n"
+                f"Your order for <b>{esc(o['product_name'])}</b> has been refunded. If you have any questions, please contact Support: {SUPPORT_URL}"
+            )
+        except Exception:
+            pass
         await m.answer(f"Order #{oid} marked as refunded.")
     except (ValueError, TypeError):
         await m.answer("Usage: /refund <order_id>")
@@ -3127,11 +3139,13 @@ async def admin_stats(m: Message):
 
     users = q("SELECT COUNT(*) FROM users")
     orders_n = q("SELECT COUNT(*) FROM orders WHERE status='completed' AND refunded=0")
+    manual_pending = q("SELECT COUNT(*) FROM orders WHERE status='manual_pending'")
     revenue = q("SELECT SUM(price) FROM orders WHERE status='completed' AND refunded=0")
     pending = q("SELECT COUNT(*) FROM orders WHERE status='pending'")
     await m.answer(
         f"👥 Total buyers: {users}\n"
         f"📦 Completed purchases: {orders_n}\n"
+        f"🟡 Awaiting Fulfillment / Model B: {manual_pending}\n"
         f"⏳ Pending checkouts: {pending}\n"
         f"💰 Total revenue: {usd(revenue)}"
     )
@@ -3303,13 +3317,13 @@ async def admin_mode(m: Message, command: CommandObject = None):
     except Exception as e:
         log.warning("Could not fetch balance in /mode: %s", e)
 
-    active_model = "Model A (Instant Auto-Delivery)" if (bal > 0 and current_mode != "manual") else "Model B (Manual Top-Up & /approve)"
+    active_model = "Model A (Instant Auto-Delivery)" if (current_mode == "instant" or (bal > 0 and current_mode != "manual")) else "Model B (Manual Top-Up & /approve)"
     await m.answer(
         f"⚙️ <b>Store Fulfillment Strategy</b>\n\n"
         f"• <b>Configured Mode:</b> <code>{current_mode.upper()}</code>\n"
         f"• <b>Current Supplier Balance:</b> <b>${bal:.2f} USDT</b>\n"
         f"• <b>Currently Active:</b> <b>{active_model}</b>\n\n"
-        f"<i>When balance is $0.00, orders automatically pause automated delivery so you can use the customer's funds to top up before approving.</i>\n\n"
+        f"<i>When supplier balance is insufficient for an order, automated delivery pauses so you can use customer funds to top up before approving.</i>\n\n"
         f"<b>Switch Mode:</b>\n"
         f"• <code>/mode auto</code> - Dynamic (Recommended)\n"
         f"• <code>/mode manual</code> - Force Model B (Pause all auto-delivery)\n"
