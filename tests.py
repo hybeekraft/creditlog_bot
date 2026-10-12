@@ -1338,6 +1338,47 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(doc.filename.endswith(".db"))
         self.assertIn("Database Backup", kwargs.get("caption", ""))
 
+    async def test_paystack_rate_command_and_helpers(self):
+        m = AsyncMock()
+        cmd = MagicMock()
+        cmd.args = ""
+        await bot.admin_setrate(m, cmd)
+        self.assertTrue(m.answer.called)
+
+        cmd.args = "1650"
+        await bot.admin_setrate(m, cmd)
+        self.assertEqual(bot.get_usd_ngn_rate(), 1650)
+
+    async def test_render_payment_methods_with_paystack(self):
+        p = {"id": 1, "name": "Item 1", "price": 1000, "category": "AI Tools"}
+        with patch.object(bot, "is_paystack_configured", return_value=True):
+            text, markup = bot.render_payment_methods(12345, p, 1, "shop")
+            buttons = [b.text for row in markup.inline_keyboard for b in row]
+            self.assertTrue(any("Naira / Bank" in b for b in buttons))
+
+    async def test_paystack_checkout_flow_and_callback(self):
+        # Insert test order
+        cur = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status) VALUES(?,?,?,?,?,?,'pending')",
+            (12345, 1, "Test Paystack Item", 1000, 1, "paystack")
+        )
+        oid = cur.lastrowid
+
+        c = AsyncMock()
+        c.data = f"chk_paystack:{oid}:CL_{oid}_12345"
+        c.from_user.id = 12345
+        c.bot = AsyncMock()
+        c.message = AsyncMock()
+        c.answer = AsyncMock()
+
+        mock_paystack_data = {"status": "success", "amount": 1650000}
+        with patch.object(bot, "verify_paystack_transaction", new=AsyncMock(return_value=(True, mock_paystack_data))):
+            with patch.object(bot, "fulfill_order", new=AsyncMock(return_value=("KEY_12345_TOKEN", None))):
+                await bot.check_paystack_payment_callback(c)
+                self.assertTrue(c.message.answer.called)
+                updated_o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+                self.assertEqual(updated_o["status"], "paid")
+
 
 if __name__ == "__main__":
     unittest.main()

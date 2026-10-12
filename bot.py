@@ -84,6 +84,11 @@ CRYPTO_USDT_TRC20 = (os.environ.get("CRYPTO_USDT_TRC20", "") or "").strip()
 if not CRYPTO_USDT_TRC20 or CRYPTO_USDT_TRC20.startswith("TYour") or CRYPTO_USDT_TRC20.startswith("TR7NH"):
     CRYPTO_USDT_TRC20 = "TUaDYfZ2fBRXSRDm9d6kN9j2J7bi7ZsBLW"
 
+# Paystack (Naira / Card / Bank Transfer)
+PAYSTACK_SECRET_KEY = (os.environ.get("PAYSTACK_SECRET_KEY", "") or "").strip()
+DEFAULT_USD_NGN_RATE = int(os.environ.get("USD_NGN_RATE", "1650"))
+PAYSTACK_CALLBACK_URL = os.environ.get("PAYSTACK_CALLBACK_URL", "https://t.me/creditlogbot")
+
 # --------------------------------------------------------------------------
 # Database
 # --------------------------------------------------------------------------
@@ -164,6 +169,30 @@ def set_setting(key: str, value: str):
 def get_default_margin() -> int:
     """Returns the persistent default profit margin (defaults to PROFIT_MARGIN / 45%)."""
     return parse_profit_margin(get_setting("profit_margin", str(PROFIT_MARGIN)), default=45)
+
+
+def get_usd_ngn_rate() -> int:
+    """Returns the exchange rate from USD to NGN."""
+    raw = get_setting("usd_ngn_rate", str(DEFAULT_USD_NGN_RATE))
+    try:
+        val = int(raw)
+        return val if val > 0 else DEFAULT_USD_NGN_RATE
+    except ValueError:
+        return DEFAULT_USD_NGN_RATE
+
+
+def set_usd_ngn_rate(rate: int):
+    set_setting("usd_ngn_rate", str(max(1, rate)))
+
+
+def is_paystack_configured() -> bool:
+    """Returns True if Paystack API secret key is configured."""
+    key = os.environ.get("PAYSTACK_SECRET_KEY") or get_setting("paystack_secret_key", "")
+    return bool(key and not key.startswith("your_"))
+
+
+def get_paystack_key() -> str:
+    return (os.environ.get("PAYSTACK_SECRET_KEY") or get_setting("paystack_secret_key", "")).strip()
 
 
 # --------------------------------------------------------------------------
@@ -1692,6 +1721,73 @@ async def check_cryptobot_invoice(invoice_id: int) -> bool:
             return False
 
 
+async def initialize_paystack_transaction(
+    order_id: int,
+    user_id: int,
+    item_name: str,
+    amount_kobo: int,
+    customer_email: Optional[str] = None
+) -> dict:
+    """
+    Initializes a Paystack transaction checkout session.
+    Returns: dict with 'authorization_url', 'reference', and 'access_code'.
+    """
+    key = get_paystack_key()
+    if not key:
+        raise RuntimeError("Paystack API key is not configured.")
+
+    email = customer_email or f"user_{user_id}@creditlog.bot"
+    reference = f"CL_{order_id}_{int(time.time())}"
+    payload = {
+        "email": email,
+        "amount": amount_kobo,
+        "reference": reference,
+        "callback_url": PAYSTACK_CALLBACK_URL,
+        "metadata": {
+            "order_id": order_id,
+            "user_id": user_id,
+            "product": item_name
+        }
+    }
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        async with s.post(
+            "https://api.paystack.co/transaction/initialize",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json"
+            }
+        ) as r:
+            data = await r.json()
+            if not data.get("status"):
+                raise RuntimeError(f"Paystack API error: {data.get('message', 'Unknown error')}")
+            return data["data"]
+
+
+async def verify_paystack_transaction(reference: str) -> Tuple[bool, dict]:
+    """
+    Verifies a Paystack payment reference with Paystack API.
+    Returns (is_successful: bool, data: dict).
+    """
+    key = get_paystack_key()
+    if not key:
+        return False, {}
+
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        async with s.get(
+            f"https://api.paystack.co/transaction/verify/{reference}",
+            headers={"Authorization": f"Bearer {key}"}
+        ) as r:
+            data = await r.json()
+            if data.get("status") and data.get("data"):
+                tx_data = data["data"]
+                return tx_data.get("status") == "success", tx_data
+            return False, {}
+
+
+
 def render_order_summary(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
     """Order Summary matching Screenshot 2."""
     total_cents = p["price"] * qty
@@ -1723,14 +1819,20 @@ def render_order_summary(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[
 
 def render_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
     """Payment method selection screen matching Screenshot 3."""
-    rows = [
+    rows = []
+    if is_paystack_configured():
+        rate = get_usd_ngn_rate()
+        total_ngn = round((p["price"] * qty / 100.0) * rate)
+        rows.append([btn(f"🇳🇬 Naira / Bank / Card (₦{total_ngn:,})", f"pay_opt:paystack:{p['id']}:{qty}:{ctx}", style="success")])
+    rows.extend([
         [btn("🟡 Binance Pay", f"pay_opt:binance:{p['id']}:{qty}:{ctx}", style="primary")],
         [btn("🟠 USDT BEP20", f"pay_opt:bep20:{p['id']}:{qty}:{ctx}", style="primary")],
         [btn("🔴 USDT TRC20", f"pay_opt:trc20:{p['id']}:{qty}:{ctx}", style="primary")],
         [btn("🤖 CryptoBot", f"pay_opt:cryptobot:{p['id']}:{qty}:{ctx}", style="primary")],
         [btn("◀️ Back", f"summary:{p['id']}:{qty}:{ctx}", style="primary")]
-    ]
+    ])
     return "<b>Choose how to pay:</b>", kb(rows)
+
 
 
 async def start_checkout(event: Message | CallbackQuery, uid: int, p: sqlite3.Row, qty: int, ctx: str):
@@ -1803,7 +1905,50 @@ async def on_pay_option_selected(c: CallbackQuery):
     )
     oid = cur.lastrowid
 
-    # 1. CryptoBot Gateway (Screenshot 1)
+    # 1. Paystack Gateway (Naira / Card / Bank Transfer)
+    if method == "paystack":
+        rate = get_usd_ngn_rate()
+        amount_ngn = round((total_cents / 100.0) * rate)
+        amount_kobo = amount_ngn * 100
+        pay_url = None
+        ref = f"CL_{oid}_{int(time.time())}"
+
+        try:
+            user_email = f"user_{uid}@creditlog.bot"
+            if c.from_user.username:
+                user_email = f"{c.from_user.username.lower()}@creditlog.bot"
+            res = await initialize_paystack_transaction(oid, uid, f"{p['name']} x{qty}", amount_kobo, user_email)
+            pay_url = res.get("authorization_url")
+            ref = res.get("reference", ref)
+            db.execute("UPDATE orders SET txid=?, invoice_id=? WHERE id=?", (ref, ref, oid))
+        except Exception as e:
+            log.exception("Paystack initialization failed: %s", e)
+
+        if not pay_url:
+            pay_url = f"https://checkout.paystack.com/pay/{oid}"
+
+        text = (
+            "<u>🇳🇬 <b>Pay with Naira (Card / Bank Transfer)</b></u>\n"
+            "────────────────────────\n\n"
+            f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
+            f"🔢 <b>Quantity:</b> {qty}\n"
+            f"💵 <b>Price (USD):</b> ${total_usdt} USDT\n"
+            f"📈 <b>Rate:</b> ₦{rate:,} / USD\n"
+            f"➡️ <b>Total to pay:</b> <b>₦{amount_ngn:,} NGN</b>\n"
+            "────────────────────────\n\n"
+            f"1. Tap <b>Pay ₦{amount_ngn:,} via Paystack</b> below.\n"
+            "2. Pay securely using <b>Card, Bank Transfer, USSD, or OPay</b>.\n"
+            "3. Return here and tap <b>I've Paid — Check Status</b> for immediate delivery!"
+        )
+        rows = [
+            [btn(f"💳 Pay ₦{amount_ngn:,} via Paystack", url=pay_url, style="success")],
+            [btn("✅ I've Paid — Check Status", f"chk_paystack:{oid}:{ref}", style="success")],
+            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
+        ]
+        return await edit(c, text, kb(rows))
+
+    # 2. CryptoBot Gateway (Screenshot 1)
     if method == "cryptobot":
         pay_url = None
         inv_id = None
@@ -2350,6 +2495,63 @@ async def check_cryptobot_payment(c: CallbackQuery):
         await c.answer(t(uid, "pay_pending"), show_alert=True)
 
 
+@dp.callback_query(F.data.startswith("chk_paystack:"))
+async def check_paystack_payment_callback(c: CallbackQuery):
+    parts = c.data.split(":", 2)
+    oid = int(parts[1])
+    ref = parts[2] if len(parts) > 2 else ""
+    uid = c.from_user.id
+
+    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o:
+        return await c.answer("Order not found.", show_alert=True)
+    if o["status"] == "completed" and o["payload"]:
+        await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
+        return await c.answer("✅ Order already completed!", show_alert=False)
+
+    ref_to_check = ref or o["txid"] or o["invoice_id"]
+    if not ref_to_check:
+        return await c.answer("⚠️ No payment reference found. Please try opening the payment link again.", show_alert=True)
+
+    paid, tx_data = await verify_paystack_transaction(ref_to_check)
+    if paid:
+        db.execute("UPDATE orders SET txid=?, status='paid' WHERE id=?", (ref_to_check, oid))
+        payload, err = await fulfill_order(c.bot, oid)
+        if payload == "MANUAL_PENDING":
+            await c.message.answer(
+                f"🎉 <b>Payment Confirmed via Paystack for Order #{oid}!</b>\n\n"
+                f"Item: <b>{esc(o['product_name'])}</b>\n\n"
+                f"🟡 <i>This product is an assisted/manual setup service. Our support team has received your order and will deliver your credentials or setup link directly to you here shortly!</i>\n\n"
+                f"If you have any questions, contact Support: {SUPPORT_URL}"
+            )
+            await notify_admins(
+                c.bot,
+                f"🔔 <b>New Paid Manual Order #{oid} (Paystack)</b>\n"
+                f"• Item: <b>{esc(o['product_name'])}</b>\n"
+                f"• Buyer: <code>{uid}</code>\n"
+                f"• Paid: {usd(o['price'])}\n"
+                f"• Ref: <code>{esc(ref_to_check)}</code>\n"
+                f"👉 Use <code>/deliver {oid} &lt;credentials/link&gt;</code> to complete."
+            )
+            await c.answer("✅ Payment confirmed!", show_alert=False)
+        elif payload:
+            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
+            await notify_admins(
+                c.bot,
+                f"✅ Order #{oid} paid via Paystack & delivered: {esc(o['product_name'])} ({usd(o['price'])}) to user {uid} (Ref: {esc(ref_to_check)})"
+            )
+            await c.answer("✅ Payment confirmed and delivered!", show_alert=False)
+        else:
+            await c.answer(t(uid, err or "supplier_error"), show_alert=True)
+            await notify_admins(
+                c.bot,
+                f"⚠️ Order #{oid} paid via Paystack by user {uid} but delivery failed: {err}\nRef: <code>{esc(ref_to_check)}</code>"
+            )
+    else:
+        await c.answer("⏳ Payment is still pending on Paystack. Complete the transfer or card payment, then check again!", show_alert=True)
+
+
+
 
 
 @dp.callback_query(F.data.startswith("manual_pay:"))
@@ -2457,7 +2659,9 @@ async def admin_help(m: Message):
         "/refund &lt;order_id&gt;\n"
         "/stats - View sales stats\n"
         "/broadcast &lt;text&gt; - Broadcast message\n"
-        "/backup - Download fresh database backup (.db)\n\n"
+        "/backup - Download fresh database backup (.db)\n"
+        "/setrate [rate_ngn] - View or update USD to NGN exchange rate\n"
+        "/setpaystack [secret_key] - View or set Paystack API Secret Key\n\n"
         "🎨 <b>Brand Custom Emojis</b>\n"
         "/setemoji &lt;key&gt; [emoji] - Set official brand custom emoji ID\n"
         "/emojis - View configured brand custom emojis\n"
@@ -2854,6 +3058,47 @@ async def admin_backup(m: Message):
                 os.remove(backup_file)
             except Exception:
                 pass
+
+
+@dp.message(Command("setrate"), is_admin)
+async def admin_setrate(m: Message, command: CommandObject):
+    args = (command.args or "").strip()
+    current_rate = get_usd_ngn_rate()
+    if not args:
+        return await m.answer(
+            f"💱 <b>USD / NGN Exchange Rate:</b>\n"
+            f"• Current rate: <b>₦{current_rate:,} / USD</b>\n\n"
+            f"To update, send:\n<code>/setrate &lt;rate_in_naira&gt;</code> (e.g. <code>/setrate 1650</code>)"
+        )
+    try:
+        new_rate = int("".join(c for c in args if c.isdigit()))
+        if new_rate <= 0:
+            raise ValueError
+        set_usd_ngn_rate(new_rate)
+        await m.answer(f"✅ USD to NGN exchange rate updated to <b>₦{new_rate:,} / USD</b>.")
+    except Exception:
+        await m.answer("⚠️ Please specify a valid integer rate, e.g. <code>/setrate 1650</code>")
+
+
+@dp.message(Command("setpaystack"), is_admin)
+async def admin_setpaystack(m: Message, command: CommandObject):
+    args = (command.args or "").strip()
+    if not args:
+        configured = is_paystack_configured()
+        status_text = "🟢 <b>Configured & Active</b>" if configured else "🔴 <b>Not Configured</b>"
+        return await m.answer(
+            f"💳 <b>Paystack Integration Status:</b> {status_text}\n\n"
+            f"To configure or update your Paystack secret key, send:\n"
+            f"<code>/setpaystack sk_live_xxxxxxxx...</code>\n\n"
+            f"<i>You can find your Secret Key on your Paystack Dashboard under Settings &gt; API Keys &amp; Webhooks.</i>"
+        )
+    key = args
+    if not key.startswith("sk_"):
+        return await m.answer("⚠️ Paystack secret keys usually begin with <code>sk_live_</code> or <code>sk_test_</code>. Please check your key.")
+    set_setting("paystack_secret_key", key)
+    mode = "Live" if key.startswith("sk_live_") else "Test"
+    await m.answer(f"✅ Paystack Secret Key successfully saved ({mode} Mode)! Naira / Bank payments are now active in the checkout menu.")
+
 
 
 
