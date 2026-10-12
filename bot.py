@@ -1441,16 +1441,19 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
             if not has_bal:
                 # Top-up account is empty: Pause automated fulfillment & fallback to Model A!
                 db.execute("UPDATE orders SET status='manual_pending' WHERE id=?", (oid,))
+                deficit = max(0.0, total_cost - cur_bal)
+                bal_status = f"${cur_bal:.2f} USDT (Short by ${deficit:.2f} USDT)" if cur_bal > 0 else f"${cur_bal:.2f} USDT (Empty)"
+                topup_needed = f"at least <b>${deficit:.2f} USDT</b> (shortfall)" if cur_bal > 0 else f"<b>${total_cost:.2f} USDT</b>"
                 await notify_admins(
                     bot,
-                    f"🟡 <b>Model A Active (Supplier Balance Empty) — Order #{oid}</b>\n"
+                    f"🟡 <b>Model A Active (Supplier Balance Insufficient) — Order #{oid}</b>\n"
                     f"• <b>Product:</b> {esc(p['name'])} x{qty}\n"
                     f"• <b>Customer Paid:</b> {usd(o['price'])} USDT (in your wallet)\n"
                     f"• <b>Wholesale Cost:</b> ${total_cost:.2f} USDT\n"
-                    f"• <b>Supplier Balance:</b> ${cur_bal:.2f} USDT (Empty)\n\n"
+                    f"• <b>Supplier Balance:</b> {bal_status}\n\n"
                     f"⚡ <b>Next Step (Customer Money Top-Up):</b>\n"
-                    f"1. The customer's funds are now in your wallet.\n"
-                    f"2. Top up your supplier account with <b>${total_cost:.2f} USDT</b>.\n"
+                    f"1. The customer's payment is already confirmed and safe in your wallet.\n"
+                    f"2. Top up your supplier account with {topup_needed}.\n"
                     f"3. Send <code>/approve_{oid}</code> to buy & deliver automatically to the customer.\n"
                     f"   <i>(Or send <code>/deliver {oid} &lt;item&gt;</code> to deliver manually)</i>"
                 )
