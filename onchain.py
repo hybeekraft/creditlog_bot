@@ -100,8 +100,8 @@ async def verify_bep20_usdt(
             return False, "Transaction not found on BNB Smart Chain yet. Please ensure the transaction has confirmed.", None
 
         # Verify receipt status (0x1 = success)
-        status = receipt.get("status")
-        if status != "0x1":
+        status = str(receipt.get("status", "")).lower()
+        if status not in ("0x1", "1", "0x01"):
             return False, f"Transaction failed or reverted on-chain (status: {status}).", None
 
         # Check logs for ERC-20 Transfer event:
@@ -166,6 +166,8 @@ async def verify_trc20_usdt(
         return False, "Invalid TRC-20 transaction hash format (must be 64 hex characters).", None
 
     expected_recipient = expected_recipient.strip()
+    if not expected_recipient.startswith("T") or len(expected_recipient) != 34:
+        return False, "Admin TRC-20 wallet address is misconfigured.", None
 
     close_session = False
     if session is None or session.closed:

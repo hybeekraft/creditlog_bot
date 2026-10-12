@@ -1034,7 +1034,7 @@ class TestOnChainVerification(unittest.IsolatedAsyncioTestCase):
     async def test_verify_trc20_usdt_success(self):
         import onchain
         valid_hash = "b" * 64
-        recipient = "TUaDYFz2fBRXSRDm9d6kN9j2J7bi7ZsBLW"
+        recipient = "TUaDYfZ2fBRXSRDm9d6kN9j2J7bi7ZsBLW"
         mock_data = {
             "data": [
                 {
