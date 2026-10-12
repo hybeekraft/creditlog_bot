@@ -2513,8 +2513,24 @@ async def check_paystack_payment_callback(c: CallbackQuery):
     if not ref_to_check:
         return await c.answer("⚠️ No payment reference found. Please try opening the payment link again.", show_alert=True)
 
+    # Prevent replay attack: verify reference is not already claimed by another order
+    dup = db.execute(
+        "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending') AND id != ?",
+        (ref_to_check.strip(), oid)
+    ).fetchone()
+    if dup:
+        return await c.answer(f"⚠️ This Paystack reference was already claimed for Order #{dup['id']}.", show_alert=True)
+
     paid, tx_data = await verify_paystack_transaction(ref_to_check)
     if paid:
+        # Sanity check: verify amount paid matches expected amount in kobo (with tolerance)
+        rate = get_usd_ngn_rate()
+        expected_kobo = round((o["price"] / 100.0) * rate) * 100
+        paid_kobo = tx_data.get("amount", 0)
+        if paid_kobo and paid_kobo < (expected_kobo * 0.95):  # paid less than 95%
+            log.warning("Paystack amount mismatch for order %s: paid %s kobo, expected %s kobo", oid, paid_kobo, expected_kobo)
+            return await c.answer("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
+
         db.execute("UPDATE orders SET txid=?, status='paid' WHERE id=?", (ref_to_check, oid))
         payload, err = await fulfill_order(c.bot, oid)
         if payload == "MANUAL_PENDING":
