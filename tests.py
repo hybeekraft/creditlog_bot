@@ -1327,6 +1327,17 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
         await bot.handle_user_text_input(m)
         self.assertTrue(m.answer.called)
 
+    async def test_admin_backup_command(self):
+        m = AsyncMock()
+        m.answer_document = AsyncMock()
+        await bot.admin_backup(m)
+        self.assertTrue(m.answer_document.called)
+        args, kwargs = m.answer_document.call_args
+        doc = args[0]
+        self.assertTrue(doc.filename.startswith("creditlog_"))
+        self.assertTrue(doc.filename.endswith(".db"))
+        self.assertIn("Database Backup", kwargs.get("caption", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

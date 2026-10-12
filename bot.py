@@ -23,7 +23,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import (BotCommand, CallbackQuery, InlineKeyboardButton,
+from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton,
                            InlineKeyboardMarkup, Message)
 from dotenv import load_dotenv
 
@@ -2456,7 +2456,8 @@ async def admin_help(m: Message):
         "/addstock &lt;product_id&gt; &lt;item&gt;  (manual items, 1 per line)\n"
         "/refund &lt;order_id&gt;\n"
         "/stats - View sales stats\n"
-        "/broadcast &lt;text&gt; - Broadcast message\n\n"
+        "/broadcast &lt;text&gt; - Broadcast message\n"
+        "/backup - Download fresh database backup (.db)\n\n"
         "🎨 <b>Brand Custom Emojis</b>\n"
         "/setemoji &lt;key&gt; [emoji] - Set official brand custom emoji ID\n"
         "/emojis - View configured brand custom emojis\n"
@@ -2826,6 +2827,34 @@ async def admin_broadcast(m: Message, command: CommandObject):
             pass
         await asyncio.sleep(0.05)
     await m.answer(f"Sent to {sent} users.")
+
+
+@dp.message(Command("backup"), is_admin)
+async def admin_backup(m: Message):
+    backup_file = None
+    try:
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        backup_file = f"backup_creditlog_{ts}.db"
+        dest = sqlite3.connect(backup_file)
+        db.backup(dest)
+        dest.close()
+
+        size_kb = os.path.getsize(backup_file) / 1024.0
+        doc = FSInputFile(backup_file, filename=f"creditlog_{ts}.db")
+        await m.answer_document(
+            doc,
+            caption=f"💾 <b>Database Backup</b>\n📅 <code>{ts}</code>\n📦 Size: <code>{size_kb:.1f} KB</code>\n\nKeep this file secure!"
+        )
+    except Exception as e:
+        log.exception("Backup creation failed: %s", e)
+        await m.answer(f"❌ Failed to create database backup: <code>{esc(str(e))}</code>")
+    finally:
+        if backup_file and os.path.exists(backup_file):
+            try:
+                os.remove(backup_file)
+            except Exception:
+                pass
+
 
 
 # --------------------------------------------------------------------------
