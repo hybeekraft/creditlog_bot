@@ -996,6 +996,7 @@ class TestOnChainVerification(unittest.IsolatedAsyncioTestCase):
 
     async def test_verify_bep20_usdt_success(self):
         import onchain
+        self.assertEqual(len(onchain.USDT_BEP20_CONTRACT), 42)
         valid_hash = "0x" + "a" * 64
         recipient = "0xe37301d1cb7E1d479a1F1A78d6A2EAed317412Db"
         # 10 USDT with 18 decimals in hex = 10 * 10^18

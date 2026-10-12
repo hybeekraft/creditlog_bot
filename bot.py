@@ -82,7 +82,7 @@ if not CRYPTO_USDT_BEP20 or CRYPTO_USDT_BEP20.startswith("0xYour") or CRYPTO_USD
 
 CRYPTO_USDT_TRC20 = (os.environ.get("CRYPTO_USDT_TRC20", "") or "").strip()
 if not CRYPTO_USDT_TRC20 or CRYPTO_USDT_TRC20.startswith("TYour") or CRYPTO_USDT_TRC20.startswith("TR7NH"):
-    CRYPTO_USDT_TRC20 = "TUaDYFz2fBRXSRDm9d6kN9j2J7bi7ZsBLW"
+    CRYPTO_USDT_TRC20 = "TUaDYfZ2fBRXSRDm9d6kN9j2J7bi7ZsBLW"
 
 # --------------------------------------------------------------------------
 # Database

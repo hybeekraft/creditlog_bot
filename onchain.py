@@ -11,7 +11,7 @@ import aiohttp
 log = logging.getLogger("onchain")
 
 # Official USDT Token Contracts
-USDT_BEP20_CONTRACT = "0x55d398326ff775485246999027b3197955".lower()
+USDT_BEP20_CONTRACT = "0x55d398326f99059fF775485246999027B3197955".lower()
 USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 
 # Public BSC RPC nodes (with fallbacks)
