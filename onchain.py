@@ -5,7 +5,7 @@ Automatically confirms blockchain transactions and validates recipient, token co
 
 import logging
 import os
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 import aiohttp
 
 log = logging.getLogger("onchain")
@@ -25,6 +25,28 @@ BSC_RPC_ENDPOINTS = [
 # TronGrid API
 TRONGRID_EVENTS_URL = "https://api.trongrid.io/v1/transactions/{hash}/events"
 TRONGRID_TX_URL = "https://api.trongrid.io/wallet/gettransactioninfobyid"
+
+
+def tron_base58_to_hex_variants(base58_addr: str) -> List[str]:
+    """Returns normalized representations (base58, 0x-hex, 41-hex) for a Tron address."""
+    base58_addr = base58_addr.strip()
+    variants = [base58_addr.lower()]
+    try:
+        ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+        val = 0
+        for char in base58_addr:
+            idx = ALPHABET.find(char)
+            if idx == -1:
+                return variants
+            val = val * 58 + idx
+        raw = val.to_bytes(25, byteorder="big")
+        addr_hex = raw[1:21].hex().lower()
+        variants.append("0x" + addr_hex)
+        variants.append("41" + addr_hex)
+        variants.append(addr_hex)
+    except Exception:
+        pass
+    return variants
 
 
 async def verify_bep20_usdt(
@@ -163,6 +185,7 @@ async def verify_trc20_usdt(
 
         matched_recipient = False
         detected_amount = None
+        expected_variants = tron_base58_to_hex_variants(expected_recipient)
 
         for ev in events:
             ev_name = ev.get("event_name")
@@ -171,14 +194,14 @@ async def verify_trc20_usdt(
 
             if ev_name == "Transfer" and contract_addr == USDT_TRC20_CONTRACT:
                 to_addr = res_dict.get("to")
-                if to_addr == expected_recipient:
+                if to_addr and str(to_addr).strip().lower() in expected_variants:
                     matched_recipient = True
                     try:
                         raw_units = int(res_dict.get("value", 0))
-                        detected_amount = raw_units / 1_000_000.0  # USDT TRC20 has 6 decimals
+                        amt = raw_units / 1_000_000.0  # USDT TRC20 has 6 decimals
+                        detected_amount = (detected_amount or 0.0) + amt
                     except (ValueError, TypeError):
                         pass
-                    break
 
         if not matched_recipient:
             return False, "Transaction recipient does not match your configured TRC-20 wallet.", None

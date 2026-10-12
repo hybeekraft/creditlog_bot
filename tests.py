@@ -1062,6 +1062,38 @@ class TestOnChainVerification(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         self.assertEqual(amt, 15.0)
 
+    async def test_verify_trc20_usdt_hex_recipient_match(self):
+        import onchain
+        valid_hash = "c" * 64
+        recipient = "TUaDYfZ2fBRXSRDm9d6kN9j2J7bi7ZsBLW"
+        # TronGrid returns 0x-prefixed hex in result.to
+        hex_to = "0xcc114714f45ca4b7c9247509687c1b04b81cbfca"
+        mock_data = {
+            "data": [
+                {
+                    "event_name": "Transfer",
+                    "contract_address": onchain.USDT_TRC20_CONTRACT,
+                    "result": {
+                        "from": "0xOriginWallet123",
+                        "to": hex_to,
+                        "value": "20000000"  # 20 USDT
+                    }
+                }
+            ]
+        }
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=mock_data)
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_resp
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.get.return_value = cm
+
+        ok, msg, amt = await onchain.verify_trc20_usdt(valid_hash, recipient, 20.0, session=mock_session)
+        self.assertTrue(ok)
+        self.assertEqual(amt, 20.0)
+
     async def test_check_and_fulfill_onchain_auto_fulfills(self):
         # Create product with local stock
         bot.db.execute("INSERT INTO products(id, name, price, active, auto_fulfill, delivery_type) VALUES(99, 'Test Pro', 500, 1, 0, 'auto')")
