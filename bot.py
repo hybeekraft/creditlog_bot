@@ -2908,10 +2908,28 @@ async def admin_addproduct(m: Message, command: CommandObject):
 async def admin_setprice(m: Message, command: CommandObject):
     try:
         pid, price = command.args.split()
-        db.execute("UPDATE products SET price=? WHERE id=?", (round(float(price) * 100), int(pid)))
-        await m.answer("Price updated.")
+        pid = int(pid)
+        new_price_cents = round(float(price) * 100)
+        p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        if not p:
+            return await m.answer(f"Product #{pid} not found.")
+
+        # If item has a supplier cost, calculate and lock in the implied margin so sync preserves it!
+        if p["supplier_price"]:
+            cost = p["supplier_price"]
+            calc_margin = round(((new_price_cents - cost) / cost) * 100)
+            db.execute("UPDATE products SET price=?, margin=? WHERE id=?", (new_price_cents, calc_margin, pid))
+            await m.answer(
+                f"✅ Price for #{pid} (<b>{esc(p['name'])}</b>) updated to <b>{usd(new_price_cents)}</b>.\n"
+                f"• Wholesale Cost: <b>{usd(cost)}</b>\n"
+                f"• Locked Profit Margin: <b>{calc_margin}%</b> (preserved during future syncs)"
+            )
+        else:
+            db.execute("UPDATE products SET price=? WHERE id=?", (new_price_cents, pid))
+            await m.answer(f"✅ Price for #{pid} (<b>{esc(p['name'])}</b>) updated to <b>{usd(new_price_cents)}</b>.")
     except Exception:
-        await m.answer("Usage: /setprice <product_id> <price_usd>")
+        await m.answer("Usage: /setprice <product_id> <price_usd>\nExample: /setprice 1 12.50")
+
 
 
 @dp.message(Command("setmargin"), is_admin)

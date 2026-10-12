@@ -340,6 +340,38 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(p_standard["margin"])
             self.assertEqual(p_standard["price"], 125)  # 100 * 1.25
 
+    async def test_admin_setprice_sticks_after_sync(self):
+        # Insert a supplier product with original cost 100 ($1.00) and selling price 145 ($1.45)
+        pid = bot.db.execute("""
+            INSERT INTO products(name, price, supplier_product_id, supplier_price, margin, active)
+            VALUES('Stick Item', 145, 'prod-stick', 100, NULL, 1)
+        """).lastrowid
+
+        # Admin explicitly overrides the price to $2.00 (implied 100% margin)
+        mock_msg = AsyncMock()
+        mock_cmd = MagicMock()
+        mock_cmd.args = f"{pid} 2.00"
+        await bot.admin_setprice(mock_msg, mock_cmd)
+
+        p_before_sync = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(p_before_sync["price"], 200)
+        self.assertEqual(p_before_sync["margin"], 100)
+
+        # Run general sync with default 25% markup
+        mock_products = [
+            {"id": "prod-stick", "name": "Stick Item", "description": "", "price_cents": 100, "stock": 5},
+        ]
+        mock_sync_msg = AsyncMock()
+        mock_sync_cmd = MagicMock()
+        mock_sync_cmd.args = "25%"
+        with patch.object(bot.reseller, "get_products", new=AsyncMock(return_value=mock_products)):
+            await bot.admin_supplier_sync(mock_sync_msg, mock_sync_cmd)
+
+            # Price must stick to $2.00 (200 cents) instead of reverting to 125 ($1.25)
+            p_after_sync = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+            self.assertEqual(p_after_sync["price"], 200)
+            self.assertEqual(p_after_sync["margin"], 100)
+
     def test_category_detection_and_icons(self):
         self.assertEqual(bot.detect_category("Codex API 10M Tokens 1 Day"), "Codex API")
         self.assertEqual(bot.detect_category("Gemini 18 Months"), "Gemini")
