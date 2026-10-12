@@ -23,7 +23,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton,
+from aiogram.types import (BotCommand, BotCommandScopeChat, CallbackQuery, FSInputFile, InlineKeyboardButton,
                            InlineKeyboardMarkup, Message)
 from dotenv import load_dotenv
 
@@ -3517,6 +3517,24 @@ async def main():
             BotCommand(command="order", description="Order history"),
             BotCommand(command="support", description="Contacts support"),
         ])
+        admin_cmd_list = [
+            BotCommand(command="admin", description="Admin command center"),
+            BotCommand(command="backup", description="Download database backup (.db)"),
+            BotCommand(command="stats", description="View store sales stats"),
+            BotCommand(command="products", description="List products & margins"),
+            BotCommand(command="s_sync", description="Sync supplier catalog"),
+            BotCommand(command="supplier", description="Supplier balance & info"),
+            BotCommand(command="setrate", description="Update USD/NGN exchange rate"),
+            BotCommand(command="setpaystack", description="Set Paystack secret key"),
+            BotCommand(command="fsub", description="Manage Force-Subscribe"),
+            BotCommand(command="broadcast", description="Broadcast message to buyers"),
+        ]
+        for aid in ADMIN_IDS:
+            try:
+                await bot.set_my_commands(admin_cmd_list, scope=BotCommandScopeChat(chat_id=aid))
+            except Exception as e:
+                log.debug("Could not set admin commands for chat %s: %s", aid, e)
+
         await dp.start_polling(bot)
     finally:
         sync_task.cancel()
