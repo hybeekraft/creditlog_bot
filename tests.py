@@ -1158,7 +1158,7 @@ class TestFulfillmentStrategyModelAAndB(unittest.IsolatedAsyncioTestCase):
         bot.db.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
         bot.db.execute("DELETE FROM settings")
 
-    async def test_model_a_fallback_when_supplier_balance_empty(self):
+    async def test_model_b_fallback_when_supplier_balance_empty(self):
         bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active, auto_fulfill, supplier_product_id, supplier_price) VALUES(91, 'Supplier Item A', 1000, 1, 1, 'sup-91', 650)")
         cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, status) VALUES(333, 91, 'Supplier Item A', 1000, 1, 'pending')")
         oid = cur.lastrowid
@@ -1179,10 +1179,10 @@ class TestFulfillmentStrategyModelAAndB(unittest.IsolatedAsyncioTestCase):
             o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
             self.assertEqual(o["status"], "manual_pending")
 
-            # Admin notified with Model A instructions
+            # Admin notified with Model B instructions
             self.assertTrue(mock_notify.called)
             notify_text = mock_notify.call_args[0][1]
-            self.assertIn("Model A Active", notify_text)
+            self.assertIn("Model B Active", notify_text)
             self.assertIn("6.50", notify_text)
             self.assertIn(f"/approve_{oid}", notify_text)
 
