@@ -2474,6 +2474,7 @@ async def check_cryptobot_payment(c: CallbackQuery):
 
     paid = await check_cryptobot_invoice(inv_id)
     if paid:
+        db.execute("UPDATE orders SET invoice_id=?, status='paid' WHERE id=?", (str(inv_id), oid))
         payload, err = await fulfill_order(c.bot, oid)
         if payload == "MANUAL_PENDING":
             await c.message.answer(
