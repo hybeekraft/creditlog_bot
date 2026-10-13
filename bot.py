@@ -2143,6 +2143,8 @@ async def check_and_fulfill_onchain(oid: int, txid: str, uid: int, bot_instance:
         return True, "Order already completed."
     if o["status"] in ("paid", "manual_pending"):
         return True, "Payment already received and pending fulfillment."
+    if o["refunded"] or o["status"] in ("refunded", "rejected"):
+        return False, "⚠️ This order was cancelled or refunded."
 
     # Prevent replay attack: check if this txid was already used for a completed or in-flight order
     dup = db.execute(
@@ -2418,6 +2420,7 @@ async def handle_user_text_input(m: Message):
                     comp_o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
                     if comp_o and comp_o["payload"]:
                         return await m.answer(t(uid, "purchased", oid=oid, payload=esc(comp_o["payload"])))
+                    return await m.answer(f"🎉 <b>Payment Verified for Order #{oid}!</b>\n\nItem: <b>{esc(o['product_name'])}</b>\n\nYour order has been confirmed!")
                 else:
                     return await m.answer(f"✅ {result}")
 
@@ -2467,6 +2470,8 @@ async def admin_approve_order(m: Message, command: CommandObject = None):
         return await m.answer(f"Order #{oid} not found.")
     if o["status"] == "completed" and o["payload"]:
         return await m.answer(f"Order #{oid} is already completed.")
+    if o["refunded"] or o["status"] in ("refunded", "cancelled"):
+        return await m.answer(f"⚠️ Order #{oid} was refunded or cancelled.")
 
     payload, err = await fulfill_order(m.bot, oid, force_supplier=True)
     if err:
@@ -2511,6 +2516,8 @@ async def admin_reject_order(m: Message, command: CommandObject = None):
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return await m.answer(f"Order #{oid} not found.")
+    if o["status"] == "completed":
+        return await m.answer(f"⚠️ Order #{oid} is already completed and cannot be rejected.")
 
     db.execute("UPDATE orders SET status='rejected' WHERE id=?", (oid,))
     try:
@@ -2537,6 +2544,16 @@ async def check_cryptobot_payment(c: CallbackQuery):
         return await c.answer("⏳ Payment confirmed! Your order is currently pending fulfillment by support.", show_alert=True)
     if o["refunded"] or o["status"] in ("refunded", "rejected"):
         return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
+
+    if o["invoice_id"] and str(o["invoice_id"]) != str(inv_id):
+        return await c.answer("⚠️ Invoice ID does not match this order.", show_alert=True)
+
+    dup = db.execute(
+        "SELECT id FROM orders WHERE invoice_id=? AND status IN ('completed', 'paid', 'manual_pending') AND id != ?",
+        (str(inv_id), oid)
+    ).fetchone()
+    if dup:
+        return await c.answer(f"⚠️ This invoice was already claimed for Order #{dup['id']}.", show_alert=True)
 
     paid = await check_cryptobot_invoice(inv_id)
     if paid:
@@ -3113,6 +3130,8 @@ async def admin_deliver(m: Message, command: CommandObject):
         o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         if not o:
             return await m.answer(f"Order #{oid} not found.")
+        if o["refunded"] or o["status"] in ("refunded", "cancelled"):
+            return await m.answer(f"⚠️ Order #{oid} was refunded or cancelled.")
 
         db.execute("UPDATE orders SET payload=?, status='completed' WHERE id=?", (payload.strip(), oid))
 

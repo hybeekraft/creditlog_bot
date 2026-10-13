@@ -10,6 +10,7 @@ os.environ["RESELLER_API_KEY"] = "test_key"
 os.environ["RESELLER_BASE_URL"] = "https://api-geminipro.ignorelist.com/api/reseller/v1"
 
 import bot
+import onchain
 from reseller import ResellerClient, ResellerAPIError
 
 
@@ -1586,6 +1587,112 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
             ans = m.answer.call_args[0][0]
             self.assertIn("INSTANT", ans)
             self.assertIn("Model A (Instant Auto-Delivery)", ans)
+
+    async def test_admin_approve_order_blocked_when_refunded_or_cancelled(self):
+        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, refunded) VALUES(7771, 1, 'Refunded Item', 500, 1, 'bep20', 'refunded', 1)")
+        oid = cur.lastrowid
+        m = AsyncMock()
+        cmd = AsyncMock()
+        cmd.args = str(oid)
+        await bot.admin_approve_order(m, cmd)
+        self.assertTrue(m.answer.called)
+        self.assertIn("refunded or cancelled", m.answer.call_args[0][0])
+
+    async def test_admin_reject_order_blocked_when_completed(self):
+        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, refunded, payload) VALUES(7772, 1, 'Done Item', 500, 1, 'bep20', 'completed', 0, 'CREDENTIALS')")
+        oid = cur.lastrowid
+        m = AsyncMock()
+        cmd = AsyncMock()
+        cmd.args = str(oid)
+        await bot.admin_reject_order(m, cmd)
+        self.assertTrue(m.answer.called)
+        self.assertIn("already completed", m.answer.call_args[0][0])
+
+    async def test_admin_deliver_blocked_when_refunded_or_cancelled(self):
+        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, refunded) VALUES(7773, 1, 'Cancelled Item', 500, 1, 'bep20', 'cancelled', 0)")
+        oid = cur.lastrowid
+        m = AsyncMock()
+        cmd = AsyncMock()
+        cmd.args = f"{oid} my-token-123"
+        await bot.admin_deliver(m, cmd)
+        self.assertTrue(m.answer.called)
+        self.assertIn("refunded or cancelled", m.answer.call_args[0][0])
+
+    async def test_check_cryptobot_payment_replay_blocked(self):
+        bot.db.execute("INSERT INTO orders(id, user_id, product_id, product_name, price, quantity, payment_method, status, invoice_id) VALUES(9901, 8881, 1, 'Test', 100, 1, 'cryptobot', 'completed', '998877')")
+        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, invoice_id) VALUES(8882, 1, 'Test', 100, 1, 'cryptobot', 'pending', '998877')")
+        oid2 = cur.lastrowid
+
+        c = AsyncMock()
+        c.data = f"chk_cb:{oid2}:998877"
+        c.from_user.id = 8882
+        await bot.check_cryptobot_payment(c)
+        self.assertTrue(c.answer.called)
+        self.assertIn("already claimed", c.answer.call_args[0][0])
+
+
+class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
+    def test_tron_base58_to_hex_variants(self):
+        addr = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+        variants = onchain.tron_base58_to_hex_variants(addr)
+        self.assertTrue(len(variants) >= 1)
+        self.assertIn(addr.lower(), variants)
+
+    async def test_verify_bep20_usdt_invalid_hash_format(self):
+        valid, msg, amt = await onchain.verify_bep20_usdt("0x123", "0x55d398326f99059fF775485246999027B3197955", 10.0)
+        self.assertFalse(valid)
+        self.assertIn("Invalid BEP-20 transaction hash", msg)
+        self.assertIsNone(amt)
+
+    async def test_verify_bep20_usdt_invalid_recipient_address(self):
+        dummy_hash = "0x" + "a" * 64
+        valid, msg, amt = await onchain.verify_bep20_usdt(dummy_hash, "not-a-wallet", 10.0)
+        self.assertFalse(valid)
+        self.assertIn("misconfigured", msg)
+        self.assertIsNone(amt)
+
+    async def test_verify_trc20_usdt_invalid_hash_format(self):
+        valid, msg, amt = await onchain.verify_trc20_usdt("123", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", 10.0)
+        self.assertFalse(valid)
+        self.assertIn("Invalid TRC-20 transaction hash", msg)
+        self.assertIsNone(amt)
+
+    async def test_verify_trc20_usdt_invalid_recipient_address(self):
+        dummy_hash = "a" * 64
+        valid, msg, amt = await onchain.verify_trc20_usdt(dummy_hash, "0xInvalidTronAddress", 10.0)
+        self.assertFalse(valid)
+        self.assertIn("misconfigured", msg)
+        self.assertIsNone(amt)
+
+    async def test_verify_trc20_usdt_success_with_hex_contract_and_to_address(self):
+        recipient = "TUaDYfZ2fBRXSRDm9d6kN9j2J7bi7ZsBLW"
+        recipient_hex = onchain.tron_base58_to_hex_variants(recipient)[1]  # 0x-hex format
+        mock_event_data = {
+            "data": [
+                {
+                    "event_name": "Transfer",
+                    "contract_address": "41a614f803b6fd780986a42c78ec9c7f77e6ded13c",  # Hex contract
+                    "result": {
+                        "to": recipient_hex,
+                        "value": "15000000"  # 15 USDT
+                    }
+                }
+            ]
+        }
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=mock_event_data)
+
+        session = AsyncMock()
+        session.closed = False
+        session.get = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_resp), __aexit__=AsyncMock()))
+
+        dummy_hash = "c" * 64
+        valid, msg, amt = await onchain.verify_trc20_usdt(dummy_hash, recipient, 15.0, session=session)
+        self.assertTrue(valid)
+        self.assertEqual(amt, 15.0)
+        self.assertIn("successfully", msg)
 
 
 if __name__ == "__main__":

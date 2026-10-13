@@ -4,7 +4,6 @@ Automatically confirms blockchain transactions and validates recipient, token co
 """
 
 import logging
-import os
 from typing import List, Optional, Tuple
 import aiohttp
 
@@ -16,10 +15,10 @@ USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 
 # Public BSC RPC nodes (with fallbacks)
 BSC_RPC_ENDPOINTS = [
-    "https://bsc-dataseed.binance.org",
     "https://bsc-dataseed1.defibit.io",
     "https://bsc-dataseed1.ninicoin.io",
-    "https://rpc.ankr.com/bsc",
+    "https://binance.llamarpc.com",
+    "https://bsc-dataseed.binance.org",
 ]
 
 # TronGrid API
@@ -47,6 +46,9 @@ def tron_base58_to_hex_variants(base58_addr: str) -> List[str]:
     except Exception:
         pass
     return variants
+
+
+USDT_TRC20_CONTRACT_VARIANTS = set(tron_base58_to_hex_variants(USDT_TRC20_CONTRACT))
 
 
 async def verify_bep20_usdt(
@@ -86,7 +88,11 @@ async def verify_bep20_usdt(
         receipt = None
         for endpoint in BSC_RPC_ENDPOINTS:
             try:
-                async with session.post(endpoint, json=payload) as resp:
+                async with session.post(
+                    endpoint,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=3.5)
+                ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         receipt = data.get("result")
@@ -182,24 +188,57 @@ async def verify_trc20_usdt(
             data = await resp.json()
 
         events = data.get("data", [])
-        if not events:
-            return False, "No transfer events found for this Tron transaction yet. Please wait a moment and try again.", None
-
         matched_recipient = False
         detected_amount = None
-        expected_variants = tron_base58_to_hex_variants(expected_recipient)
+        expected_variants = set(tron_base58_to_hex_variants(expected_recipient))
+
+        if not events:
+            # Fallback to direct node transaction info if event indexer has not indexed yet
+            try:
+                async with session.post(
+                    TRONGRID_TX_URL,
+                    json={"value": tx_hash},
+                    headers={"Content-Type": "application/json", "Accept": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=4.0)
+                ) as tx_resp:
+                    if tx_resp.status == 200:
+                        tx_info = await tx_resp.json()
+                        receipt = tx_info.get("receipt", {})
+                        if receipt.get("result") in ("SUCCESS", None):
+                            transfer_topic = "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+                            for log_entry in tx_info.get("log", []):
+                                c_addr = str(log_entry.get("address", "")).lower()
+                                topics = [str(t).lower() for t in log_entry.get("topics", [])]
+                                if (c_addr in USDT_TRC20_CONTRACT_VARIANTS or ("41" + c_addr) in USDT_TRC20_CONTRACT_VARIANTS or ("0x" + c_addr) in USDT_TRC20_CONTRACT_VARIANTS) and len(topics) >= 3:
+                                    if topics[0] == transfer_topic:
+                                        to_hex = "0x" + topics[2][-40:]
+                                        if to_hex in expected_variants or topics[2][-40:] in expected_variants:
+                                            matched_recipient = True
+                                            data_hex = log_entry.get("data", "0x0")
+                                            try:
+                                                raw_val = int(data_hex, 16)
+                                                amt = raw_val / 1_000_000.0
+                                                detected_amount = (detected_amount or 0.0) + amt
+                                            except (ValueError, TypeError):
+                                                pass
+            except Exception as ex:
+                log.warning("TRON direct tx fallback query failed: %s", ex)
+
+        if not events and not matched_recipient:
+            return False, "No transfer events found for this Tron transaction yet. Please wait a moment and try again.", None
 
         for ev in events:
             ev_name = ev.get("event_name")
-            contract_addr = ev.get("contract_address")
+            contract_addr = str(ev.get("contract_address") or "").strip().lower()
             res_dict = ev.get("result", {})
 
-            if ev_name == "Transfer" and contract_addr == USDT_TRC20_CONTRACT:
-                to_addr = res_dict.get("to")
+            if ev_name == "Transfer" and (contract_addr in USDT_TRC20_CONTRACT_VARIANTS or contract_addr == USDT_TRC20_CONTRACT.lower()):
+                to_addr = res_dict.get("to") or res_dict.get("to_address") or res_dict.get("1")
                 if to_addr and str(to_addr).strip().lower() in expected_variants:
                     matched_recipient = True
                     try:
-                        raw_units = int(res_dict.get("value", 0))
+                        raw_val = res_dict.get("value") or res_dict.get("2") or 0
+                        raw_units = int(raw_val)
                         amt = raw_units / 1_000_000.0  # USDT TRC20 has 6 decimals
                         detected_amount = (detected_amount or 0.0) + amt
                     except (ValueError, TypeError):
