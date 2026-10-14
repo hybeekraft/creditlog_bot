@@ -6,3 +6,4 @@ data/
 .playwright-mcp/
 *.py[cod]
 .pytest_cache/
+*.xlsx
