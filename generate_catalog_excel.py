@@ -211,7 +211,7 @@ async def build_catalog_excel():
     registry = SupplierRegistry.from_env()
     client = registry.get()
     supplier_prods = await client.get_products()
-    await client.close()
+    await registry.close_all()
     conn.close()
 
     wb = openpyxl.Workbook()
@@ -463,6 +463,7 @@ async def build_catalog_excel():
     out_file = "CreditLog_Bot_Supplier_Products_Catalog.xlsx"
     wb.save(out_file)
     print(f"Excel catalog successfully saved to {out_file} with {len(supplier_prods)} supplier items and {len(all_db_rows)} total store items.")
+    return out_file
 
 
 if __name__ == "__main__":

@@ -2790,6 +2790,7 @@ async def admin_help(m: Message):
         "/stats - View sales stats\n"
         "/broadcast &lt;text&gt; - Broadcast message\n"
         "/backup - Download fresh database backup (.db)\n"
+        "/export - Download updated products Excel (.xlsx)\n"
         "/setrate [rate_ngn] - View or update USD to NGN exchange rate\n"
         "/setpaystack [secret_key] - View or set Paystack API Secret Key\n\n"
         "🎨 <b>Brand Custom Emojis</b>\n"
@@ -3247,6 +3248,64 @@ async def admin_backup(m: Message):
                 pass
 
 
+@dp.message(Command("export"), is_admin)
+@dp.message(Command("excel"), is_admin)
+async def admin_export_excel(m: Message):
+    status_msg = await m.answer("⏳ <i>Generating fresh products Excel catalog...</i>")
+    try:
+        from generate_catalog_excel import build_catalog_excel
+        excel_path = await build_catalog_excel()
+        if not excel_path or not os.path.exists(excel_path):
+            excel_path = "CreditLog_Bot_Supplier_Products_Catalog.xlsx"
+
+        size_kb = os.path.getsize(excel_path) / 1024.0
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        doc = FSInputFile(excel_path, filename=f"CreditLog_Products_{time.strftime('%Y%m%d_%H%M%S')}.xlsx")
+        await m.answer_document(
+            doc,
+            caption=(
+                f"📊 <b>Updated Products Excel Catalog</b>\n"
+                f"📅 Generated: <code>{ts}</code>\n"
+                f"📦 Size: <code>{size_kb:.1f} KB</code>\n\n"
+                f"• <b>Sheet 1:</b> Supplier API Products (Wholesale costs, stock & instructions)\n"
+                f"• <b>Sheet 2:</b> All Store Products (Full Bot Catalog & Margins)"
+            )
+        )
+        await status_msg.delete()
+    except Exception as e:
+        log.exception("Excel catalog export failed: %s", e)
+        await status_msg.edit_text(f"❌ Failed to generate Excel catalog: <code>{esc(str(e))}</code>")
+
+
+@dp.callback_query(F.data == "admin_export_excel")
+async def cb_admin_export_excel(c: CallbackQuery):
+    if not (c.from_user and c.from_user.id in ADMIN_IDS):
+        return await c.answer("Unauthorized", show_alert=True)
+    await c.answer("Generating Excel file...", show_alert=False)
+    try:
+        from generate_catalog_excel import build_catalog_excel
+        excel_path = await build_catalog_excel()
+        if not excel_path or not os.path.exists(excel_path):
+            excel_path = "CreditLog_Bot_Supplier_Products_Catalog.xlsx"
+
+        size_kb = os.path.getsize(excel_path) / 1024.0
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        doc = FSInputFile(excel_path, filename=f"CreditLog_Products_{time.strftime('%Y%m%d_%H%M%S')}.xlsx")
+        await c.message.answer_document(
+            doc,
+            caption=(
+                f"📊 <b>Updated Products Excel Catalog</b>\n"
+                f"📅 Generated: <code>{ts}</code>\n"
+                f"📦 Size: <code>{size_kb:.1f} KB</code>\n\n"
+                f"• <b>Sheet 1:</b> Supplier API Products\n"
+                f"• <b>Sheet 2:</b> All Store Products"
+            )
+        )
+    except Exception as e:
+        log.exception("Excel export callback failed: %s", e)
+        await c.message.answer(f"❌ Failed to generate Excel catalog: <code>{esc(str(e))}</code>")
+
+
 @dp.message(Command("setrate"), is_admin)
 async def admin_setrate(m: Message, command: CommandObject):
     args = (command.args or "").strip()
@@ -3605,7 +3664,15 @@ async def admin_supplier_sync(m: Message, command: CommandObject):
             lines.append(f" • {esc(err)}")
 
     res_msg = "\n".join(lines).strip()
-    await m.answer(res_msg)
+    sync_kb = kb([[btn("📊 Download Excel Catalog (.xlsx)", "admin_export_excel", style="success")]])
+    await m.answer(res_msg, reply_markup=sync_kb)
+
+    if "unittest" not in sys.modules:
+        try:
+            from generate_catalog_excel import build_catalog_excel
+            asyncio.create_task(build_catalog_excel())
+        except Exception:
+            pass
 
 
 @dp.message(Command("s_link"), is_admin)
@@ -3672,6 +3739,11 @@ async def periodic_supplier_sync(interval_sec: int = 600):
             await asyncio.sleep(interval_sec)
             added, updated, total, errors = await perform_supplier_sync()
             log.info("Periodic supplier sync completed: %d updated, %d added of %d total (errors: %s)", updated, added, total, len(errors))
+            try:
+                from generate_catalog_excel import build_catalog_excel
+                await build_catalog_excel()
+            except Exception as ex:
+                log.warning("Periodic Excel catalog refresh failed: %s", ex)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -3694,6 +3766,11 @@ async def main():
     try:
         init_added, init_updated, init_total, init_errs = await perform_supplier_sync()
         log.info("Initial supplier sync: %d updated, %d added of %d total (errors: %d)", init_updated, init_added, init_total, len(init_errs))
+        try:
+            from generate_catalog_excel import build_catalog_excel
+            await build_catalog_excel()
+        except Exception:
+            pass
     except Exception as e:
         log.warning("Initial supplier sync on startup failed: %s", e)
 
@@ -3711,6 +3788,7 @@ async def main():
         admin_cmd_list = [
             BotCommand(command="admin", description="Admin command center"),
             BotCommand(command="backup", description="Download database backup (.db)"),
+            BotCommand(command="export", description="Download updated products Excel (.xlsx)"),
             BotCommand(command="stats", description="View store sales stats"),
             BotCommand(command="products", description="List products & margins"),
             BotCommand(command="s_sync", description="Sync supplier catalog"),
