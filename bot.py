@@ -55,7 +55,13 @@ def safe_int_env(key: str, default: int) -> int:
 def is_admin(m: Message) -> bool:
     return bool(m.from_user and m.from_user.id in ADMIN_IDS)
 
-usd = lambda c: f"${c / 100:.2f}"
+def usd(c) -> str:
+    try:
+        val = float(c) if c is not None else 0.0
+        return f"${val / 100.0:.2f}"
+    except (ValueError, TypeError):
+        return "$0.00"
+
 esc = html.escape
 SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/your_support")
 CHANNEL_URL = os.environ.get("CHANNEL_URL", "https://t.me/your_channel")
@@ -3011,7 +3017,7 @@ async def admin_products(m: Message):
         margin_info = ""
         if p["margin"] is not None:
             margin_info = f" · margin +{p['margin']}%"
-        elif p["supplier_price"]:
+        elif p["supplier_price"] and p["supplier_price"] > 0:
             cost = p["supplier_price"]
             calc_m = round(((p["price"] - cost) / cost) * 100)
             margin_info = f" · margin ~{calc_m}%"
@@ -3060,7 +3066,7 @@ async def admin_setprice(m: Message, command: CommandObject):
             return await m.answer(f"Product #{pid} not found.")
 
         # If item has a supplier cost, calculate and lock in the implied margin so sync preserves it!
-        if p["supplier_price"]:
+        if p["supplier_price"] and p["supplier_price"] > 0:
             cost = p["supplier_price"]
             calc_margin = round(((new_price_cents - cost) / cost) * 100)
             db.execute("UPDATE products SET price=?, margin=? WHERE id=?", (new_price_cents, calc_margin, pid))

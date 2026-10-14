@@ -1883,6 +1883,15 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         await bot.admin_setpaystack(m)
         self.assertIn("Paystack Integration Status", m.answer.call_args[0][0])
 
+    def test_usd_formatting_resilience(self):
+        self.assertEqual(bot.usd(100), "$1.00")
+        self.assertEqual(bot.usd(1250), "$12.50")
+        self.assertEqual(bot.usd(0), "$0.00")
+        self.assertEqual(bot.usd(None), "$0.00")
+        self.assertEqual(bot.usd(""), "$0.00")
+        self.assertEqual(bot.usd("invalid"), "$0.00")
+        self.assertEqual(bot.usd("500"), "$5.00")
+
 
 if __name__ == "__main__":
     unittest.main()
