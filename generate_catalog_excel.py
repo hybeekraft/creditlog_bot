@@ -8,6 +8,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+from typing import Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -209,19 +210,60 @@ def parse_product_desc(name: str, desc: str):
     return deliv_fmt, instructions, overview, warranty, precautions
 
 
-async def build_catalog_excel():
-    # 1. Connect to DB to map existing bot IDs and categories
-    conn = sqlite3.connect("store.db")
+def get_db_path(custom_path: Optional[str] = None) -> str:
+    if custom_path and os.path.exists(custom_path):
+        return custom_path
+    try:
+        from bot import DB_PATH
+        if DB_PATH and (DB_PATH == ":memory:" or os.path.exists(DB_PATH)):
+            return DB_PATH
+    except Exception:
+        pass
+    db_env = os.environ.get("DB_PATH", "store.db")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    if db_env == ":memory:":
+        return ":memory:"
+    if db_env == "/data/store.db" and sys.platform == "win32" and not os.path.exists("/.dockerenv"):
+        return os.path.join(base_dir, "store.db")
+    if os.path.isabs(db_env) and os.path.exists(db_env):
+        return db_env
+    cand = os.path.join(base_dir, db_env)
+    if os.path.exists(cand):
+        return cand
+    if os.path.exists("store.db"):
+        return "store.db"
+    return db_env
+
+
+async def build_catalog_excel(target_db_path: Optional[str] = None):
+    # 1. Connect to DB using active resolved path
+    active_db = get_db_path(target_db_path)
+    conn = sqlite3.connect(active_db)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
+    # Verify table existence; fallback to base directory store.db if needed
+    table_exists = c.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='products'").fetchone()[0]
+    if not table_exists:
+        base_store = os.path.join(os.path.dirname(os.path.abspath(__file__)), "store.db")
+        if os.path.exists(base_store) and base_store != active_db:
+            conn.close()
+            active_db = base_store
+            conn = sqlite3.connect(active_db)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            table_exists = c.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='products'").fetchone()[0]
+    
     db_by_sup_id = {}
     db_by_name = {}
-    for r in c.execute("SELECT * FROM products").fetchall():
-        rd = dict(r)
-        if rd.get("supplier_product_id"):
-            db_by_sup_id[str(rd["supplier_product_id"])] = rd
-        db_by_name[rd["name"].lower().strip()] = rd
+    all_db_rows = []
+    if table_exists:
+        for r in c.execute("SELECT * FROM products ORDER BY id ASC").fetchall():
+            rd = dict(r)
+            all_db_rows.append(rd)
+            if rd.get("supplier_product_id"):
+                db_by_sup_id[str(rd["supplier_product_id"])] = rd
+            db_by_name[rd["name"].lower().strip()] = rd
 
     # 2. Fetch live supplier catalog
     registry = SupplierRegistry.from_env()
@@ -427,13 +469,7 @@ async def build_catalog_excel():
 
     ws2.row_dimensions[1].height = 28
 
-    conn = sqlite3.connect("store.db")
-    conn.row_factory = sqlite3.Row
-    all_db_rows = conn.cursor().execute("SELECT * FROM products ORDER BY id ASC").fetchall()
-    conn.close()
-
-    for row_idx, r in enumerate(all_db_rows, 2):
-        rd = dict(r)
+    for row_idx, rd in enumerate(all_db_rows, 2):
         sname = rd["name"]
         cat_name = rd.get("category") or determine_category(sname)
         brand_svc = determine_brand_service(sname)
@@ -461,7 +497,7 @@ async def build_catalog_excel():
         row_fill = zebra_fill if (row_idx % 2 == 0) else white_fill
 
         values = [
-            r["id"],
+            rd["id"],
             sname,
             cat_name,
             brand_svc,

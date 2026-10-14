@@ -3254,7 +3254,7 @@ async def admin_export_excel(m: Message):
     status_msg = await m.answer("⏳ <i>Generating fresh products Excel catalog...</i>")
     try:
         from generate_catalog_excel import build_catalog_excel
-        excel_path = await build_catalog_excel()
+        excel_path = await build_catalog_excel(DB_PATH)
         if not excel_path or not os.path.exists(excel_path):
             excel_path = "CreditLog_Bot_Supplier_Products_Catalog.xlsx"
             if not os.path.exists(excel_path):
@@ -3286,7 +3286,7 @@ async def cb_admin_export_excel(c: CallbackQuery):
     await c.answer("Generating catalog document...", show_alert=False)
     try:
         from generate_catalog_excel import build_catalog_excel
-        excel_path = await build_catalog_excel()
+        excel_path = await build_catalog_excel(DB_PATH)
         if not excel_path or not os.path.exists(excel_path):
             excel_path = "CreditLog_Bot_Supplier_Products_Catalog.xlsx"
             if not os.path.exists(excel_path):
@@ -3674,7 +3674,7 @@ async def admin_supplier_sync(m: Message, command: CommandObject):
     if "unittest" not in sys.modules:
         try:
             from generate_catalog_excel import build_catalog_excel
-            asyncio.create_task(build_catalog_excel())
+            asyncio.create_task(build_catalog_excel(DB_PATH))
         except Exception:
             pass
 
@@ -3745,7 +3745,7 @@ async def periodic_supplier_sync(interval_sec: int = 600):
             log.info("Periodic supplier sync completed: %d updated, %d added of %d total (errors: %s)", updated, added, total, len(errors))
             try:
                 from generate_catalog_excel import build_catalog_excel
-                await build_catalog_excel()
+                await build_catalog_excel(DB_PATH)
             except Exception as ex:
                 log.warning("Periodic Excel catalog refresh failed: %s", ex)
         except asyncio.CancelledError:
@@ -3772,7 +3772,7 @@ async def main():
         log.info("Initial supplier sync: %d updated, %d added of %d total (errors: %d)", init_updated, init_added, init_total, len(init_errs))
         try:
             from generate_catalog_excel import build_catalog_excel
-            await build_catalog_excel()
+            await build_catalog_excel(DB_PATH)
         except Exception:
             pass
     except Exception as e:
