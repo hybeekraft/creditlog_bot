@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import time
 from typing import List, Optional, Tuple
 
@@ -38,18 +39,39 @@ log = logging.getLogger("store")
 # Config
 # --------------------------------------------------------------------------
 TOKEN = os.environ["BOT_TOKEN"]
-ADMIN_IDS = {int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x}
+ADMIN_IDS = set()
+for raw_id in os.environ.get("ADMIN_IDS", "").split(","):
+    clean_id = raw_id.strip()
+    if clean_id.isdigit():
+        ADMIN_IDS.add(int(clean_id))
+
+def safe_int_env(key: str, default: int) -> int:
+    val = (os.environ.get(key, "") or "").strip()
+    try:
+        return int(val) if val else default
+    except (ValueError, TypeError):
+        return default
 
 def is_admin(m: Message) -> bool:
     return bool(m.from_user and m.from_user.id in ADMIN_IDS)
+
+usd = lambda c: f"${c / 100:.2f}"
+esc = html.escape
 SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/your_support")
 CHANNEL_URL = os.environ.get("CHANNEL_URL", "https://t.me/your_channel")
 REQUIRED_CHANNELS_RAW = os.environ.get("REQUIRED_CHANNELS", "").strip()
-LOW_STOCK = int(os.environ.get("LOW_STOCK", "2"))
+LOW_STOCK = safe_int_env("LOW_STOCK", 2)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 db_env = os.environ.get("DB_PATH", "store.db")
-DB_PATH = db_env if db_env == ":memory:" else (db_env if os.path.isabs(db_env) else os.path.join(BASE_DIR, db_env))
-PORT = int(os.environ.get("PORT", "8080"))
+if db_env == ":memory:":
+    DB_PATH = ":memory:"
+elif db_env == "/data/store.db" and sys.platform == "win32" and not os.path.exists("/.dockerenv"):
+    DB_PATH = os.path.join(BASE_DIR, "store.db")
+elif os.path.isabs(db_env):
+    DB_PATH = db_env
+else:
+    DB_PATH = os.path.join(BASE_DIR, db_env)
+PORT = safe_int_env("PORT", 8080)
 
 def parse_profit_margin(val: Optional[str], default: int = 45) -> int:
     if not val:
@@ -88,13 +110,13 @@ if not CRYPTO_USDT_TRC20 or CRYPTO_USDT_TRC20.startswith("TYour") or CRYPTO_USDT
 
 # Paystack (Naira / Card / Bank Transfer)
 PAYSTACK_SECRET_KEY = (os.environ.get("PAYSTACK_SECRET_KEY", "") or "").strip()
-DEFAULT_USD_NGN_RATE = int(os.environ.get("USD_NGN_RATE", "1450"))
+DEFAULT_USD_NGN_RATE = safe_int_env("USD_NGN_RATE", 1450)
 PAYSTACK_CALLBACK_URL = os.environ.get("PAYSTACK_CALLBACK_URL", "https://t.me/creditlogbot")
 
 # --------------------------------------------------------------------------
 # Database
 # --------------------------------------------------------------------------
-db = sqlite3.connect(DB_PATH, isolation_level=None)
+db = sqlite3.connect(DB_PATH, isolation_level=None, check_same_thread=False)
 db.row_factory = sqlite3.Row
 db.executescript("""
 PRAGMA journal_mode=WAL;
@@ -1703,6 +1725,8 @@ def has_manual_crypto() -> bool:
 
 async def create_cryptobot_invoice(order_id: int, item_name: str, cents: int) -> dict:
     """Create a @CryptoBot invoice for this specific product order."""
+    if not CRYPTOBOT_TOKEN:
+        raise RuntimeError("CryptoBot token is not configured.")
     payload = {
         "currency_type": "fiat",
         "fiat": "USD",
@@ -1717,7 +1741,11 @@ async def create_cryptobot_invoice(order_id: int, item_name: str, cents: int) ->
             json=payload,
             headers={"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
         ) as r:
-            data = await r.json()
+            try:
+                data = await r.json()
+            except Exception:
+                text_resp = await r.text()
+                raise RuntimeError(f"CryptoBot HTTP {r.status}: {text_resp[:200]}")
             if not data.get("ok"):
                 raise RuntimeError(f"CryptoBot error: {data}")
             return data["result"]
@@ -1725,17 +1753,26 @@ async def create_cryptobot_invoice(order_id: int, item_name: str, cents: int) ->
 
 async def check_cryptobot_invoice(invoice_id: int) -> bool:
     """Check if a @CryptoBot invoice is paid."""
-    timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as s:
-        async with s.get(
-            f"https://pay.crypt.bot/api/getInvoices?invoice_ids={invoice_id}",
-            headers={"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
-        ) as r:
-            data = await r.json()
-            if data.get("ok") and data.get("result", {}).get("items"):
-                items = data["result"]["items"]
-                return items[0].get("status") == "paid"
-            return False
+    if not CRYPTOBOT_TOKEN:
+        return False
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.get(
+                f"https://pay.crypt.bot/api/getInvoices?invoice_ids={invoice_id}",
+                headers={"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
+            ) as r:
+                try:
+                    data = await r.json()
+                except Exception:
+                    return False
+                if data.get("ok") and data.get("result", {}).get("items"):
+                    items = data["result"]["items"]
+                    return items[0].get("status") == "paid"
+                return False
+    except Exception as e:
+        log.warning("CryptoBot getInvoices check failed: %s", e)
+        return False
 
 
 async def initialize_paystack_transaction(
@@ -1995,9 +2032,9 @@ async def on_pay_option_selected(c: CallbackQuery):
             except Exception:
                 log.exception("CryptoBot invoice creation failed")
 
-        if not pay_url:
-            pay_url = f"https://t.me/CryptoBot?start=pay_{oid}"
-            inv_id = inv_id or oid
+        if not pay_url or not inv_id:
+            db.execute("DELETE FROM orders WHERE id=?", (oid,))
+            return await c.answer("⚠️ CryptoBot checkout could not be initialized. Please try again or choose another payment method.", show_alert=True)
 
         text = (
             "<u>🤖 <b>CryptoBot Checkout</b></u>\n"
@@ -2679,7 +2716,7 @@ async def recent_purchases(event: Message | CallbackQuery):
             return await event.answer(text, reply_markup=markup)
 
     rows = db.execute(
-        "SELECT * FROM orders WHERE user_id=? AND status IN ('completed', 'manual_pending', 'paid') ORDER BY id DESC LIMIT 10",
+        "SELECT * FROM orders WHERE user_id=? AND status IN ('completed', 'manual_pending', 'paid', 'failed') ORDER BY id DESC LIMIT 10",
         (uid,)
     ).fetchall()
 
@@ -3701,6 +3738,7 @@ async def main():
         await supplier_registry.close_all()
         await reseller.close()
         await runner.cleanup()
+        await bot.session.close()
 
 
 if __name__ == "__main__":

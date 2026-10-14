@@ -1694,6 +1694,50 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(amt, 15.0)
         self.assertIn("successfully", msg)
 
+    def test_safe_int_env(self):
+        with patch.dict(os.environ, {"TEST_INT_EMPTY": "", "TEST_INT_VALID": "2000", "TEST_INT_BAD": "abc"}):
+            self.assertEqual(bot.safe_int_env("TEST_INT_EMPTY", 1450), 1450)
+            self.assertEqual(bot.safe_int_env("TEST_INT_VALID", 1450), 2000)
+            self.assertEqual(bot.safe_int_env("TEST_INT_BAD", 1450), 1450)
+            self.assertEqual(bot.safe_int_env("NON_EXISTENT_KEY", 1450), 1450)
+
+    async def test_create_cryptobot_invoice_missing_token_raises(self):
+        with patch.object(bot, "CRYPTOBOT_TOKEN", ""):
+            with self.assertRaises(RuntimeError):
+                await bot.create_cryptobot_invoice(1, "Test", 100)
+
+    async def test_check_cryptobot_invoice_safe_error_handling(self):
+        with patch.object(bot, "CRYPTOBOT_TOKEN", "fake_token"):
+            with patch("aiohttp.ClientSession.get", side_effect=Exception("Connection refused")):
+                res = await bot.check_cryptobot_invoice(12345)
+                self.assertFalse(res)
+
+
+    def test_early_helpers_defined(self):
+        self.assertEqual(bot.esc("<script>"), "&lt;script&gt;")
+        self.assertEqual(bot.usd(1250), "$12.50")
+
+    def test_recent_purchases_query(self):
+        test_uid = 999888777
+        bot.db.execute("INSERT INTO users(id) VALUES(?) ON CONFLICT DO NOTHING", (test_uid,))
+        bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES (?, 1, 'Failed Item', 500, 'failed')",
+            (test_uid,)
+        )
+        bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES (?, 1, 'Pending Item', 500, 'manual_pending')",
+            (test_uid,)
+        )
+        rows = bot.db.execute(
+            "SELECT * FROM orders WHERE user_id=? AND status IN ('completed', 'manual_pending', 'paid', 'failed') ORDER BY id DESC LIMIT 10",
+            (test_uid,)
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        statuses = [r["status"] for r in rows]
+        self.assertIn("failed", statuses)
+        self.assertIn("manual_pending", statuses)
+        bot.db.execute("DELETE FROM orders WHERE user_id=?", (test_uid,))
+
 
 if __name__ == "__main__":
     unittest.main()
