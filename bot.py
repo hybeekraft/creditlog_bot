@@ -933,8 +933,6 @@ def get_custom_emoji_id(key: str) -> Optional[str]:
     return None
 
 dp = Dispatcher()
-usd = lambda c: f"${c / 100:.2f}"
-esc = html.escape
 
 # In-memory tracking for interactive text inputs (custom quantity, search keyword)
 pending_inputs: dict[int, dict] = {}
