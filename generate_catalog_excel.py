@@ -2,16 +2,32 @@
 Script to generate executive Excel spreadsheet of all products from Supplier API and Bot catalog.
 """
 import asyncio
+import csv
 import os
 import re
 import sqlite3
-import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
+import subprocess
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
 from reseller import SupplierRegistry
+
+HAS_OPENPYXL = False
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    HAS_OPENPYXL = True
+except ModuleNotFoundError:
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "--no-cache-dir", "openpyxl>=3.1.2"], check=True, capture_output=True, timeout=60)
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+        HAS_OPENPYXL = True
+    except Exception:
+        HAS_OPENPYXL = False
 
 
 def determine_brand_service(name: str) -> str:
@@ -213,6 +229,34 @@ async def build_catalog_excel():
     supplier_prods = await client.get_products()
     await registry.close_all()
     conn.close()
+
+    if not HAS_OPENPYXL:
+        out_file = "CreditLog_Bot_Supplier_Products_Catalog.csv"
+        with open(out_file, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow([c[0] for c in columns])
+            for sp in supplier_prods:
+                sid = str(sp["id"])
+                sname = sp["name"]
+                raw = sp.get("raw", {})
+                db_match = db_by_sup_id.get(sid) or db_by_name.get(sname.lower().strip())
+                bot_id = db_match["id"] if db_match else f"Auto-{sid}"
+                cat_name = determine_category(sname, db_match["category"] if db_match else "")
+                brand_svc = determine_brand_service(sname)
+                cost_usd = sp["price_usd"]
+                store_price = (db_match["price"] / 100.0) if (db_match and db_match.get("price")) else round(cost_usd * 1.45, 2)
+                margin_usd = round(store_price - cost_usd, 2)
+                stock_val = sp.get("stock")
+                if stock_val is not None and stock_val > 0:
+                    stock_str = f"In Stock ({stock_val})"
+                elif stock_val == 0 or raw.get("inStock") is False:
+                    stock_str = "Out of Stock"
+                else:
+                    stock_str = "Available on Order"
+                deliv_fmt, inst, overview, war, prec = parse_product_desc(sname, sp.get("description", ""))
+                writer.writerow([bot_id, sname, cat_name, brand_svc, f"${store_price:.2f}", f"${cost_usd:.2f}", f"${margin_usd:.2f}", "Auto-Fulfillment (API)", sid, stock_str, deliv_fmt, inst, overview, war, prec])
+        print(f"Catalog fallback CSV saved to {out_file} (openpyxl not installed).")
+        return out_file
 
     wb = openpyxl.Workbook()
     

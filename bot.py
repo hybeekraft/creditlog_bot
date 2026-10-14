@@ -3257,18 +3257,20 @@ async def admin_export_excel(m: Message):
         excel_path = await build_catalog_excel()
         if not excel_path or not os.path.exists(excel_path):
             excel_path = "CreditLog_Bot_Supplier_Products_Catalog.xlsx"
+            if not os.path.exists(excel_path):
+                excel_path = "CreditLog_Bot_Supplier_Products_Catalog.csv"
 
         size_kb = os.path.getsize(excel_path) / 1024.0
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        doc = FSInputFile(excel_path, filename=f"CreditLog_Products_{time.strftime('%Y%m%d_%H%M%S')}.xlsx")
+        ext = "csv" if excel_path.endswith(".csv") else "xlsx"
+        doc = FSInputFile(excel_path, filename=f"CreditLog_Products_{time.strftime('%Y%m%d_%H%M%S')}.{ext}")
         await m.answer_document(
             doc,
             caption=(
-                f"📊 <b>Updated Products Excel Catalog</b>\n"
+                f"📊 <b>Updated Products Catalog ({ext.upper()})</b>\n"
                 f"📅 Generated: <code>{ts}</code>\n"
                 f"📦 Size: <code>{size_kb:.1f} KB</code>\n\n"
-                f"• <b>Sheet 1:</b> Supplier API Products (Wholesale costs, stock & instructions)\n"
-                f"• <b>Sheet 2:</b> All Store Products (Full Bot Catalog & Margins)"
+                f"• Wholesale costs, store prices, profit margins, stock & instructions included."
             )
         )
         await status_msg.delete()
@@ -3281,24 +3283,26 @@ async def admin_export_excel(m: Message):
 async def cb_admin_export_excel(c: CallbackQuery):
     if not (c.from_user and c.from_user.id in ADMIN_IDS):
         return await c.answer("Unauthorized", show_alert=True)
-    await c.answer("Generating Excel file...", show_alert=False)
+    await c.answer("Generating catalog document...", show_alert=False)
     try:
         from generate_catalog_excel import build_catalog_excel
         excel_path = await build_catalog_excel()
         if not excel_path or not os.path.exists(excel_path):
             excel_path = "CreditLog_Bot_Supplier_Products_Catalog.xlsx"
+            if not os.path.exists(excel_path):
+                excel_path = "CreditLog_Bot_Supplier_Products_Catalog.csv"
 
         size_kb = os.path.getsize(excel_path) / 1024.0
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        doc = FSInputFile(excel_path, filename=f"CreditLog_Products_{time.strftime('%Y%m%d_%H%M%S')}.xlsx")
+        ext = "csv" if excel_path.endswith(".csv") else "xlsx"
+        doc = FSInputFile(excel_path, filename=f"CreditLog_Products_{time.strftime('%Y%m%d_%H%M%S')}.{ext}")
         await c.message.answer_document(
             doc,
             caption=(
-                f"📊 <b>Updated Products Excel Catalog</b>\n"
+                f"📊 <b>Updated Products Catalog ({ext.upper()})</b>\n"
                 f"📅 Generated: <code>{ts}</code>\n"
                 f"📦 Size: <code>{size_kb:.1f} KB</code>\n\n"
-                f"• <b>Sheet 1:</b> Supplier API Products\n"
-                f"• <b>Sheet 2:</b> All Store Products"
+                f"• Wholesale costs, store prices, profit margins, stock & instructions included."
             )
         )
     except Exception as e:
