@@ -1843,6 +1843,46 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
             text2 = m.answer.call_args[0][0]
             self.assertIn("custom_hub", text2)
 
+    async def test_admin_supplier_info_and_defaults(self):
+        m = AsyncMock()
+        mock_sup = AsyncMock()
+        mock_sup.base_url = "https://api.supplier.example"
+        mock_sup.api_key = "test_key"
+        mock_sup.get_balance = AsyncMock(return_value={"balance": 12.5, "currency": "USD"})
+        mock_sup.get_info = AsyncMock(return_value={"email": "admin@example.com"})
+
+        with patch.object(bot.supplier_registry, "list_suppliers", return_value={"default": mock_sup}):
+            # Overview without args
+            await bot.admin_supplier_info(m)
+            self.assertTrue(m.answer.called)
+            text = m.answer.call_args[0][0]
+            self.assertIn("Configured Suppliers / Resellers", text)
+            self.assertIn("$12.50 USD", text)
+
+            # Details with valid supplier name
+            cmd = AsyncMock()
+            cmd.args = "default"
+            await bot.admin_supplier_info(m, cmd)
+            text = m.answer.call_args[0][0]
+            self.assertIn("Supplier: <code>default</code>", text)
+            self.assertIn("$12.50 USD", text)
+
+            # Query with invalid supplier name
+            cmd.args = "unknown_supplier"
+            await bot.admin_supplier_info(m, cmd)
+            text = m.answer.call_args[0][0]
+            self.assertIn("not found in registry", text)
+            self.assertIn("unknown_supplier", text)
+
+        # Verify command=None resilience for setrate and setpaystack
+        m.reset_mock()
+        await bot.admin_setrate(m)
+        self.assertIn("USD / NGN Exchange Rate", m.answer.call_args[0][0])
+
+        m.reset_mock()
+        await bot.admin_setpaystack(m)
+        self.assertIn("Paystack Integration Status", m.answer.call_args[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()

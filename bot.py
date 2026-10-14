@@ -3325,8 +3325,8 @@ async def cb_admin_export_excel(c: CallbackQuery):
 
 
 @dp.message(Command("setrate"), is_admin)
-async def admin_setrate(m: Message, command: CommandObject):
-    args = (command.args or "").strip()
+async def admin_setrate(m: Message, command: CommandObject = None):
+    args = (command.args or "").strip() if command else ""
     current_rate = get_usd_ngn_rate()
     if not args:
         return await m.answer(
@@ -3345,8 +3345,8 @@ async def admin_setrate(m: Message, command: CommandObject):
 
 
 @dp.message(Command("setpaystack"), is_admin)
-async def admin_setpaystack(m: Message, command: CommandObject):
-    args = (command.args or "").strip()
+async def admin_setpaystack(m: Message, command: CommandObject = None):
+    args = (command.args or "").strip() if command else ""
     if not args:
         configured = is_paystack_configured()
         status_text = "🟢 <b>Configured & Active</b>" if configured else "🔴 <b>Not Configured</b>"
@@ -3370,44 +3370,62 @@ async def admin_setpaystack(m: Message, command: CommandObject):
 # Supplier Admin Commands (Multi-Supplier Registry)
 # --------------------------------------------------------------------------
 @dp.message(Command("supplier", "suppliers"), is_admin)
-async def admin_supplier_info(m: Message, command: CommandObject):
+async def admin_supplier_info(m: Message, command: CommandObject = None):
     registered = supplier_registry.list_suppliers()
     if not registered:
         return await m.answer("⚠️ No suppliers registered. Configure <code>RESELLER_API_KEY</code> or <code>SUPPLIER_&lt;NAME&gt;_KEY</code> in .env.")
 
-    arg = (command.args or "").strip().lower()
-    if arg and arg in registered:
-        sup_client = registered[arg]
-        try:
-            bal_res = await sup_client.get_balance()
-            bal_str = f"${bal_res.get('balance', 0):.2f} {bal_res.get('currency', 'USD')}"
-        except Exception as e:
-            bal_str = f"Error: {e}"
+    arg = (command.args or "").strip().lower() if command else ""
+    if arg:
+        if arg in registered:
+            sup_client = registered[arg]
+            try:
+                bal_res = await sup_client.get_balance()
+                b_val = bal_res.get('balance', 0)
+                try:
+                    b_float = float(b_val) if b_val is not None else 0.0
+                    bal_str = f"${b_float:.2f} {bal_res.get('currency', 'USD')}"
+                except (ValueError, TypeError):
+                    bal_str = f"{b_val} {bal_res.get('currency', 'USD')}"
+            except Exception as e:
+                bal_str = f"Error: {e}"
 
-        try:
-            info_res = await sup_client.get_info()
-            info_text = json.dumps(info_res, indent=2, ensure_ascii=False)
-            if len(info_text) > 400:
-                info_text = info_text[:400] + "..."
-        except Exception as e:
-            info_text = f"Error: {e}"
+            try:
+                info_res = await sup_client.get_info()
+                info_text = json.dumps(info_res, indent=2, ensure_ascii=False)
+                if len(info_text) > 400:
+                    info_text = info_text[:400] + "..."
+            except Exception as e:
+                info_text = f"Error: {e}"
 
-        p_count = db.execute("SELECT COUNT(*) FROM products WHERE supplier=? AND active=1", (arg,)).fetchone()[0]
+            p_count = db.execute("SELECT COUNT(*) FROM products WHERE supplier=? AND active=1", (arg,)).fetchone()[0]
 
-        return await m.answer(
-            f"🌐 <b>Supplier: <code>{esc(arg)}</code></b>\n"
-            f"<b>Base URL:</b> <code>{esc(sup_client.base_url)}</code>\n"
-            f"<b>Balance:</b> <b>{esc(bal_str)}</b>\n"
-            f"<b>Active Linked Products:</b> {p_count}\n\n"
-            f"<b>Account Info:</b>\n<pre>{esc(info_text)}</pre>"
-        )
+            return await m.answer(
+                f"🌐 <b>Supplier: <code>{esc(arg)}</code></b>\n"
+                f"<b>Base URL:</b> <code>{esc(sup_client.base_url)}</code>\n"
+                f"<b>Balance:</b> <b>{esc(bal_str)}</b>\n"
+                f"<b>Active Linked Products:</b> {p_count}\n\n"
+                f"<b>Account Info:</b>\n<pre>{esc(info_text)}</pre>"
+            )
+        else:
+            avail = ", ".join(f"<code>{esc(k)}</code>" for k in registered.keys())
+            return await m.answer(
+                f"⚠️ Supplier '<code>{esc(arg)}</code>' not found in registry.\n"
+                f"<b>Configured Suppliers:</b> {avail}\n\n"
+                f"<i>Tip: Use <code>/supplier</code> to view an overview of all suppliers.</i>"
+            )
 
     # All suppliers overview
     lines = ["🌐 <b>Configured Suppliers / Resellers:</b>\n"]
     for name, client in registered.items():
         try:
             bal_res = await client.get_balance()
-            bal_disp = f"${bal_res.get('balance', 0):.2f} {bal_res.get('currency', 'USD')}"
+            b_val = bal_res.get('balance', 0)
+            try:
+                b_float = float(b_val) if b_val is not None else 0.0
+                bal_disp = f"${b_float:.2f} {bal_res.get('currency', 'USD')}"
+            except (ValueError, TypeError):
+                bal_disp = f"{b_val} {bal_res.get('currency', 'USD')}"
         except Exception as e:
             bal_disp = f"Error ({e})"
 
@@ -3445,7 +3463,8 @@ async def admin_mode(m: Message, command: CommandObject = None):
     try:
         sup = supplier_registry.get() or reseller
         bal_res = await sup.get_balance()
-        bal = float(bal_res.get("balance", 0.0))
+        b_val = bal_res.get("balance", 0.0)
+        bal = float(b_val) if b_val is not None else 0.0
     except Exception as e:
         log.warning("Could not fetch balance in /mode: %s", e)
 
@@ -3464,8 +3483,8 @@ async def admin_mode(m: Message, command: CommandObject = None):
 
 
 @dp.message(Command("s_products"), is_admin)
-async def admin_supplier_products(m: Message, command: CommandObject):
-    sup_name = (command.args or "").strip().lower() or supplier_registry.default_name()
+async def admin_supplier_products(m: Message, command: CommandObject = None):
+    sup_name = ((command.args or "").strip().lower() if command else "") or supplier_registry.default_name()
     sup_client = supplier_registry.get(sup_name)
     if not sup_client or not sup_client.api_key:
         return await m.answer(f"⚠️ Supplier <code>{esc(sup_name)}</code> not found or has no API key.")
@@ -3594,12 +3613,12 @@ async def perform_supplier_sync(
 
 
 @dp.message(Command("s_sync"), is_admin)
-async def admin_supplier_sync(m: Message, command: CommandObject):
+async def admin_supplier_sync(m: Message, command: CommandObject = None):
     registered = supplier_registry.list_suppliers()
     if not registered:
         return await m.answer("⚠️ No suppliers configured in .env.")
 
-    args = (command.args or "").strip().split()
+    args = (command.args or "").strip().split() if command else []
     target_suppliers = []
     markup = get_default_margin()
 
