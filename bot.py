@@ -3443,7 +3443,8 @@ async def admin_mode(m: Message, command: CommandObject = None):
     current_mode = get_setting("fulfillment_mode", "auto").lower()
     bal = 0.0
     try:
-        bal_res = await reseller.get_balance()
+        sup = supplier_registry.get() or reseller
+        bal_res = await sup.get_balance()
         bal = float(bal_res.get("balance", 0.0))
     except Exception as e:
         log.warning("Could not fetch balance in /mode: %s", e)
@@ -3732,15 +3733,19 @@ async def admin_supplier_unlink(m: Message, command: CommandObject):
 
 
 @dp.message(Command("s_orders"), is_admin)
-async def admin_supplier_orders(m: Message):
-    client = supplier_registry.get() or reseller
+async def admin_supplier_orders(m: Message, command: CommandObject = None):
+    sup_name = (command.args or "").strip().lower() if (command and command.args) else ""
+    client = (supplier_registry.get(sup_name) if sup_name else supplier_registry.get()) or reseller
     if not client or not client.api_key:
-        return await m.answer("⚠️ <code>RESELLER_API_KEY</code> is not configured in .env.")
+        target = f" for '{esc(sup_name)}'" if sup_name else ""
+        return await m.answer(f"⚠️ Supplier client{target} is not configured or missing API key.")
     try:
         orders = await client.get_orders()
         if not orders:
-            return await m.answer("No orders found at supplier.")
-        lines = ["<b>Recent Supplier Orders:</b>\n"]
+            target = f" ({esc(sup_name)})" if sup_name else ""
+            return await m.answer(f"No orders found at supplier{target}.")
+        sup_label = f" ({esc(sup_name)})" if sup_name else ""
+        lines = [f"<b>Recent Supplier Orders{sup_label}:</b>\n"]
         for o in orders[:10]:
             code = o.get("orderCode") or o.get("id") or "N/A"
             item = o.get("productId") or o.get("product_name") or "Item"
@@ -3806,11 +3811,14 @@ async def main():
         ])
         admin_cmd_list = [
             BotCommand(command="admin", description="Admin command center"),
+            BotCommand(command="mode", description="Switch Model A / Model B fulfillment"),
             BotCommand(command="backup", description="Download database backup (.db)"),
             BotCommand(command="export", description="Download updated products Excel (.xlsx)"),
             BotCommand(command="stats", description="View store sales stats"),
             BotCommand(command="products", description="List products & margins"),
+            BotCommand(command="s_products", description="List supplier products"),
             BotCommand(command="s_sync", description="Sync supplier catalog"),
+            BotCommand(command="s_orders", description="Recent supplier orders"),
             BotCommand(command="supplier", description="Supplier balance & info"),
             BotCommand(command="setrate", description="Update USD/NGN exchange rate"),
             BotCommand(command="setpaystack", description="Set Paystack secret key"),

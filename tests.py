@@ -1786,6 +1786,63 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Broadcast completed", m.answer.call_args[0][0])
         bot.db.execute("DELETE FROM users WHERE id=11001")
 
+    async def test_admin_mode_fulfillment(self):
+        m = AsyncMock()
+        cmd = AsyncMock()
+        
+        # Test switching to manual
+        cmd.args = "manual"
+        await bot.admin_mode(m, cmd)
+        self.assertIn("MODEL B", m.answer.call_args[0][0])
+        self.assertEqual(bot.get_setting("fulfillment_mode"), "manual")
+
+        # Test switching to instant
+        cmd.args = "instant"
+        await bot.admin_mode(m, cmd)
+        self.assertIn("MODEL A", m.answer.call_args[0][0])
+        self.assertEqual(bot.get_setting("fulfillment_mode"), "instant")
+
+        # Test switching to auto
+        cmd.args = "auto"
+        await bot.admin_mode(m, cmd)
+        self.assertIn("AUTO", m.answer.call_args[0][0])
+        self.assertEqual(bot.get_setting("fulfillment_mode"), "auto")
+
+        # Test viewing status
+        cmd.args = ""
+        mock_sup = AsyncMock()
+        mock_sup.get_balance = AsyncMock(return_value={"balance": 50.0})
+        with patch.object(bot.supplier_registry, "get", return_value=mock_sup):
+            await bot.admin_mode(m, cmd)
+            self.assertIn("Store Fulfillment Strategy", m.answer.call_args[0][0])
+            self.assertIn("$50.00 USDT", m.answer.call_args[0][0])
+
+    async def test_admin_supplier_orders(self):
+        m = AsyncMock()
+        cmd = AsyncMock()
+        cmd.args = ""
+
+        mock_client = AsyncMock()
+        mock_client.api_key = "test_key"
+        mock_client.get_orders = AsyncMock(return_value=[
+            {"orderCode": "ORD-101", "productId": "Netflix 1M", "price": "$12.00"}
+        ])
+
+        with patch.object(bot.supplier_registry, "get", return_value=mock_client):
+            await bot.admin_supplier_orders(m, cmd)
+            self.assertTrue(m.answer.called)
+            text = m.answer.call_args[0][0]
+            self.assertIn("Recent Supplier Orders", text)
+            self.assertIn("ORD-101", text)
+            self.assertIn("Netflix 1M", text)
+
+        # Test with named supplier
+        cmd.args = "custom_hub"
+        with patch.object(bot.supplier_registry, "get", return_value=mock_client):
+            await bot.admin_supplier_orders(m, cmd)
+            text2 = m.answer.call_args[0][0]
+            self.assertIn("custom_hub", text2)
+
 
 if __name__ == "__main__":
     unittest.main()
