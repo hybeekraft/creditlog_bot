@@ -2422,6 +2422,10 @@ async def handle_user_text_input(m: Message):
         o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         if not o:
             return await m.answer("⚠️ Order not found.")
+        if o["status"] == "completed":
+            return await m.answer(f"✅ Order #{oid} is already completed.")
+        if o["refunded"] or o["status"] in ("refunded", "cancelled"):
+            return await m.answer(f"⚠️ Order #{oid} was cancelled or refunded. Please contact support.")
 
         # Check for replay attack before accepting txid
         dup = db.execute(
@@ -3025,11 +3029,16 @@ async def admin_products(m: Message):
 @dp.message(Command("addproduct"), is_admin)
 async def admin_addproduct(m: Message, command: CommandObject):
     try:
+        if not command or not command.args:
+            return await m.answer("Usage: /addproduct <price_usd> <name> [| description]")
         price, rest = command.args.split(None, 1)
+        price_cents = round(float(price) * 100)
+        if price_cents <= 0:
+            return await m.answer("⚠️ Price must be greater than $0.00.")
         name, _, desc = rest.partition("|")
         cat = detect_category(name.strip())
         pid = db.execute("INSERT INTO products(name, description, price, category) VALUES(?,?,?,?)",
-                         (name.strip(), desc.strip(), round(float(price) * 100), cat)).lastrowid
+                         (name.strip(), desc.strip(), price_cents, cat)).lastrowid
         await m.answer(f"Product #{pid} added ({cat}).")
     except Exception:
         await m.answer("Usage: /addproduct <price_usd> <name> [| description]")
@@ -3208,17 +3217,22 @@ async def admin_stats(m: Message):
 
 @dp.message(Command("broadcast"), is_admin)
 async def admin_broadcast(m: Message, command: CommandObject):
-    if not command.args:
+    if not command or not command.args:
         return await m.answer("Usage: /broadcast <text>")
     sent = 0
+    failed = 0
     for u in db.execute("SELECT id FROM users").fetchall():
         try:
             await m.bot.send_message(u["id"], command.args)
             sent += 1
         except Exception:
-            pass
+            try:
+                await m.bot.send_message(u["id"], command.args, parse_mode=None)
+                sent += 1
+            except Exception:
+                failed += 1
         await asyncio.sleep(0.05)
-    await m.answer(f"Sent to {sent} users.")
+    await m.answer(f"Broadcast completed:\n• Sent: <b>{sent}</b> users\n• Failed: <b>{failed}</b>")
 
 
 @dp.message(Command("backup"), is_admin)

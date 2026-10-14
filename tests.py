@@ -1739,6 +1739,54 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         bot.db.execute("DELETE FROM orders WHERE user_id=?", (test_uid,))
 
 
+    async def test_admin_addproduct_price_validation(self):
+        m = AsyncMock()
+        cmd = AsyncMock()
+        cmd.args = "0.00 Bad Item | desc"
+        await bot.admin_addproduct(m, cmd)
+        self.assertTrue(m.answer.called)
+        self.assertIn("Price must be greater than", m.answer.call_args[0][0])
+
+        cmd.args = "-5.00 Bad Negative Item"
+        await bot.admin_addproduct(m, cmd)
+        self.assertIn("Price must be greater than", m.answer.call_args[0][0])
+
+    async def test_handle_user_text_input_txid_blocked_for_completed_or_refunded(self):
+        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, refunded) VALUES(6601, 1, 'Done Item', 500, 1, 'binance', 'completed', 0)")
+        oid1 = cur.lastrowid
+        cur2 = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, refunded) VALUES(6602, 1, 'Cancelled Item', 500, 1, 'binance', 'cancelled', 0)")
+        oid2 = cur2.lastrowid
+
+        m1 = AsyncMock()
+        m1.from_user.id = 6601
+        m1.text = "TXID_TEST_COMPLETED"
+        bot.pending_inputs[6601] = {"action": "txid", "oid": oid1}
+        await bot.handle_user_text_input(m1)
+        self.assertTrue(m1.answer.called)
+        self.assertIn("already completed", m1.answer.call_args[0][0])
+
+        m2 = AsyncMock()
+        m2.from_user.id = 6602
+        m2.text = "TXID_TEST_CANCELLED"
+        bot.pending_inputs[6602] = {"action": "txid", "oid": oid2}
+        await bot.handle_user_text_input(m2)
+        self.assertTrue(m2.answer.called)
+        self.assertIn("cancelled or refunded", m2.answer.call_args[0][0])
+
+    async def test_admin_broadcast_html_fallback(self):
+        m = AsyncMock()
+        cmd = AsyncMock()
+        cmd.args = "Test <unclosed tag & message"
+        bot.db.execute("INSERT INTO users(id) VALUES(11001) ON CONFLICT DO NOTHING")
+        # First send fails (simulating HTML parse error), second succeeds with parse_mode=None
+        send_mock = AsyncMock(side_effect=[Exception("Can't parse entities: unclosed tag"), None])
+        m.bot.send_message = send_mock
+        await bot.admin_broadcast(m, cmd)
+        self.assertTrue(m.answer.called)
+        self.assertIn("Broadcast completed", m.answer.call_args[0][0])
+        bot.db.execute("DELETE FROM users WHERE id=11001")
+
+
 if __name__ == "__main__":
     unittest.main()
 

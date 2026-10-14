@@ -265,12 +265,31 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
                 db_by_sup_id[str(rd["supplier_product_id"])] = rd
             db_by_name[rd["name"].lower().strip()] = rd
 
-    # 2. Fetch live supplier catalog
-    registry = SupplierRegistry.from_env()
-    client = registry.get()
-    supplier_prods = await client.get_products()
-    await registry.close_all()
     conn.close()
+
+    # 2. Fetch live supplier catalog (with fallback to local catalog if API is unavailable)
+    supplier_prods = []
+    try:
+        registry = SupplierRegistry.from_env()
+        client = registry.get()
+        if client and client.api_key:
+            supplier_prods = await client.get_products()
+        await registry.close_all()
+    except Exception as e:
+        print(f"[Warning] Live supplier catalog fetch unavailable ({e}), using store catalog.")
+
+    if not supplier_prods:
+        for r in all_db_rows:
+            if r.get("supplier_product_id"):
+                supplier_prods.append({
+                    "id": str(r["supplier_product_id"]),
+                    "name": r["name"],
+                    "description": r.get("description", ""),
+                    "price_cents": r.get("supplier_price") or round((r.get("price") or 0) * 0.65),
+                    "price_usd": round(((r.get("supplier_price") or ((r.get("price") or 0) * 0.65)) / 100.0), 2),
+                    "stock": r.get("supplier_stock"),
+                    "raw": {}
+                })
 
     if not HAS_OPENPYXL:
         out_file = "CreditLog_Bot_Supplier_Products_Catalog.csv"
