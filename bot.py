@@ -3708,7 +3708,7 @@ async def admin_supplier_link(m: Message, command: CommandObject):
             return await m.answer(f"Product #{local_id} not found.")
 
         db.execute(
-            "UPDATE products SET supplier_product_id=?, supplier=?, auto_fulfill=1 WHERE id=?",
+            "UPDATE products SET supplier_product_id=?, supplier=?, auto_fulfill=1, delivery_type='auto' WHERE id=?",
             (sup_id, sup_name, local_id)
         )
         await m.answer(f"Product #{local_id} ({esc(p['name'])}) linked to supplier '<b>{esc(sup_name)}</b>' product <code>{esc(sup_id)}</code>.")
@@ -3725,7 +3725,7 @@ async def admin_supplier_unlink(m: Message, command: CommandObject):
         p = db.execute("SELECT * FROM products WHERE id=?", (local_id,)).fetchone()
         if not p:
             return await m.answer(f"Product #{local_id} not found.")
-        db.execute("UPDATE products SET supplier_product_id=NULL, auto_fulfill=0 WHERE id=?", (local_id,))
+        db.execute("UPDATE products SET supplier_product_id=NULL, auto_fulfill=0, delivery_type='manual' WHERE id=?", (local_id,))
         await m.answer(f"Product #{local_id} ({esc(p['name'])}) unlinked from supplier. Now uses local stock.")
     except Exception:
         await m.answer("Usage: /s_unlink <local_product_id>")
@@ -3733,10 +3733,11 @@ async def admin_supplier_unlink(m: Message, command: CommandObject):
 
 @dp.message(Command("s_orders"), is_admin)
 async def admin_supplier_orders(m: Message):
-    if not RESELLER_API_KEY:
+    client = supplier_registry.get() or reseller
+    if not client or not client.api_key:
         return await m.answer("⚠️ <code>RESELLER_API_KEY</code> is not configured in .env.")
     try:
-        orders = await reseller.get_orders()
+        orders = await client.get_orders()
         if not orders:
             return await m.answer("No orders found at supplier.")
         lines = ["<b>Recent Supplier Orders:</b>\n"]
