@@ -114,6 +114,7 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         CREATE TABLE IF NOT EXISTS users(
           id INTEGER PRIMARY KEY,
           lang TEXT DEFAULT 'en',
+          currency TEXT DEFAULT 'USD',
           created TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS products(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -410,6 +411,112 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
 
         back_support = next(b for row in markup.inline_keyboard for b in row if "Support" in b.text)
         self.assertEqual(back_support.style, "primary")
+
+        # Row 3: News button and Currency button beside each other
+        news_btn = next(b for row in markup.inline_keyboard for b in row if "News" in b.text)
+        self.assertEqual(news_btn.style, "primary")
+        self.assertEqual(news_btn.url, bot.CHANNEL_URL)
+
+        currency_btn = next(b for row in markup.inline_keyboard for b in row if "Currency" in b.text)
+        self.assertEqual(currency_btn.style, "primary")
+        self.assertEqual(currency_btn.callback_data, "currency")
+
+        news_row = next(row for row in markup.inline_keyboard if any("News" in b.text for b in row))
+        self.assertEqual(len(news_row), 2)
+        self.assertTrue(any("News" in b.text for b in news_row))
+        self.assertTrue(any("Currency" in b.text for b in news_row))
+
+    async def test_currency_menu_and_switching(self):
+        user_id = 9988
+        bot.get_user(user_id)
+        self.assertEqual(bot.get_user_currency(user_id), "USD")
+
+        # 1. Open currency menu
+        c_open = AsyncMock()
+        c_open.from_user.id = user_id
+        c_open.data = "currency"
+        c_open.message = AsyncMock()
+
+        with patch.object(bot, "edit", new=AsyncMock()) as mock_edit:
+            await bot.currency_menu(c_open)
+            mock_edit.assert_awaited_once()
+            args = mock_edit.call_args[0]
+            menu_markup = args[2]
+            currency_texts = [b.text for row in menu_markup.inline_keyboard for b in row]
+            self.assertTrue(any("USD" in t for t in currency_texts))
+            self.assertTrue(any("NGN" in t for t in currency_texts))
+
+        # 2. Switch currency to NGN
+        c_set = AsyncMock()
+        c_set.from_user.id = user_id
+        c_set.data = "setcurrency:NGN"
+        c_set.answer = AsyncMock()
+
+        with patch.object(bot, "edit", new=AsyncMock()) as mock_edit_set:
+            await bot.set_currency(c_set)
+            self.assertEqual(bot.get_user_currency(user_id), "NGN")
+            c_set.answer.assert_awaited_once()
+            mock_edit_set.assert_awaited_once()
+
+        # 3. Verify prices in home_kb, product list, product card, order summary, and order history are formatted in NGN
+        bot.set_usd_ngn_rate(1500)
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active, auto_fulfill) VALUES(991, 'Gemini 18 Months', 100, 1, 1)")
+        home_markup = bot.home_kb(uid=user_id)
+        gemini_btn = next(b for row in home_markup.inline_keyboard for b in row if "Gemini 18 Months" in b.text)
+        self.assertIn("₦1,500", gemini_btn.text)
+
+        p = bot.db.execute("SELECT * FROM products WHERE id=991").fetchone()
+        prods_text, prods_markup = bot.render_product_list(uid=user_id, prods=[p], page=1, cb_prefix="cat:gemini", ctx_prefix="c_gemini", back_cb="home")
+        prod_btn = next(b for row in prods_markup.inline_keyboard for b in row if "Gemini 18 Months" in b.text)
+        self.assertIn("₦1,500", prod_btn.text)
+
+        card_text, card_markup = bot.render_product_card(uid=user_id, p=p, ctx="home")
+        self.assertIn("₦1,500", card_text)
+        self.assertIn("$1.00 USD", card_text)
+
+        summary_text, summary_markup = bot.render_order_summary(uid=user_id, p=p, qty=2, ctx="home")
+        self.assertIn("₦3,000", summary_text)
+
+        # 4. Switch back to USD
+        c_set_usd = AsyncMock()
+        c_set_usd.from_user.id = user_id
+        c_set_usd.data = "setcurrency:USD"
+        c_set_usd.answer = AsyncMock()
+
+        with patch.object(bot, "edit", new=AsyncMock()):
+            await bot.set_currency(c_set_usd)
+            self.assertEqual(bot.get_user_currency(user_id), "USD")
+
+        home_markup_usd = bot.home_kb(uid=user_id)
+        gemini_btn_usd = next(b for row in home_markup_usd.inline_keyboard for b in row if "Gemini 18 Months" in b.text)
+        self.assertIn("$1.00", gemini_btn_usd.text)
+
+    async def test_cmd_currency(self):
+        m = AsyncMock()
+        m.from_user.id = 5544
+        m.from_user.language_code = "en"
+        m.answer = AsyncMock()
+
+        await bot.cmd_currency(m)
+        m.answer.assert_awaited_once()
+        args, kwargs = m.answer.call_args
+        self.assertIn("currency", args[0].lower())
+        markup = kwargs["reply_markup"]
+        btn_datas = [b.callback_data for row in markup.inline_keyboard for b in row]
+        self.assertIn("setcurrency:USD", btn_datas)
+        self.assertIn("setcurrency:NGN", btn_datas)
+
+    def test_format_user_price_helpers(self):
+        bot.set_usd_ngn_rate(1450)
+        self.assertEqual(bot.format_price(100, "USD"), "$1.00")
+        self.assertEqual(bot.format_price(100, "NGN"), "₦1,450")
+        self.assertEqual(bot.format_price(72, "NGN"), "₦1,044")
+
+        uid = 7766
+        bot.get_user(uid)
+        self.assertEqual(bot.format_user_price(100, uid), "$1.00")
+        bot.db.execute("UPDATE users SET currency='NGN' WHERE id=?", (uid,))
+        self.assertEqual(bot.format_user_price(100, uid), "₦1,450")
 
     def test_categories_kb_grid(self):
         markup = bot.categories_kb(uid=1001)

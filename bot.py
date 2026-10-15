@@ -129,6 +129,7 @@ PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY,
   lang TEXT DEFAULT 'en',
+  currency TEXT DEFAULT 'USD',
   created TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS products(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -569,6 +570,10 @@ def migrate_db():
     if "expected_amount" not in cols_o:
         db.execute("ALTER TABLE orders ADD COLUMN expected_amount TEXT DEFAULT NULL")
 
+    cols_u = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
+    if "currency" not in cols_u:
+        db.execute("ALTER TABLE users ADD COLUMN currency TEXT DEFAULT 'USD'")
+
     # Update categories for existing products if not assigned
     for row in db.execute("SELECT id, name, category FROM products").fetchall():
         if not row["category"] or row["category"] == "AI Tools":
@@ -952,6 +957,7 @@ TR = {
         "btn_shop": "🛍 Shop",
         "btn_orders": "📦 Order",
         "btn_lang": "🌐 Language",
+        "btn_currency": "💱 Currency",
         "btn_support": "💬 Support",
         "btn_news": "📢 News channel",
         "btn_back": "↩️ Back",
@@ -977,6 +983,8 @@ TR = {
         "no_orders": "You haven't made any orders yet. Browse the catalog to get started!",
         "lang_choose": "Choose your language:",
         "lang_set": "Language updated.",
+        "currency_choose": "💱 <b>Choose your currency:</b>\nPrices throughout the catalog will be displayed in your selected currency.",
+        "currency_set": "Currency updated to {currency}.",
         "stock_auto": "Instant Auto-Delivery",
         "supplier_error": "⚠️ Product is temporarily unavailable from supplier. Please try again shortly or contact support.",
         "checkout_unavailable": "Checkout is temporarily unavailable. Please contact support.",
@@ -987,6 +995,7 @@ TR = {
         "btn_shop": "🛍 Tienda",
         "btn_orders": "📦 Compras",
         "btn_lang": "🌐 Idioma",
+        "btn_currency": "💱 Moneda",
         "btn_support": "💬 Soporte",
         "btn_news": "📢 Canal de Noticias",
         "btn_back": "↩️ Volver",
@@ -1012,6 +1021,8 @@ TR = {
         "no_orders": "Aún no has realizado compras. ¡Explora el catálogo para comenzar!",
         "lang_choose": "Elige tu idioma:",
         "lang_set": "Idioma actualizado.",
+        "currency_choose": "💱 <b>Elige tu moneda:</b>\nLos precios se mostrarán en la moneda seleccionada.",
+        "currency_set": "Moneda actualizada a {currency}.",
         "stock_auto": "Entrega Automática Instantánea",
         "supplier_error": "⚠️ El producto no está disponible temporalmente en el proveedor. Intenta más tarde o contacta a soporte.",
         "checkout_unavailable": "El pago no está disponible temporalmente. Contacta a soporte.",
@@ -1022,6 +1033,7 @@ TR = {
         "btn_shop": "🛍 Магазин",
         "btn_orders": "📦 Покупки",
         "btn_lang": "🌐 Язык",
+        "btn_currency": "💱 Валюта",
         "btn_support": "💬 Поддержка",
         "btn_news": "📢 Новости",
         "btn_back": "↩️ Назад",
@@ -1047,6 +1059,8 @@ TR = {
         "no_orders": "У вас пока нет покупок. Перейдите в каталог, чтобы сделать заказ!",
         "lang_choose": "Выберите язык:",
         "lang_set": "Язык обновлён.",
+        "currency_choose": "💱 <b>Выберите валюту:</b>\nЦены в магазине будут отображаться в выбранной валюте.",
+        "currency_set": "Валюта обновлена на {currency}.",
         "stock_auto": "Мгновенная автовыдача",
         "supplier_error": "⚠️ Товар временно недоступен у поставщика. Пожалуйста, попробуйте позже или напишите в поддержку.",
         "checkout_unavailable": "Оплата временно недоступна. Напишите в поддержку.",
@@ -1057,6 +1071,7 @@ TR = {
         "btn_shop": "🛍 المتجر",
         "btn_orders": "📦 المشتريات",
         "btn_lang": "🌐 اللغة",
+        "btn_currency": "💱 العملة",
         "btn_support": "💬 الدعم",
         "btn_news": "📢 قناة الأخبار",
         "btn_back": "↩️ رجوع",
@@ -1082,6 +1097,8 @@ TR = {
         "no_orders": "ليس لديك أي مشتريات حتى الآن. تصفح الكتالوج للبدء!",
         "lang_choose": "اختر لغتك:",
         "lang_set": "تم تحديث اللغة.",
+        "currency_choose": "💱 <b>اختر العملة:</b>\nسيتم عرض الأسعار في البوت بالعملة المختارة.",
+        "currency_set": "تم تحديث العملة إلى {currency}.",
         "stock_auto": "تسليم فوري وتلقائي",
         "supplier_error": "⚠️ المنتج غير متوفر مؤقتًا لدى المورد. يرجى المحاولة لاحقًا أو التواصل مع الدعم.",
         "checkout_unavailable": "الدفع غير متاح مؤقتًا. يرجى التواصل مع الدعم.",
@@ -1089,18 +1106,56 @@ TR = {
     },
 }
 LANG_NAMES = {"en": "English", "es": "Español", "ru": "Русский", "ar": "العربية"}
+CURRENCY_NAMES = {
+    "USD": "💵 USD ($)",
+    "NGN": "🇳🇬 NGN (₦)",
+}
 
 # --------------------------------------------------------------------------
 # Helpers & UI Components
 # --------------------------------------------------------------------------
 def get_user(uid: int, lang_code: str | None = None):
-    row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-    if row:
-        return row
-    lang = (lang_code or "en")[:2]
-    lang = lang if lang in TR else "en"
-    db.execute("INSERT INTO users(id, lang) VALUES(?,?)", (uid, lang))
-    return db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    try:
+        row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        if row:
+            return row
+        lang = (lang_code or "en")[:2]
+        lang = lang if lang in TR else "en"
+        try:
+            db.execute("INSERT INTO users(id, lang, currency) VALUES(?,?, 'USD')", (uid, lang))
+        except sqlite3.OperationalError:
+            try:
+                db.execute("ALTER TABLE users ADD COLUMN currency TEXT DEFAULT 'USD'")
+                db.execute("INSERT INTO users(id, lang, currency) VALUES(?,?, 'USD')", (uid, lang))
+            except sqlite3.OperationalError:
+                db.execute("INSERT INTO users(id, lang) VALUES(?,?)", (uid, lang))
+        return db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    except Exception as e:
+        log.error("get_user error: %s", e)
+        return {"id": uid, "lang": "en", "currency": "USD"}
+
+
+def get_user_currency(uid: int) -> str:
+    try:
+        user = get_user(uid)
+        if user and "currency" in user.keys() and user["currency"]:
+            curr = str(user["currency"]).upper()
+            return curr if curr in CURRENCY_NAMES else "USD"
+    except Exception:
+        pass
+    return "USD"
+
+
+def format_price(cents: int, currency: str = "USD") -> str:
+    if currency == "NGN":
+        rate = get_usd_ngn_rate()
+        ngn_val = round((cents / 100.0) * rate)
+        return f"₦{ngn_val:,}"
+    return usd(cents)
+
+
+def format_user_price(cents: int, uid: int) -> str:
+    return format_price(cents, get_user_currency(uid))
 
 
 def t(uid: int, key: str, **kw) -> str:
@@ -1206,12 +1261,12 @@ def home_kb(uid: int):
     duo_emoji_id = get_custom_emoji_id("duolingo_product") or get_custom_emoji_id("duolingo") or get_custom_emoji_id("education")
 
     if gemini_p:
-        text_g = f"{gemini_p['name']} · {usd(gemini_p['price'])}" if gemini_emoji_id else f"1️⃣ {gemini_p['name']} · {usd(gemini_p['price'])}"
+        text_g = f"{gemini_p['name']} · {format_user_price(gemini_p['price'], uid)}" if gemini_emoji_id else f"1️⃣ {gemini_p['name']} · {format_user_price(gemini_p['price'], uid)}"
         rows.append([btn(text_g, f"p:{gemini_p['id']}:home", style="success", emoji_id=gemini_emoji_id)])
 
     if duo_p:
         badge = "🦉" if "duolingo" in duo_p["name"].lower() else "2️⃣"
-        text_d = f"{duo_p['name']} · {usd(duo_p['price'])}" if duo_emoji_id else f"{badge} {duo_p['name']} · {usd(duo_p['price'])}"
+        text_d = f"{duo_p['name']} · {format_user_price(duo_p['price'], uid)}" if duo_emoji_id else f"{badge} {duo_p['name']} · {format_user_price(duo_p['price'], uid)}"
         rows.append([btn(text_d, f"p:{duo_p['id']}:home", style="success", emoji_id=duo_emoji_id)])
 
     shop_emoji_id = get_custom_emoji_id("shop")
@@ -1219,13 +1274,15 @@ def home_kb(uid: int):
     lang_emoji_id = get_custom_emoji_id("lang") or get_custom_emoji_id("language")
     support_emoji_id = get_custom_emoji_id("support")
     news_emoji_id = get_custom_emoji_id("news") or get_custom_emoji_id("channel")
+    currency_emoji_id = get_custom_emoji_id("currency")
 
     rows += [
         [btn(t(uid, "btn_shop"), "shop", style="success", emoji_id=shop_emoji_id),
          btn(t(uid, "btn_orders"), "orders", style="success", emoji_id=orders_emoji_id)],
         [btn(t(uid, "btn_lang"), "lang", style="primary", emoji_id=lang_emoji_id),
          btn(t(uid, "btn_support"), url=SUPPORT_URL, style="primary", emoji_id=support_emoji_id)],
-        [btn(t(uid, "btn_news"), url=CHANNEL_URL, style="primary", emoji_id=news_emoji_id)],
+        [btn(t(uid, "btn_news"), url=CHANNEL_URL, style="primary", emoji_id=news_emoji_id),
+         btn(t(uid, "btn_currency"), "currency", style="primary", emoji_id=currency_emoji_id)],
     ]
     return kb(rows)
 
@@ -1307,7 +1364,8 @@ def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_pr
         status_mark = "✅" if is_avail else "⛔"
         btn_style = "success" if is_avail else "danger"
 
-        btn_text = f"{p['name']} · {usd(p['price'])} {status_mark}" if p_emoji_id else f"{icon} {p['name']} · {usd(p['price'])} {status_mark}"
+        p_price_disp = format_user_price(p['price'], uid)
+        btn_text = f"{p['name']} · {p_price_disp} {status_mark}" if p_emoji_id else f"{icon} {p['name']} · {p_price_disp} {status_mark}"
         rows.append([btn(btn_text, f"p:{p['id']}:{ctx_prefix}_{avail_only}_{page}", style=btn_style, emoji_id=p_emoji_id)])
 
     if total_pages > 1:
@@ -1359,18 +1417,26 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
         stock_line = "🔴 <b>Out of stock</b>"
         has_stock = False
 
+    curr = get_user_currency(uid)
+    if curr == "NGN":
+        rate = get_usd_ngn_rate()
+        ngn_val = round((p["price"] / 100.0) * rate)
+        price_disp = f"₦{ngn_val:,} (${p['price'] / 100:.2f} USD)"
+    else:
+        price_disp = f"{p['price'] / 100:.2f} USD"
+
     desc = (p["description"] or "").strip()
     if desc:
         text = (
             f"Item: <b>{esc(p['name'])}</b>\n"
             f"📝 Description: {esc(desc)}\n\n"
-            f"💵 Price: {p['price'] / 100:.2f} USD\n"
+            f"💵 Price: {price_disp}\n"
             f"{stock_line}"
         )
     else:
         text = (
             f"Item: <b>{esc(p['name'])}</b>\n\n"
-            f"💵 Price: {p['price'] / 100:.2f} USD\n"
+            f"💵 Price: {price_disp}\n"
             f"{stock_line}"
         )
 
@@ -1866,12 +1932,26 @@ def render_order_summary(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[
     unit_usd = f"{p['price'] / 100:.2f}"
     total_usd = f"{total_cents / 100:.2f}"
 
+    curr = get_user_currency(uid)
+    if curr == "NGN":
+        rate = get_usd_ngn_rate()
+        unit_ngn = round((p["price"] / 100.0) * rate)
+        total_ngn = round((total_cents / 100.0) * rate)
+        price_lines = (
+            f"🤑 <b>Price:</b> ₦{unit_ngn:,} (${unit_usd} each)\n"
+            f"🪙 <b>Total:</b> ₦{total_ngn:,} (${total_usd} USDT)\n\n"
+        )
+    else:
+        price_lines = (
+            f"🤑 <b>Price:</b> ${unit_usd} each\n"
+            f"🪙 <b>Total:</b> ${total_usd} USDT\n\n"
+        )
+
     text = (
         "🧾 <b>Order Summary</b>\n\n"
         f"🥇 {icon} <b>{esc(p['name'])}</b>\n"
         f"🔢 <b>Qty:</b> {qty}\n"
-        f"🤑 <b>Price:</b> ${unit_usd} each\n"
-        f"🪙 <b>Total:</b> ${total_usd} USDT\n\n"
+        f"{price_lines}"
         "💡 <b>Buy more & save:</b>\n"
         "• 10+ redeem links — save $0.02 each\n"
         "• 20+ redeem links — save $0.04 each\n"
@@ -2741,10 +2821,11 @@ async def recent_purchases(event: Message | CallbackQuery):
         text = t(uid, "no_orders")
     else:
         def render_order_item(o):
+            p_disp = format_user_price(o['price'], uid)
             if o["status"] == "completed" and o["payload"]:
-                return f"📦 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {usd(o['price'])}\n<code>{esc(o['payload'])}</code>"
+                return f"📦 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {p_disp}\n<code>{esc(o['payload'])}</code>"
             else:
-                return f"🟡 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {usd(o['price'])}\n<i>Status: Processing / Awaiting support delivery</i>"
+                return f"🟡 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {p_disp}\n<i>Status: Processing / Awaiting support delivery</i>"
 
         text = t(uid, "orders_title") + "\n\n" + "\n\n".join(render_order_item(o) for o in rows)
         while len(text) > 3900 and len(rows) > 1:
@@ -2776,7 +2857,11 @@ async def cmd_support(m: Message):
 @dp.callback_query(F.data == "lang")
 async def lang_menu(c: CallbackQuery):
     uid = c.from_user.id
-    rows = [[btn(name, f"setlang:{code}", style="primary")] for code, name in LANG_NAMES.items()]
+    current_lang = get_user(uid)["lang"]
+    rows = []
+    for code, name in LANG_NAMES.items():
+        mark = " ✅" if code == current_lang else ""
+        rows.append([btn(f"{name}{mark}", f"setlang:{code}", style="primary")])
     rows.append([btn(t(uid, "btn_back"), "home", style="danger")])
     await edit(c, t(uid, "lang_choose"), kb(rows))
 
@@ -2787,8 +2872,61 @@ async def set_lang(c: CallbackQuery):
     if code in TR:
         get_user(c.from_user.id)
         db.execute("UPDATE users SET lang=? WHERE id=?", (code, c.from_user.id))
+        await c.answer(t(c.from_user.id, "lang_set"), show_alert=False)
     uid = c.from_user.id
     await edit(c, t(uid, "welcome"), home_kb(uid))
+
+
+@dp.message(Command("lang"))
+@dp.message(Command("language"))
+async def cmd_lang(m: Message):
+    uid = m.from_user.id
+    get_user(uid, m.from_user.language_code)
+    current_lang = get_user(uid)["lang"]
+    rows = []
+    for code, name in LANG_NAMES.items():
+        mark = " ✅" if code == current_lang else ""
+        rows.append([btn(f"{name}{mark}", f"setlang:{code}", style="primary")])
+    rows.append([btn(t(uid, "btn_back"), "home", style="danger")])
+    await m.answer(t(uid, "lang_choose"), reply_markup=kb(rows))
+
+
+@dp.callback_query(F.data == "currency")
+async def currency_menu(c: CallbackQuery):
+    uid = c.from_user.id
+    current_curr = get_user_currency(uid)
+    currency_emoji_id = get_custom_emoji_id("currency")
+    rows = []
+    for code, name in CURRENCY_NAMES.items():
+        mark = " ✅" if code == current_curr else ""
+        rows.append([btn(f"{name}{mark}", f"setcurrency:{code}", style="primary", emoji_id=currency_emoji_id)])
+    rows.append([btn(t(uid, "btn_back"), "home", style="danger")])
+    await edit(c, t(uid, "currency_choose"), kb(rows))
+
+
+@dp.callback_query(F.data.startswith("setcurrency:"))
+async def set_currency(c: CallbackQuery):
+    code = c.data.split(":")[1].upper()
+    uid = c.from_user.id
+    if code in CURRENCY_NAMES:
+        get_user(uid)
+        db.execute("UPDATE users SET currency=? WHERE id=?", (code, uid))
+        await c.answer(t(uid, "currency_set", currency=code), show_alert=False)
+    await edit(c, t(uid, "welcome"), home_kb(uid))
+
+
+@dp.message(Command("currency"))
+async def cmd_currency(m: Message):
+    uid = m.from_user.id
+    get_user(uid, m.from_user.language_code)
+    current_curr = get_user_currency(uid)
+    currency_emoji_id = get_custom_emoji_id("currency")
+    rows = []
+    for code, name in CURRENCY_NAMES.items():
+        mark = " ✅" if code == current_curr else ""
+        rows.append([btn(f"{name}{mark}", f"setcurrency:{code}", style="primary", emoji_id=currency_emoji_id)])
+    rows.append([btn(t(uid, "btn_back"), "home", style="danger")])
+    await m.answer(t(uid, "currency_choose"), reply_markup=kb(rows))
 
 
 # --------------------------------------------------------------------------
@@ -3850,6 +3988,8 @@ async def main():
             BotCommand(command="menu", description="Open main menu"),
             BotCommand(command="shop", description="Open shop"),
             BotCommand(command="order", description="Order history"),
+            BotCommand(command="currency", description="Switch currency (USD/NGN)"),
+            BotCommand(command="lang", description="Switch language"),
             BotCommand(command="support", description="Contacts support"),
         ])
         admin_cmd_list = [
