@@ -1508,8 +1508,8 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
         return payload, None
 
     # Option B: Local Stock Items
-    db.execute("BEGIN IMMEDIATE")
     try:
+        db.execute("BEGIN IMMEDIATE")
         s_items = db.execute(
             "SELECT * FROM stock WHERE product_id=? AND sold=0 ORDER BY id LIMIT ?",
             (p["id"], qty)
@@ -1524,7 +1524,10 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
         else:
             db.execute("ROLLBACK")
     except Exception:
-        db.execute("ROLLBACK")
+        try:
+            db.execute("ROLLBACK")
+        except Exception:
+            pass
         raise
 
     # Option C: Manual / Assisted Fulfillment
@@ -2409,6 +2412,7 @@ async def handle_user_text_input(m: Message):
         raw_term = m.text.strip()
         clean_term = "".join(c for c in raw_term if c.isalnum() or c in (" ", "-", ".")).strip()[:24]
         if not clean_term:
+            pending_inputs[uid] = state
             return await m.answer("⚠️ Please enter a valid search keyword (or send /cancel):")
         prods = db.execute(
             "SELECT * FROM products WHERE (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY id",
@@ -2425,6 +2429,10 @@ async def handle_user_text_input(m: Message):
     elif action == "txid":
         oid = state["oid"]
         txid = m.text.strip()
+        if not txid:
+            pending_inputs[uid] = state
+            return await m.answer("⚠️ Please enter a valid transaction reference or hash (or send /cancel):")
+
         o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         if not o:
             return await m.answer("⚠️ Order not found.")
@@ -2439,7 +2447,8 @@ async def handle_user_text_input(m: Message):
             (txid, oid)
         ).fetchone()
         if dup:
-            return await m.answer(f"⚠️ This Transaction ID was already submitted for Order #{dup['id']}. Please provide a valid, unique transaction reference.")
+            pending_inputs[uid] = state
+            return await m.answer(f"⚠️ This Transaction ID was already submitted for Order #{dup['id']}. Please provide a valid, unique transaction reference (or send /cancel):")
 
         db.execute("UPDATE orders SET txid=? WHERE id=?", (txid, oid))
         method = (o["payment_method"] or "").lower()
@@ -3033,7 +3042,7 @@ async def admin_products(m: Message):
 
 
 @dp.message(Command("addproduct"), is_admin)
-async def admin_addproduct(m: Message, command: CommandObject):
+async def admin_addproduct(m: Message, command: CommandObject = None):
     try:
         if not command or not command.args:
             return await m.answer("Usage: /addproduct <price_usd> <name> [| description]")
@@ -3051,7 +3060,7 @@ async def admin_addproduct(m: Message, command: CommandObject):
 
 
 @dp.message(Command("setprice"), is_admin)
-async def admin_setprice(m: Message, command: CommandObject):
+async def admin_setprice(m: Message, command: CommandObject = None):
     try:
         if not command or not command.args:
             return await m.answer("Usage: /setprice <product_id> <price_usd>\nExample: /setprice 1 12.50")
@@ -3084,7 +3093,7 @@ async def admin_setprice(m: Message, command: CommandObject):
 
 
 @dp.message(Command("setmargin"), is_admin)
-async def admin_setmargin(m: Message, command: CommandObject):
+async def admin_setmargin(m: Message, command: CommandObject = None):
     try:
         if not command or not command.args:
             return await m.answer("Usage: /setmargin <product_id> <margin_percent>\nExamples: /setmargin 1 50% or /setmargin 1 35")
@@ -3110,7 +3119,7 @@ async def admin_setmargin(m: Message, command: CommandObject):
 
 
 @dp.message(Command("toggle"), is_admin)
-async def admin_toggle(m: Message, command: CommandObject):
+async def admin_toggle(m: Message, command: CommandObject = None):
     try:
         if not command or not command.args:
             return await m.answer("Usage: /toggle <product_id>")
@@ -3127,7 +3136,7 @@ async def admin_toggle(m: Message, command: CommandObject):
 
 
 @dp.message(Command("addstock"), is_admin)
-async def admin_addstock(m: Message, command: CommandObject):
+async def admin_addstock(m: Message, command: CommandObject = None):
     try:
         if not command or not command.args:
             return await m.answer("Usage: /addstock <product_id> <item>  (one item per line)")
@@ -3146,18 +3155,25 @@ async def admin_addstock(m: Message, command: CommandObject):
 
 
 @dp.message(Command("refund"), is_admin)
-async def admin_refund(m: Message, command: CommandObject):
+async def admin_refund(m: Message, command: CommandObject = None):
     try:
         if not command or not command.args:
             return await m.answer("Usage: /refund <order_id>")
         oid = int(command.args.strip())
-        db.execute("BEGIN IMMEDIATE")
-        o = db.execute("SELECT * FROM orders WHERE id=? AND refunded=0", (oid,)).fetchone()
-        if not o:
-            db.execute("ROLLBACK")
-            return await m.answer("Order not found or already refunded.")
-        db.execute("UPDATE orders SET refunded=1, status='refunded' WHERE id=?", (oid,))
-        db.execute("COMMIT")
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            o = db.execute("SELECT * FROM orders WHERE id=? AND refunded=0", (oid,)).fetchone()
+            if not o:
+                db.execute("ROLLBACK")
+                return await m.answer("Order not found or already refunded.")
+            db.execute("UPDATE orders SET refunded=1, status='refunded' WHERE id=?", (oid,))
+            db.execute("COMMIT")
+        except Exception:
+            try:
+                db.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
         try:
             await m.bot.send_message(
                 o["user_id"],
@@ -3169,10 +3185,12 @@ async def admin_refund(m: Message, command: CommandObject):
         await m.answer(f"Order #{oid} marked as refunded.")
     except (ValueError, TypeError):
         await m.answer("Usage: /refund <order_id>")
+    except Exception as e:
+        await m.answer(f"Failed to process refund: {esc(str(e))}")
 
 
 @dp.message(Command("deliver"), is_admin)
-async def admin_deliver(m: Message, command: CommandObject):
+async def admin_deliver(m: Message, command: CommandObject = None):
     try:
         if not command or not command.args:
             return await m.answer("Usage: /deliver <order_id> <delivered_content_or_link>")
@@ -3222,7 +3240,7 @@ async def admin_stats(m: Message):
 
 
 @dp.message(Command("broadcast"), is_admin)
-async def admin_broadcast(m: Message, command: CommandObject):
+async def admin_broadcast(m: Message, command: CommandObject = None):
     if not command or not command.args:
         return await m.answer("Usage: /broadcast <text>")
     sent = 0

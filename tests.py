@@ -1892,6 +1892,43 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.usd("invalid"), "$0.00")
         self.assertEqual(bot.usd("500"), "$5.00")
 
+    async def test_pending_inputs_retention(self):
+        uid = 99881
+        m = AsyncMock()
+        m.from_user.id = uid
+
+        # 1. Test search with invalid characters keeps state
+        bot.pending_inputs[uid] = {"action": "search"}
+        m.text = "???@@@"
+        await bot.handle_user_text_input(m)
+        self.assertIn("valid search keyword", m.answer.call_args[0][0])
+        self.assertIn(uid, bot.pending_inputs)
+        self.assertEqual(bot.pending_inputs[uid]["action"], "search")
+
+        # 2. Test txid with empty string or duplicate keeps state
+        oid = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(?,?,?,?,?)",
+                             (uid, 1, "Item", 1000, "pending")).lastrowid
+        bot.pending_inputs[uid] = {"action": "txid", "oid": oid}
+        m.text = "   "
+        await bot.handle_user_text_input(m)
+        self.assertIn("valid transaction reference", m.answer.call_args[0][0])
+        self.assertIn(uid, bot.pending_inputs)
+
+        # Insert conflicting completed order with existing txid
+        bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, status, txid) VALUES(?,?,?,?,?,?)",
+                       (99882, 1, "Item 2", 1000, "completed", "REPLAY_TX_123"))
+        m.text = "REPLAY_TX_123"
+        await bot.handle_user_text_input(m)
+        self.assertIn("already submitted", m.answer.call_args[0][0])
+        self.assertIn(uid, bot.pending_inputs)
+        bot.pending_inputs.pop(uid, None)
+
+    async def test_admin_refund_resilience(self):
+        m = AsyncMock()
+        await bot.admin_refund(m)
+        self.assertIn("Usage: /refund", m.answer.call_args[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()
+
