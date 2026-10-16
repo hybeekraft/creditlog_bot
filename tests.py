@@ -2030,6 +2030,189 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         self.assertIn(uid, bot.pending_inputs)
         bot.pending_inputs.pop(uid, None)
 
+    def test_parse_currency_amount(self):
+        # Set known exchange rate
+        bot.set_usd_ngn_rate(1450)
+
+        # 1. USD formats
+        cents, curr, val = bot.parse_currency_amount("$12.50")
+        self.assertEqual(cents, 1250)
+        self.assertEqual(curr, "USD")
+        self.assertEqual(val, 12.50)
+
+        cents, curr, val = bot.parse_currency_amount("12.50 USD")
+        self.assertEqual(cents, 1250)
+        self.assertEqual(curr, "USD")
+
+        cents, curr, val = bot.parse_currency_amount("12.50 usd")
+        self.assertEqual(cents, 1250)
+
+        cents, curr, val = bot.parse_currency_amount("12.50", default_curr="USD")
+        self.assertEqual(cents, 1250)
+        self.assertEqual(curr, "USD")
+
+        # 2. NGN formats (14,500 NGN at 1450 = 1000 cents = $10.00)
+        cents, curr, val = bot.parse_currency_amount("₦14,500")
+        self.assertEqual(cents, 1000)
+        self.assertEqual(curr, "NGN")
+        self.assertEqual(val, 14500.0)
+
+        cents, curr, val = bot.parse_currency_amount("14500 NGN")
+        self.assertEqual(cents, 1000)
+        self.assertEqual(curr, "NGN")
+
+        cents, curr, val = bot.parse_currency_amount("14500 NAIRA")
+        self.assertEqual(cents, 1000)
+        self.assertEqual(curr, "NGN")
+
+        cents, curr, val = bot.parse_currency_amount("N14500")
+        self.assertEqual(cents, 1000)
+        self.assertEqual(curr, "NGN")
+
+        # Fallback to default_curr when no explicit symbol
+        cents, curr, val = bot.parse_currency_amount("14500", default_curr="NGN")
+        self.assertEqual(cents, 1000)
+        self.assertEqual(curr, "NGN")
+
+        cents, curr, val = bot.parse_currency_amount("14500", default_curr="USD")
+        self.assertEqual(cents, 1450000)
+        self.assertEqual(curr, "USD")
+
+        # 3. Invalid inputs
+        with self.assertRaises(ValueError):
+            bot.parse_currency_amount("")
+        with self.assertRaises(ValueError):
+            bot.parse_currency_amount("0")
+        with self.assertRaises(ValueError):
+            bot.parse_currency_amount("-15")
+        with self.assertRaises(ValueError):
+            bot.parse_currency_amount("invalid_price")
+
+    async def test_admin_setprice_multi_currency(self):
+        bot.set_usd_ngn_rate(1450)
+        admin_id = 111222333
+        bot.db.execute("INSERT OR REPLACE INTO users(id, currency, lang) VALUES(?, 'USD', 'en')", (admin_id,))
+        pid = bot.db.execute("INSERT INTO products(name, description, price, category, active) VALUES('Test Sub', 'Desc', 500, 'AI Tools', 1)").lastrowid
+
+        m = AsyncMock()
+        m.from_user.id = admin_id
+        cmd = AsyncMock()
+
+        # Set price in NGN: 14,500 NGN -> 1000 cents ($10.00)
+        cmd.args = f"{pid} 14500 NGN"
+        await bot.admin_setprice(m, cmd)
+        p = bot.db.execute("SELECT price FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(p["price"], 1000)
+        text = m.answer.call_args[0][0]
+        self.assertIn("$10.00", text)
+        self.assertIn("₦14,500", text)
+
+        # Set price using symbol ₦
+        m.reset_mock()
+        cmd.args = f"{pid} ₦29000"
+        await bot.admin_setprice(m, cmd)
+        p = bot.db.execute("SELECT price FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(p["price"], 2000)
+        text = m.answer.call_args[0][0]
+        self.assertIn("$20.00", text)
+        self.assertIn("₦29,000", text)
+
+        # Set price with admin's currency set to NGN and no explicit symbol
+        bot.db.execute("UPDATE users SET currency='NGN' WHERE id=?", (admin_id,))
+        m.reset_mock()
+        cmd.args = f"{pid} 14500"
+        await bot.admin_setprice(m, cmd)
+        p = bot.db.execute("SELECT price FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(p["price"], 1000)
+
+        # Set price in USD explicitly even if admin currency is NGN
+        m.reset_mock()
+        cmd.args = f"{pid} $5.00"
+        await bot.admin_setprice(m, cmd)
+        p = bot.db.execute("SELECT price FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(p["price"], 500)
+
+    async def test_admin_addproduct_multi_currency(self):
+        bot.set_usd_ngn_rate(1450)
+        admin_id = 111222333
+        bot.db.execute("INSERT OR REPLACE INTO users(id, currency, lang) VALUES(?, 'USD', 'en')", (admin_id,))
+
+        m = AsyncMock()
+        m.from_user.id = admin_id
+        cmd = AsyncMock()
+
+        # Add product in USD
+        cmd.args = "$15.00 ChatGPT Plus Account | Full access"
+        await bot.admin_addproduct(m, cmd)
+        p1 = bot.db.execute("SELECT * FROM products WHERE name='ChatGPT Plus Account'").fetchone()
+        self.assertIsNotNone(p1)
+        self.assertEqual(p1["price"], 1500)
+        text1 = m.answer.call_args[0][0]
+        self.assertIn("$15.00", text1)
+        self.assertIn("₦21,750", text1)
+
+        # Add product in NGN
+        m.reset_mock()
+        cmd.args = "14500 NGN Netflix Premium 1M | UHD 4K"
+        await bot.admin_addproduct(m, cmd)
+        p2 = bot.db.execute("SELECT * FROM products WHERE name='Netflix Premium 1M'").fetchone()
+        self.assertIsNotNone(p2)
+        self.assertEqual(p2["price"], 1000)
+        text2 = m.answer.call_args[0][0]
+        self.assertIn("$10.00", text2)
+        self.assertIn("₦14,500", text2)
+
+    async def test_admin_views_in_chosen_currency(self):
+        bot.set_usd_ngn_rate(1450)
+        admin_id = 111222333
+
+        # Test admin products with USD active
+        bot.db.execute("INSERT OR REPLACE INTO users(id, currency, lang) VALUES(?, 'USD', 'en')", (admin_id,))
+        m = AsyncMock()
+        m.from_user.id = admin_id
+        await bot.admin_products(m)
+        text_usd = m.answer.call_args[0][0]
+        self.assertIn("Currency: USD", text_usd)
+
+        # Test admin products with NGN active
+        bot.db.execute("UPDATE users SET currency='NGN' WHERE id=?", (admin_id,))
+        m.reset_mock()
+        await bot.admin_products(m)
+        text_ngn = m.answer.call_args[0][0]
+        self.assertIn("Currency: NGN", text_ngn)
+
+        # Test admin stats in both currencies
+        m.reset_mock()
+        await bot.admin_stats(m)
+        text_stats = m.answer.call_args[0][0]
+        self.assertIn("Total revenue:", text_stats)
+        self.assertIn("USD", text_stats)
+        self.assertIn("₦", text_stats)
+
+    async def test_custom_qty_and_payment_screens_currency_sync(self):
+        bot.set_usd_ngn_rate(1450)
+        uid = 556677
+        bot.db.execute("INSERT OR REPLACE INTO users(id, currency, lang) VALUES(?, 'NGN', 'en')", (uid,))
+        pid = bot.db.execute("INSERT INTO products(name, description, price, category, active) VALUES('Sync Item', 'Desc', 1000, 'AI Tools', 1)").lastrowid
+
+        # 1. Custom Qty
+        c = AsyncMock()
+        c.from_user.id = uid
+        c.data = f"cqty:{pid}:shop"
+        await bot.on_custom_qty(c)
+        msg_text = c.message.answer.call_args[0][0]
+        self.assertIn("💵 <b>Unit Price:</b> ₦14,500", msg_text)
+
+        # 2. Manual Pay Info
+        oid = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(?,?,?,?,?)",
+                             (uid, pid, "Sync Item", 1000, "pending")).lastrowid
+        c.reset_mock()
+        c.data = f"manual_pay:{oid}"
+        await bot.manual_pay_info(c)
+        pay_info_text = c.edit_text.call_args[0][0] if c.edit_text.called else (c.message.edit_text.call_args[0][0] if c.message.edit_text.called else "")
+        self.assertIn("₦14,500", pay_info_text)
+        self.assertIn("$10.00 USDT", pay_info_text)
+
     async def test_admin_refund_resilience(self):
         m = AsyncMock()
         await bot.admin_refund(m)

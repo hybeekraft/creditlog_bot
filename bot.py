@@ -1137,10 +1137,11 @@ def get_user(uid: int, lang_code: str | None = None):
 
 def get_user_currency(uid: int) -> str:
     try:
-        user = get_user(uid)
-        if user and "currency" in user.keys() and user["currency"]:
-            curr = str(user["currency"]).upper()
-            return curr if curr in CURRENCY_NAMES else "USD"
+        if isinstance(uid, int):
+            user = get_user(uid)
+            if user and "currency" in user.keys() and user["currency"]:
+                curr = str(user["currency"]).upper()
+                return curr if curr in CURRENCY_NAMES else "USD"
     except Exception:
         pass
     return "USD"
@@ -1156,6 +1157,67 @@ def format_price(cents: int, currency: str = "USD") -> str:
 
 def format_user_price(cents: int, uid: int) -> str:
     return format_price(cents, get_user_currency(uid))
+
+
+def parse_currency_amount(raw_amount: str, default_curr: str = "USD") -> Tuple[int, str, float]:
+    """
+    Parses a user or admin provided price string in any currency (USD or NGN).
+    Supports:
+      - '$12.50', '12.50 USD', '12.50', '$12' -> USD ($12.50 -> 1250 cents)
+      - '₦15,000', '15000 NGN', '15,000 NGN', 'N15000', '15000 NAIRA' -> NGN (converted to USD cents via get_usd_ngn_rate())
+      - If no currency symbol or code is provided:
+          - If default_curr == 'NGN': treated as NGN value and converted to USD cents.
+          - Otherwise: treated as USD amount.
+    Returns:
+      (cents: int, currency: str, original_val: float)
+    Raises:
+      ValueError if amount is invalid or <= 0
+    """
+    if not raw_amount or not str(raw_amount).strip():
+        raise ValueError("Price amount cannot be empty.")
+    s = str(raw_amount).strip()
+
+    # Detect currency indicator
+    upper = s.upper()
+    if "₦" in upper or "NGN" in upper or "NAIRA" in upper:
+        curr = "NGN"
+    elif "$" in upper or "USD" in upper:
+        curr = "USD"
+    elif upper.startswith("N") and len(upper) > 1 and (upper[1].isdigit() or upper[1] in " ,."):
+        curr = "NGN"
+    else:
+        curr = (default_curr or "USD").upper()
+        if curr not in ("USD", "NGN"):
+            curr = "USD"
+
+    # Clean string to numeric characters
+    cleaned = (
+        upper.replace("USD", "")
+        .replace("NGN", "")
+        .replace("NAIRA", "")
+        .replace("$", "")
+        .replace("₦", "")
+        .replace(",", "")
+        .strip()
+    )
+    if cleaned.startswith("N"):
+        cleaned = cleaned[1:].strip()
+
+    try:
+        val = float(cleaned)
+    except (ValueError, TypeError):
+        raise ValueError(f"Could not parse numeric price from '{raw_amount}'.")
+
+    if val <= 0:
+        raise ValueError("Price must be greater than 0.")
+
+    if curr == "NGN":
+        rate = get_usd_ngn_rate()
+        cents = max(1, round((val / rate) * 100))
+        return (cents, "NGN", val)
+    else:
+        cents = max(1, round(val * 100))
+        return (cents, "USD", val)
 
 
 def t(uid: int, key: str, **kw) -> str:
@@ -2123,12 +2185,15 @@ async def on_pay_option_selected(c: CallbackQuery):
             db.execute("DELETE FROM orders WHERE id=?", (oid,))
             return await c.answer("⚠️ CryptoBot checkout could not be initialized. Please try again or choose another payment method.", show_alert=True)
 
+        user_curr = get_user_currency(c.from_user.id)
+        ngn_approx = f" (≈ {format_price(total_cents, 'NGN')})" if user_curr == "NGN" else ""
+
         text = (
             "<u>🤖 <b>CryptoBot Checkout</b></u>\n"
             "────────────────────────\n\n"
             f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
             f"🔢 <b>Quantity:</b> {qty}\n"
-            f"➡️ <b>Total to pay:</b> <b>${total_usdt} USDT</b>\n"
+            f"➡️ <b>Total to pay:</b> <b>${total_usdt} USDT{ngn_approx}</b>\n"
             "────────────────────────\n\n"
             f"1. Tap <b>Pay ${total_usdt} USDT</b> below to open CryptoBot.\n"
             "2. Complete payment in Telegram.\n"
@@ -2144,13 +2209,15 @@ async def on_pay_option_selected(c: CallbackQuery):
 
     # 2. Binance Pay
     if method == "binance":
+        user_curr = get_user_currency(c.from_user.id)
+        ngn_approx = f" (≈ {format_price(total_cents, 'NGN')})" if user_curr == "NGN" else ""
         text = (
             "<u>🟡 <b>Binance Pay</b></u>\n"
             "────────────────────────\n"
             f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
             f"🔢 <b>Quantity:</b> {qty}\n"
             "➡️ <b>Send exactly this amount:</b>\n"
-            f"<code>{total_usdt} USDT</code>\n"
+            f"<code>{total_usdt} USDT</code>{ngn_approx}\n"
             "👆 <i>Tap to copy.</i>\n"
             "────────────────────────\n"
             "🏦 <b>Binance Pay ID:</b>\n"
@@ -2176,6 +2243,8 @@ async def on_pay_option_selected(c: CallbackQuery):
     extra_suffix = f"{(oid % 90) + 10:02d}"
     exact_crypto_amount = f"{total_cents / 100:.2f}{extra_suffix}"
     db.execute("UPDATE orders SET expected_amount=? WHERE id=?", (f"{exact_crypto_amount} USDT", oid))
+    user_curr = get_user_currency(c.from_user.id)
+    ngn_approx = f" (≈ {format_price(total_cents, 'NGN')})" if user_curr == "NGN" else ""
 
     # 3. USDT BEP20 (Screenshot 2)
     if method == "bep20":
@@ -2185,7 +2254,7 @@ async def on_pay_option_selected(c: CallbackQuery):
             f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
             f"🔢 <b>Quantity:</b> {qty}\n"
             "➡️ <b>Send exactly this amount:</b>\n"
-            f"<code>{exact_crypto_amount} USDT</code>\n"
+            f"<code>{exact_crypto_amount} USDT</code>{ngn_approx}\n"
             "👆 <i>Tap to copy — the extra decimals are your unique order ID. Sending a different amount will NOT verify.</i>\n"
             "────────────────────────\n"
             "🏦 <b>Deposit Address (BEP20):</b>\n"
@@ -2217,7 +2286,7 @@ async def on_pay_option_selected(c: CallbackQuery):
             f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
             f"🔢 <b>Quantity:</b> {qty}\n"
             "➡️ <b>Send exactly this amount:</b>\n"
-            f"<code>{exact_crypto_amount} USDT</code>\n"
+            f"<code>{exact_crypto_amount} USDT</code>{ngn_approx}\n"
             "👆 <i>Tap to copy — the extra decimals are your unique order ID.</i>\n"
             "────────────────────────\n"
             "🏦 <b>Deposit Address (TRC20):</b>\n"
@@ -2429,7 +2498,8 @@ async def on_custom_qty(c: CallbackQuery):
     count = stock_count(pid) if (not is_auto and deliv_type != "manual") else 999
 
     await c.message.answer(
-        f"✏️ <b>Enter Custom Quantity for {esc(p['name'])}:</b>\n\n"
+        f"✏️ <b>Enter Custom Quantity for {esc(p['name'])}:</b>\n"
+        f"💵 <b>Unit Price:</b> {format_user_price(p['price'], uid)}\n\n"
         f"Please send the quantity you want to purchase (1 to {count} pcs).\n"
         f"Send /cancel to return to the product card."
     )
@@ -2703,7 +2773,7 @@ async def check_cryptobot_payment(c: CallbackQuery):
             await c.answer()
         elif payload:
             await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
-            await notify_admins(c.bot, f"✅ Order #{oid} paid via @CryptoBot & delivered: {esc(o['product_name'])} ({usd(o['price'])}) to user {uid}")
+            await notify_admins(c.bot, f"✅ Order #{oid} paid via @CryptoBot & delivered: {esc(o['product_name'])} ({usd(o['price'])} / {format_price(o['price'], 'NGN')}) to user {uid}")
             await c.answer()
         else:
             await c.answer(t(uid, err or "supplier_error"), show_alert=True)
@@ -2767,7 +2837,7 @@ async def check_paystack_payment_callback(c: CallbackQuery):
             await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
             await notify_admins(
                 c.bot,
-                f"✅ Order #{oid} paid via Paystack & delivered: {esc(o['product_name'])} ({usd(o['price'])}) to user {uid} (Ref: {esc(ref_to_check)})"
+                f"✅ Order #{oid} paid via Paystack & delivered: {esc(o['product_name'])} ({format_price(o['price'], 'NGN')} / {usd(o['price'])}) to user {uid} (Ref: {esc(ref_to_check)})"
             )
             await c.answer("✅ Payment confirmed and delivered!", show_alert=False)
         else:
@@ -2791,7 +2861,10 @@ async def manual_pay_info(c: CallbackQuery):
     if not o:
         return await c.answer("Order not found.", show_alert=True)
     details = manual_crypto_details()
-    text = t(uid, "manual_crypto_info", oid=oid, name=esc(o["product_name"]), amount=usd(o["price"]), details=details)
+    amount_str = format_user_price(o["price"], uid)
+    if get_user_currency(uid) == "NGN":
+        amount_str = f"{amount_str} ({usd(o['price'])} USDT)"
+    text = t(uid, "manual_crypto_info", oid=oid, name=esc(o["product_name"]), amount=amount_str, details=details)
     await edit(c, text, kb([[btn(t(uid, "btn_support"), url=SUPPORT_URL, style="primary")],
                             [btn(t(uid, "btn_back"), f"p:{o['product_id']}", style="danger")] ]))
 
@@ -2938,8 +3011,8 @@ async def admin_help(m: Message):
         "<b>Admin Commands</b>\n\n"
         "<b>Catalog & Products</b>\n"
         "/products - List all products with margins\n"
-        "/addproduct &lt;price_usd&gt; &lt;name&gt; [| description]\n"
-        "/setprice &lt;product_id&gt; &lt;price_usd&gt;\n"
+        "/addproduct &lt;price&gt; [currency] &lt;name&gt; [| description] (e.g. $12.50 or 15000 NGN)\n"
+        "/setprice &lt;product_id&gt; &lt;price&gt; [currency] (e.g. /setprice 1 15000 NGN or $12.50)\n"
         "/setmargin &lt;product_id&gt; &lt;margin_%&gt; (e.g. /setmargin 1 60%)\n"
         "/toggle &lt;product_id&gt;  (activate/deactivate)\n"
         "/addstock &lt;product_id&gt; &lt;item&gt;  (manual items, 1 per line)\n"
@@ -3139,7 +3212,8 @@ async def admin_products(m: Message):
     rows = db.execute("SELECT * FROM products ORDER BY id").fetchall()
     if not rows:
         return await m.answer("No products.")
-    lines = ["📦 <b>Store Products (Color-Coded Status):</b>\n"]
+    admin_curr = get_user_currency(m.from_user.id)
+    lines = [f"📦 <b>Store Products (Currency: {admin_curr}):</b>\n"]
     for p in rows:
         is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
         sup_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
@@ -3169,10 +3243,16 @@ async def admin_products(m: Message):
             calc_m = round(((p["price"] - cost) / cost) * 100)
             margin_info = f" · margin ~{calc_m}%"
 
-        cost_disp = f" (cost {usd(p['supplier_price'])})" if p["supplier_price"] else ""
+        if admin_curr == "NGN":
+            price_disp = f"{format_price(p['price'], 'NGN')} ({usd(p['price'])})"
+            cost_disp = f" (cost {format_price(p['supplier_price'], 'NGN')} / {usd(p['supplier_price'])})" if p["supplier_price"] else ""
+        else:
+            price_disp = f"{usd(p['price'])} ({format_price(p['price'], 'NGN')})"
+            cost_disp = f" (cost {usd(p['supplier_price'])})" if p["supplier_price"] else ""
+
         cat_disp = f" [{p['category']}]" if ("category" in p.keys() and p["category"]) else ""
         lines.append(
-            f"{status_badge} #{p['id']}. <b>{esc(p['name'])}</b>{cat_disp} · {usd(p['price'])}{cost_disp}{margin_info}"
+            f"{status_badge} #{p['id']}. <b>{esc(p['name'])}</b>{cat_disp} · {price_disp}{cost_disp}{margin_info}"
         )
 
     for chunk in chunk_lines(lines):
@@ -3183,50 +3263,108 @@ async def admin_products(m: Message):
 async def admin_addproduct(m: Message, command: CommandObject = None):
     try:
         if not command or not command.args:
-            return await m.answer("Usage: /addproduct <price_usd> <name> [| description]")
-        price, rest = command.args.split(None, 1)
-        price_cents = round(float(price) * 100)
-        if price_cents <= 0:
-            return await m.answer("⚠️ Price must be greater than $0.00.")
+            return await m.answer(
+                "Usage: /addproduct <price> [currency] <name> [| description]\n"
+                "Examples:\n"
+                "• <code>/addproduct $12.50 Netflix 1 Month</code>\n"
+                "• <code>/addproduct 15000 NGN ChatGPT Plus</code>\n"
+                "• <code>/addproduct ₦15000 Gemini Advanced</code>\n"
+                "• <code>/addproduct 12.50 Canva Pro</code> (uses your active currency)"
+            )
+        parts = command.args.split()
+        if not parts:
+            raise ValueError("No arguments")
+        admin_curr = get_user_currency(m.from_user.id)
+
+        # Check if second token is currency code (USD, NGN, NAIRA)
+        if len(parts) >= 2 and parts[1].upper() in ("USD", "NGN", "NAIRA"):
+            price_raw = f"{parts[0]} {parts[1]}"
+            rest = command.args.split(None, 2)[2] if len(parts) > 2 else ""
+        else:
+            price_raw = parts[0]
+            rest = command.args.split(None, 1)[1] if len(parts) > 1 else ""
+
+        if not rest.strip():
+            return await m.answer("⚠️ Please provide a product name.")
+
+        try:
+            price_cents, set_curr, orig_val = parse_currency_amount(price_raw, default_curr=admin_curr)
+        except ValueError as ve:
+            if "greater than" in str(ve).lower():
+                return await m.answer("⚠️ Price must be greater than $0.00.")
+            raise
+
         name, _, desc = rest.partition("|")
         cat = detect_category(name.strip())
         pid = db.execute("INSERT INTO products(name, description, price, category) VALUES(?,?,?,?)",
                          (name.strip(), desc.strip(), price_cents, cat)).lastrowid
-        await m.answer(f"Product #{pid} added ({cat}).")
+        disp_price = f"<b>{usd(price_cents)}</b> (<b>{format_price(price_cents, 'NGN')}</b>)"
+        await m.answer(f"Product #{pid} added ({cat}) · Price: {disp_price}.")
     except Exception:
-        await m.answer("Usage: /addproduct <price_usd> <name> [| description]")
+        await m.answer(
+            "Usage: /addproduct <price> [currency] <name> [| description]\n"
+            "Examples:\n"
+            "• <code>/addproduct $12.50 Netflix 1 Month</code>\n"
+            "• <code>/addproduct 15000 NGN ChatGPT Plus</code>\n"
+            "• <code>/addproduct ₦15000 Gemini Advanced</code>\n"
+            "• <code>/addproduct 12.50 Canva Pro</code> (uses your active currency)"
+        )
 
 
 @dp.message(Command("setprice"), is_admin)
 async def admin_setprice(m: Message, command: CommandObject = None):
     try:
         if not command or not command.args:
-            return await m.answer("Usage: /setprice <product_id> <price_usd>\nExample: /setprice 1 12.50")
-        pid, price = command.args.split()
-        pid = int(pid)
-        new_price_cents = round(float(price) * 100)
-        if new_price_cents <= 0:
-            return await m.answer("⚠️ Price must be greater than $0.00.")
+            return await m.answer(
+                "Usage: /setprice <product_id> <price> [currency]\n"
+                "Examples:\n"
+                "• <code>/setprice 1 12.50</code> (uses your active currency)\n"
+                "• <code>/setprice 1 $12.50</code> or <code>/setprice 1 12.50 USD</code>\n"
+                "• <code>/setprice 1 ₦15000</code> or <code>/setprice 1 15000 NGN</code>"
+            )
+        parts = command.args.split()
+        if len(parts) < 2:
+            return await m.answer(
+                "Usage: /setprice <product_id> <price> [currency]\n"
+                "Examples: /setprice 1 12.50, /setprice 1 15000 NGN, /setprice 1 ₦15000"
+            )
+        pid = int(parts[0])
+        price_raw = " ".join(parts[1:])
+
+        admin_curr = get_user_currency(m.from_user.id)
+        try:
+            new_price_cents, set_curr, orig_val = parse_currency_amount(price_raw, default_curr=admin_curr)
+        except ValueError as ve:
+            if "greater than" in str(ve).lower():
+                return await m.answer("⚠️ Price must be greater than $0.00.")
+            raise
 
         p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
         if not p:
             return await m.answer(f"Product #{pid} not found.")
 
+        disp_price = f"<b>{usd(new_price_cents)}</b> (<b>{format_price(new_price_cents, 'NGN')}</b>)"
         # If item has a supplier cost, calculate and lock in the implied margin so sync preserves it!
         if p["supplier_price"] and p["supplier_price"] > 0:
             cost = p["supplier_price"]
             calc_margin = round(((new_price_cents - cost) / cost) * 100)
             db.execute("UPDATE products SET price=?, margin=? WHERE id=?", (new_price_cents, calc_margin, pid))
             await m.answer(
-                f"✅ Price for #{pid} (<b>{esc(p['name'])}</b>) updated to <b>{usd(new_price_cents)}</b>.\n"
-                f"• Wholesale Cost: <b>{usd(cost)}</b>\n"
+                f"✅ Price for #{pid} (<b>{esc(p['name'])}</b>) updated to {disp_price}.\n"
+                f"• Wholesale Cost: <b>{usd(cost)}</b> ({format_price(cost, 'NGN')})\n"
                 f"• Locked Profit Margin: <b>{calc_margin}%</b> (preserved during future syncs)"
             )
         else:
             db.execute("UPDATE products SET price=? WHERE id=?", (new_price_cents, pid))
-            await m.answer(f"✅ Price for #{pid} (<b>{esc(p['name'])}</b>) updated to <b>{usd(new_price_cents)}</b>.")
+            await m.answer(f"✅ Price for #{pid} (<b>{esc(p['name'])}</b>) updated to {disp_price}.")
     except Exception:
-        await m.answer("Usage: /setprice <product_id> <price_usd>\nExample: /setprice 1 12.50")
+        await m.answer(
+            "Usage: /setprice <product_id> <price> [currency]\n"
+            "Examples:\n"
+            "• <code>/setprice 1 12.50</code>\n"
+            "• <code>/setprice 1 $12.50</code> or <code>/setprice 1 12.50 USD</code>\n"
+            "• <code>/setprice 1 ₦15000</code> or <code>/setprice 1 15000 NGN</code>"
+        )
 
 
 
@@ -3246,11 +3384,12 @@ async def admin_setmargin(m: Message, command: CommandObject = None):
         new_price = max(100, round(cost * (1 + margin / 100)))
         db.execute("UPDATE products SET margin=?, price=? WHERE id=?", (margin, new_price, pid))
 
-        cost_info = f"• Wholesale Cost: <b>{usd(cost)}</b>\n" if p["supplier_price"] else ""
+        cost_info = f"• Wholesale Cost: <b>{usd(cost)}</b> ({format_price(cost, 'NGN')})\n" if p["supplier_price"] else ""
+        disp_price = f"<b>{usd(new_price)}</b> (<b>{format_price(new_price, 'NGN')}</b>)"
         await m.answer(
             f"✅ Profit margin for #{pid} (<b>{esc(p['name'])}</b>) set to <b>{margin}%</b>.\n"
             f"{cost_info}"
-            f"• New Selling Price: <b>{usd(new_price)}</b>"
+            f"• New Selling Price: {disp_price}"
         )
     except Exception:
         await m.answer("Usage: /setmargin <product_id> <margin_percent>\nExamples: /setmargin 1 50% or /setmargin 1 35")
@@ -3368,12 +3507,17 @@ async def admin_stats(m: Message):
     manual_pending = q("SELECT COUNT(*) FROM orders WHERE status='manual_pending'")
     revenue = q("SELECT SUM(price) FROM orders WHERE status='completed' AND refunded=0")
     pending = q("SELECT COUNT(*) FROM orders WHERE status='pending'")
+    admin_curr = get_user_currency(m.from_user.id)
+    if admin_curr == "NGN":
+        rev_disp = f"{format_price(revenue, 'NGN')} ({usd(revenue)} USD)"
+    else:
+        rev_disp = f"{usd(revenue)} USD ({format_price(revenue, 'NGN')})"
     await m.answer(
         f"👥 Total buyers: {users}\n"
         f"📦 Completed purchases: {orders_n}\n"
         f"🟡 Awaiting Fulfillment / Model B: {manual_pending}\n"
         f"⏳ Pending checkouts: {pending}\n"
-        f"💰 Total revenue: {usd(revenue)}"
+        f"💰 Total revenue: {rev_disp}"
     )
 
 
@@ -3662,15 +3806,30 @@ async def admin_supplier_products(m: Message, command: CommandObject = None):
     local_map = {row["supplier_product_id"]: row for row in db.execute(
         "SELECT id, name, price, supplier_product_id FROM products WHERE supplier=? AND supplier_product_id IS NOT NULL", (sup_name,)).fetchall()}
 
-    lines = [f"<b>Supplier '{esc(sup_name)}' Catalog Products:</b>\n"]
+    admin_curr = get_user_currency(m.from_user.id)
+    lines = [f"<b>Supplier '{esc(sup_name)}' Catalog Products (Currency: {admin_curr}):</b>\n"]
     for p in products:
         pid = p["id"]
         linked = local_map.get(pid)
-        status = f"✅ In shop (Local #{linked['id']}, {usd(linked['price'])})" if linked else "⚪ Not linked"
+        if linked:
+            local_price_disp = (
+                f"{format_price(linked['price'], 'NGN')} ({usd(linked['price'])})"
+                if admin_curr == "NGN"
+                else f"{usd(linked['price'])} ({format_price(linked['price'], 'NGN')})"
+            )
+            status = f"✅ In shop (Local #{linked['id']}, {local_price_disp})"
+        else:
+            status = "⚪ Not linked"
+
+        cost_disp = (
+            f"{format_price(p['price_cents'], 'NGN')} ({usd(p['price_cents'])})"
+            if admin_curr == "NGN"
+            else f"{usd(p['price_cents'])} ({format_price(p['price_cents'], 'NGN')})"
+        )
         stock_disp = f", stock: {p['stock']}" if p.get("stock") is not None else ""
         lines.append(
             f"• <code>{esc(pid)}</code>: <b>{esc(p['name'])}</b>\n"
-            f"  Cost: {usd(p['price_cents'])}{stock_disp} · {status}"
+            f"  Cost: {cost_disp}{stock_disp} · {status}"
         )
 
     for chunk in chunk_lines(lines):
