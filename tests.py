@@ -540,7 +540,7 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
 
         card_text, card_markup = bot.render_product_card(uid=user_id, p=p, ctx="home")
         self.assertIn("₦1,500", card_text)
-        self.assertIn("$1.00 USD", card_text)
+        self.assertNotIn("$1.00 USD", card_text)
 
         summary_text, summary_markup = bot.render_order_summary(uid=user_id, p=p, qty=2, ctx="home")
         self.assertIn("₦3,000", summary_text)
@@ -2300,6 +2300,149 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         m = AsyncMock()
         await bot.admin_refund(m)
         self.assertIn("Usage: /refund", m.answer.call_args[0][0])
+
+    def test_format_price_resilience(self):
+        bot.set_usd_ngn_rate(1450)
+        # None inputs
+        self.assertEqual(bot.format_price(None, "USD"), "$0.00")
+        self.assertEqual(bot.format_price(None, "NGN"), "₦0")
+        # Invalid string inputs
+        self.assertEqual(bot.format_price("invalid", "USD"), "$0.00")
+        self.assertEqual(bot.format_price("not_a_number", "NGN"), "₦0")
+        # Valid numbers
+        self.assertEqual(bot.format_price(1000, "USD"), "$10.00")
+        self.assertEqual(bot.format_price(1000, "NGN"), "₦14,500")
+
+    def test_category_with_underscores_back_navigation(self):
+        uid = 998877
+        bot.db.execute("INSERT OR REPLACE INTO users(id, currency, lang) VALUES(?, 'USD', 'en')", (uid,))
+        pid = bot.db.execute("INSERT INTO products(name, description, price, category, active) VALUES('Runway Gen-3', 'Desc', 2500, 'Video AI', 1)").lastrowid
+        p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+
+        # 1. Underscored category navigation: ctx="c_video_ai_0_1"
+        _, kb1 = bot.render_product_card(uid, p, "c_video_ai_0_1")
+        back_btns1 = [b.callback_data for row in kb1.inline_keyboard for b in row if "Back" in b.text]
+        self.assertEqual(back_btns1, ["cat:video_ai:1:0"])
+
+        # 2. Underscored category with page 2 and filter: ctx="c_ai_tools_1_2"
+        _, kb2 = bot.render_product_card(uid, p, "c_ai_tools_1_2")
+        back_btns2 = [b.callback_data for row in kb2.inline_keyboard for b in row if "Back" in b.text]
+        self.assertEqual(back_btns2, ["cat:ai_tools:2:1"])
+
+        # 3. Underscored search term: ctx="s_gift_card_0_1"
+        _, kb3 = bot.render_product_card(uid, p, "s_gift_card_0_1")
+        back_btns3 = [b.callback_data for row in kb3.inline_keyboard for b in row if "Back" in b.text]
+        self.assertEqual(back_btns3, ["srch:gift_card:1:0"])
+
+        # 4. All products: ctx="all_0_1"
+        _, kb4 = bot.render_product_card(uid, p, "all_0_1")
+        back_btns4 = [b.callback_data for row in kb4.inline_keyboard for b in row if "Back" in b.text]
+        self.assertEqual(back_btns4, ["allprods:1:0"])
+
+    async def test_on_category_and_allprods_resilience(self):
+        uid = 998877
+        bot.db.execute("INSERT OR REPLACE INTO users(id, currency, lang) VALUES(?, 'USD', 'en')", (uid,))
+        c = AsyncMock()
+        c.from_user.id = uid
+        c.bot = AsyncMock()
+
+        with patch.object(bot, "check_user_fsub", new=AsyncMock(return_value=(True, []))), \
+             patch.object(bot, "edit", new=AsyncMock()) as mock_edit:
+            # Underscored category valid
+            c.data = "cat:video_ai:1:0"
+            await bot.on_category(c)
+            self.assertTrue(mock_edit.called)
+
+            # Defensive against non-digit page/avail
+            mock_edit.reset_mock()
+            c.data = "cat:video_ai:foo:bar"
+            await bot.on_category(c)
+            self.assertTrue(mock_edit.called)
+
+            # Defensive allprods against non-digit
+            mock_edit.reset_mock()
+            c.data = "allprods:bad:input"
+            await bot.on_all_prods(c)
+            self.assertTrue(mock_edit.called)
+
+    async def test_admin_addproduct_leading_currency_code(self):
+        bot.set_usd_ngn_rate(1450)
+        admin_id = 111222333
+        bot.db.execute("INSERT OR REPLACE INTO users(id, currency, lang) VALUES(?, 'USD', 'en')", (admin_id,))
+
+        m = AsyncMock()
+        m.from_user.id = admin_id
+        cmd = AsyncMock()
+
+        # 1. Prefix currency code: NGN 14500
+        cmd.args = "NGN 14500 Runway AI 1 Month | Fast generation"
+        await bot.admin_addproduct(m, cmd)
+        p1 = bot.db.execute("SELECT * FROM products WHERE name='Runway AI 1 Month'").fetchone()
+        self.assertIsNotNone(p1)
+        self.assertEqual(p1["price"], 1000)
+        self.assertEqual(p1["fixed_price"], 1)
+
+        # 2. Prefix currency code: USD 12.50
+        m.reset_mock()
+        cmd.args = "USD 12.50 Midjourney Pro | Unlimited"
+        await bot.admin_addproduct(m, cmd)
+        p2 = bot.db.execute("SELECT * FROM products WHERE name='Midjourney Pro'").fetchone()
+        self.assertIsNotNone(p2)
+        self.assertEqual(p2["price"], 1250)
+
+        # 3. Leading symbol with space: $ 25.00
+        m.reset_mock()
+        cmd.args = "$ 25.00 Claude Pro Team | 5 Seats"
+        await bot.admin_addproduct(m, cmd)
+        p3 = bot.db.execute("SELECT * FROM products WHERE name='Claude Pro Team'").fetchone()
+        self.assertIsNotNone(p3)
+        self.assertEqual(p3["price"], 2500)
+
+    async def test_product_card_and_order_summary_strict_currency(self):
+        bot.set_usd_ngn_rate(1450)
+        uid = 887766
+        bot.db.execute("INSERT OR REPLACE INTO users(id, currency, lang) VALUES(?, 'NGN', 'en')", (uid,))
+        pid = bot.db.execute("INSERT INTO products(name, description, price, category, active) VALUES('Strict NGN Item', 'Full test', 1000, 'AI Tools', 1)").lastrowid
+        p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+
+        # Product card text for NGN user
+        card_text, _ = bot.render_product_card(uid, p, "shop")
+        self.assertIn("₦14,500", card_text)
+        self.assertNotIn("$10.00", card_text)
+        self.assertNotIn("USD", card_text)
+
+        # Order summary text for NGN user
+        summary_text, _ = bot.render_order_summary(uid, p, qty=2, ctx="shop")
+        self.assertIn("₦14,500", summary_text)
+        self.assertIn("₦29,000", summary_text)
+        self.assertNotIn("$10.00", summary_text)
+        self.assertNotIn("$20.00", summary_text)
+        self.assertNotIn("USDT", summary_text)
+
+    async def test_manual_onchain_check_status_feedback(self):
+        uid = 887766
+        bot.db.execute("INSERT OR REPLACE INTO users(id, currency, lang) VALUES(?, 'USD', 'en')", (uid,))
+        pid = bot.db.execute("INSERT INTO products(name, description, price, category, active) VALUES('Crypto Item', 'Desc', 1000, 'AI Tools', 1)").lastrowid
+        oid = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, status, payment_method, txid) VALUES(?,?,?,?,'pending','usdt_bep20','0xabc123')",
+                             (uid, pid, "Crypto Item", 1000)).lastrowid
+
+        c = AsyncMock()
+        c.from_user.id = uid
+        c.bot = AsyncMock()
+        c.data = f"check_manual:{oid}"
+
+        # 1. When verification fails with specific error (e.g. wrong wallet)
+        with patch("bot.check_and_fulfill_onchain", new=AsyncMock(return_value=(False, "Deposit was sent to wrong recipient wallet"))):
+            await bot.on_check_manual_status(c)
+            alert_text = c.answer.call_args[0][0]
+            self.assertIn("Deposit was sent to wrong recipient wallet", alert_text)
+
+        # 2. When verification fails because tx reverted
+        c.reset_mock()
+        with patch("bot.check_and_fulfill_onchain", new=AsyncMock(return_value=(False, "Transaction failed / reverted on blockchain."))):
+            await bot.on_check_manual_status(c)
+            alert_text2 = c.answer.call_args[0][0]
+            self.assertIn("Transaction failed / reverted on blockchain.", alert_text2)
 
 
 if __name__ == "__main__":

@@ -1153,12 +1153,16 @@ def get_user_currency(uid: int) -> str:
     return "USD"
 
 
-def format_price(cents: int, currency: str = "USD") -> str:
+def format_price(cents: Optional[int], currency: str = "USD") -> str:
+    try:
+        val = float(cents) if cents is not None else 0.0
+    except (ValueError, TypeError):
+        val = 0.0
     if currency == "NGN":
         rate = get_usd_ngn_rate()
-        ngn_val = round((cents / 100.0) * rate)
+        ngn_val = round((val / 100.0) * rate)
         return f"₦{ngn_val:,}"
-    return usd(cents)
+    return usd(val)
 
 
 def format_user_price(cents: int, uid: int) -> str:
@@ -1490,7 +1494,7 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
     if curr == "NGN":
         rate = get_usd_ngn_rate()
         ngn_val = round((p["price"] / 100.0) * rate)
-        price_disp = f"₦{ngn_val:,} (${p['price'] / 100:.2f} USD)"
+        price_disp = f"₦{ngn_val:,}"
     else:
         price_disp = f"{p['price'] / 100:.2f} USD"
 
@@ -1529,29 +1533,37 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
     if ctx == "home":
         back_cb = "home"
     elif ctx.startswith("c_"):
-        parts = ctx.split("_")
-        if len(parts) >= 4:
-            back_cb = f"cat:{parts[1]}:{parts[3]}:{parts[2]}"
-        elif len(parts) == 3:
-            back_cb = f"cat:{parts[1]}:{parts[2]}:0"
+        raw = ctx[2:]
+        rparts = raw.rsplit("_", 2)
+        if len(rparts) == 3:
+            cat_key, avail_only, page = rparts[0], rparts[1], rparts[2]
+            back_cb = f"cat:{cat_key}:{page}:{avail_only}"
+        elif len(rparts) == 2:
+            cat_key, page = rparts[0], rparts[1]
+            back_cb = f"cat:{cat_key}:{page}:0"
         else:
-            back_cb = "shop"
+            back_cb = f"cat:{raw}:1:0"
     elif ctx.startswith("all_"):
-        parts = ctx.split("_")
-        if len(parts) >= 3:
-            back_cb = f"allprods:{parts[2]}:{parts[1]}"
-        elif len(parts) == 2:
-            back_cb = f"allprods:{parts[1]}:0"
+        raw = ctx[4:]
+        rparts = raw.rsplit("_", 2)
+        if len(rparts) == 2:
+            avail_only, page = rparts[0], rparts[1]
+            back_cb = f"allprods:{page}:{avail_only}"
+        elif len(rparts) == 1:
+            back_cb = f"allprods:{rparts[0]}:0"
         else:
             back_cb = "shop"
     elif ctx.startswith("s_"):
-        parts = ctx.split("_")
-        if len(parts) >= 4:
-            back_cb = f"srch:{parts[1]}:{parts[3]}:{parts[2]}"
-        elif len(parts) == 3:
-            back_cb = f"srch:{parts[1]}:{parts[2]}:0"
+        raw = ctx[2:]
+        rparts = raw.rsplit("_", 2)
+        if len(rparts) == 3:
+            term, avail_only, page = rparts[0], rparts[1], rparts[2]
+            back_cb = f"srch:{term}:{page}:{avail_only}"
+        elif len(rparts) == 2:
+            term, page = rparts[0], rparts[1]
+            back_cb = f"srch:{term}:{page}:0"
         else:
-            back_cb = "shop"
+            back_cb = f"srch:{raw}:1:0"
     else:
         back_cb = "shop"
 
@@ -1764,8 +1776,8 @@ async def on_category(c: CallbackQuery):
         return await edit(c, text, markup)
     parts = c.data.split(":")
     key = parts[1]
-    page = int(parts[2]) if len(parts) > 2 else 1
-    avail_only = int(parts[3]) if len(parts) > 3 else 0
+    page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+    avail_only = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
     prods = get_products_for_category(key)
     text, markup = render_product_list(
         uid, prods, page=page,
@@ -1782,8 +1794,8 @@ async def on_all_prods(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
     parts = c.data.split(":")
-    page = int(parts[1]) if len(parts) > 1 else 1
-    avail_only = int(parts[2]) if len(parts) > 2 else 0
+    page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+    avail_only = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
     prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
     text, markup = render_product_list(
         uid, prods, page=page,
@@ -2009,8 +2021,8 @@ def render_order_summary(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[
         unit_ngn = round((p["price"] / 100.0) * rate)
         total_ngn = round((total_cents / 100.0) * rate)
         price_lines = (
-            f"🤑 <b>Price:</b> ₦{unit_ngn:,} (${unit_usd} each)\n"
-            f"🪙 <b>Total:</b> ₦{total_ngn:,} (${total_usd} USDT)\n\n"
+            f"🤑 <b>Price:</b> ₦{unit_ngn:,}\n"
+            f"🪙 <b>Total:</b> ₦{total_ngn:,}\n\n"
         )
     else:
         price_lines = (
@@ -2454,6 +2466,8 @@ async def on_check_manual_status(c: CallbackQuery):
                 return await c.answer("✅ Verified on blockchain and delivered!", show_alert=True)
         elif verified and result == "MANUAL_PENDING":
             return await c.answer("⏳ Payment verified on blockchain! Our support team is fulfilling your order shortly.", show_alert=True)
+        elif not verified and result:
+            return await c.answer(f"⏳ {result}", show_alert=True)
 
     return await c.answer("⏳ Your payment is currently under verification. You will receive your item automatically once confirmed!", show_alert=True)
 
@@ -3287,8 +3301,11 @@ async def admin_addproduct(m: Message, command: CommandObject = None):
             raise ValueError("No arguments")
         admin_curr = get_user_currency(m.from_user.id)
 
-        # Check if second token is currency code (USD, NGN, NAIRA)
-        if len(parts) >= 2 and parts[1].upper() in ("USD", "NGN", "NAIRA"):
+        # Check if first or second token is currency code (USD, NGN, NAIRA, $, ₦)
+        if len(parts) >= 2 and parts[0].upper() in ("USD", "NGN", "NAIRA", "$", "₦"):
+            price_raw = f"{parts[1]} {parts[0]}"
+            rest = command.args.split(None, 2)[2] if len(parts) > 2 else ""
+        elif len(parts) >= 2 and parts[1].upper() in ("USD", "NGN", "NAIRA", "$", "₦"):
             price_raw = f"{parts[0]} {parts[1]}"
             rest = command.args.split(None, 2)[2] if len(parts) > 2 else ""
         else:
