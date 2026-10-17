@@ -3025,6 +3025,7 @@ async def admin_help(m: Message):
         "/backup - Download fresh database backup (.db)\n"
         "/export - Download updated products Excel (.xlsx)\n"
         "/setrate [rate_ngn] - View or update USD to NGN exchange rate\n"
+        "/currency - Switch your active display currency (USD / NGN)\n"
         "/setpaystack [secret_key] - View or set Paystack API Secret Key\n\n"
         "🎨 <b>Brand Custom Emojis</b>\n"
         "/setemoji &lt;key&gt; [emoji] - Set official brand custom emoji ID\n"
