@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS products(
   supplier_price INTEGER DEFAULT NULL,
   auto_fulfill INTEGER DEFAULT 0,
   margin INTEGER DEFAULT NULL,
+  fixed_price INTEGER DEFAULT 0,
   category TEXT DEFAULT 'AI Tools',
   supplier TEXT DEFAULT 'default',
   supplier_stock INTEGER DEFAULT NULL,
@@ -172,6 +173,11 @@ CREATE TABLE IF NOT EXISTS settings(
   key TEXT PRIMARY KEY,
   value TEXT);
 """)
+
+try:
+    db.execute("ALTER TABLE products ADD COLUMN fixed_price INTEGER DEFAULT 0")
+except sqlite3.OperationalError:
+    pass
 
 
 def get_setting(key: str, default: str = "") -> str:
@@ -3240,7 +3246,12 @@ async def admin_products(m: Message):
                 status_badge = "🔴 [OUT OF STOCK]"
 
         margin_info = ""
-        if p["margin"] is not None:
+        is_fixed = bool(p["fixed_price"]) if ("fixed_price" in p.keys() and p["fixed_price"]) else False
+        if is_fixed and p["margin"] is not None:
+            margin_info = f" · fixed (margin ~{p['margin']}%)"
+        elif is_fixed:
+            margin_info = " · fixed"
+        elif p["margin"] is not None:
             margin_info = f" · margin +{p['margin']}%"
         elif p["supplier_price"] and p["supplier_price"] > 0:
             cost = p["supplier_price"]
@@ -3296,7 +3307,7 @@ async def admin_addproduct(m: Message, command: CommandObject = None):
 
         name, _, desc = rest.partition("|")
         cat = detect_category(name.strip())
-        pid = db.execute("INSERT INTO products(name, description, price, category) VALUES(?,?,?,?)",
+        pid = db.execute("INSERT INTO products(name, description, price, category, fixed_price) VALUES(?,?,?,?,1)",
                          (name.strip(), desc.strip(), price_cents, cat)).lastrowid
         disp_price = f"<b>{format_price(price_cents, admin_curr)}</b>"
         await m.answer(f"Product #{pid} added ({cat}) · Price: {disp_price}.")
@@ -3344,18 +3355,18 @@ async def admin_setprice(m: Message, command: CommandObject = None):
             return await m.answer(f"Product #{pid} not found.")
 
         disp_price = f"<b>{format_price(new_price_cents, admin_curr)}</b>"
-        # If item has a supplier cost, calculate and lock in the implied margin so sync preserves it!
+        # If item has a supplier cost, calculate implied margin and lock in the fixed price!
         if p["supplier_price"] and p["supplier_price"] > 0:
             cost = p["supplier_price"]
             calc_margin = round(((new_price_cents - cost) / cost) * 100)
-            db.execute("UPDATE products SET price=?, margin=? WHERE id=?", (new_price_cents, calc_margin, pid))
+            db.execute("UPDATE products SET price=?, margin=?, fixed_price=1 WHERE id=?", (new_price_cents, calc_margin, pid))
             await m.answer(
                 f"✅ Price for #{pid} (<b>{esc(p['name'])}</b>) updated to {disp_price}.\n"
                 f"• Wholesale Cost: <b>{format_price(cost, admin_curr)}</b>\n"
-                f"• Locked Profit Margin: <b>{calc_margin}%</b> (preserved during future syncs)"
+                f"• Adjusted Margin: <b>{calc_margin}%</b> (fixed price locked: future supplier cost changes will adjust the margin, keeping this selling price unchanged)"
             )
         else:
-            db.execute("UPDATE products SET price=? WHERE id=?", (new_price_cents, pid))
+            db.execute("UPDATE products SET price=?, fixed_price=1 WHERE id=?", (new_price_cents, pid))
             await m.answer(f"✅ Price for #{pid} (<b>{esc(p['name'])}</b>) updated to {disp_price}.")
     except Exception:
         await m.answer(
@@ -3382,7 +3393,7 @@ async def admin_setmargin(m: Message, command: CommandObject = None):
 
         cost = p["supplier_price"] or p["price"]
         new_price = max(100, round(cost * (1 + margin / 100)))
-        db.execute("UPDATE products SET margin=?, price=? WHERE id=?", (margin, new_price, pid))
+        db.execute("UPDATE products SET margin=?, price=?, fixed_price=0 WHERE id=?", (margin, new_price, pid))
 
         admin_curr = get_user_currency(m.from_user.id)
         cost_info = f"• Wholesale Cost: <b>{format_price(cost, admin_curr)}</b>\n" if p["supplier_price"] else ""
@@ -3872,41 +3883,57 @@ async def perform_supplier_sync(
             cat = detect_category(sp["name"])
 
             existing = db.execute(
-                "SELECT id, margin FROM products WHERE supplier_product_id=? AND supplier=?",
+                "SELECT id, price, margin, fixed_price FROM products WHERE supplier_product_id=? AND supplier=?",
                 (sp_id, sup_name)
             ).fetchone()
 
             # If not matched by supplier_product_id, check if unlinked product exists with identical or similar name
             if not existing:
                 existing = db.execute(
-                    "SELECT id, margin FROM products WHERE supplier_product_id IS NULL AND LOWER(name)=LOWER(?)",
+                    "SELECT id, price, margin, fixed_price FROM products WHERE supplier_product_id IS NULL AND LOWER(name)=LOWER(?)",
                     (sp["name"],)
                 ).fetchone()
 
             if not existing:
                 clean_sp_name = sp["name"].lower()
                 if "gemini" in clean_sp_name and "18" in clean_sp_name:
-                    existing = db.execute("SELECT id, margin FROM products WHERE supplier_product_id IS NULL AND name LIKE '%Gemini%18%'").fetchone()
+                    existing = db.execute("SELECT id, price, margin, fixed_price FROM products WHERE supplier_product_id IS NULL AND name LIKE '%Gemini%18%'").fetchone()
                 elif "duolingo" in clean_sp_name and ("12" in clean_sp_name or "super" in clean_sp_name):
-                    existing = db.execute("SELECT id, margin FROM products WHERE supplier_product_id IS NULL AND name LIKE '%Duolingo%'").fetchone()
+                    existing = db.execute("SELECT id, price, margin, fixed_price FROM products WHERE supplier_product_id IS NULL AND name LIKE '%Duolingo%'").fetchone()
 
-            saved_margin = existing["margin"] if existing else None
-            item_margin = saved_margin if (saved_margin is not None) else markup
-            retail_cents = max(100, round(cost_cents * (1 + item_margin / 100)))
+            is_fixed = bool(existing and ("fixed_price" in existing.keys()) and existing["fixed_price"])
             is_active = 0 if (stock is not None and stock == 0) else 1
+
+            if is_fixed:
+                # FIXED PRICE: The selling price remains fixed as set by the admin!
+                # The margin adjusts to that fixed price based on the new supplier cost.
+                retail_cents = existing["price"]
+                if cost_cents and cost_cents > 0:
+                    item_margin = round(((retail_cents - cost_cents) / cost_cents) * 100)
+                else:
+                    item_margin = existing["margin"]
+                db_margin = item_margin
+                db_fixed_price = 1
+            else:
+                # MARGIN-BASED: The retail price follows the custom or default margin.
+                saved_margin = existing["margin"] if existing else None
+                item_margin = saved_margin if (saved_margin is not None) else markup
+                retail_cents = max(100, round(cost_cents * (1 + item_margin / 100)))
+                db_margin = saved_margin
+                db_fixed_price = 0
 
             if existing:
                 db.execute("""
                     UPDATE products
                     SET name=?, description=?, price=?, supplier_price=?, auto_fulfill=1, active=?, category=?, supplier=?,
-                        supplier_stock=?, delivery_type='auto', supplier_product_id=?, margin=?
+                        supplier_stock=?, delivery_type='auto', supplier_product_id=?, margin=?, fixed_price=?
                     WHERE id=?
-                """, (sp["name"], sp["description"], retail_cents, cost_cents, is_active, cat, sup_name, stock, sp_id, saved_margin, existing["id"]))
+                """, (sp["name"], sp["description"], retail_cents, cost_cents, is_active, cat, sup_name, stock, sp_id, db_margin, db_fixed_price, existing["id"]))
                 total_updated += 1
             else:
                 db.execute("""
-                    INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type, margin)
-                    VALUES(?,?,?,?,?,1,?,?,?,?, 'auto', ?)
+                    INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type, margin, fixed_price)
+                    VALUES(?,?,?,?,?,1,?,?,?,?, 'auto', ?, 0)
                 """, (sp["name"], sp["description"], retail_cents, sp_id, cost_cents, is_active, cat, sup_name, stock, None))
                 total_added += 1
 

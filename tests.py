@@ -126,6 +126,7 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
           supplier_price INTEGER DEFAULT NULL,
           auto_fulfill INTEGER DEFAULT 0,
           margin INTEGER DEFAULT NULL,
+          fixed_price INTEGER DEFAULT 0,
           category TEXT DEFAULT 'AI Tools',
           supplier TEXT DEFAULT 'default',
           supplier_stock INTEGER DEFAULT NULL,
@@ -373,6 +374,73 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
             p_after_sync = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
             self.assertEqual(p_after_sync["price"], 200)
             self.assertEqual(p_after_sync["margin"], 100)
+
+    async def test_fixed_price_preserves_retail_and_adjusts_margin_when_supplier_price_changes(self):
+        # 1. Product setup: Supplier cost $1.00 (100 cents)
+        pid = bot.db.execute("""
+            INSERT INTO products(name, price, supplier_product_id, supplier_price, margin, active)
+            VALUES('Fixed Price Product', 150, 'sp-fixed-1', 100, 50, 1)
+        """).lastrowid
+
+        # 2. Admin sets a fixed price of $2.50 (250 cents)
+        mock_msg = AsyncMock()
+        mock_cmd = MagicMock()
+        mock_cmd.args = f"{pid} $2.50"
+        await bot.admin_setprice(mock_msg, mock_cmd)
+
+        p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(p["price"], 250)
+        self.assertEqual(p["fixed_price"], 1)
+        self.assertEqual(p["margin"], 150)  # (250 - 100) / 100 = 150%
+
+        # 3. Supplier price increases from $1.00 (100 cents) to $1.25 (125 cents)
+        mock_products = [
+            {"id": "sp-fixed-1", "name": "Fixed Price Product", "description": "", "price_cents": 125, "stock": 10},
+        ]
+        with patch.object(bot.reseller, "get_products", new=AsyncMock(return_value=mock_products)):
+            await bot.perform_supplier_sync()
+
+        # Fixed price MUST stay at $2.50 (250 cents). It must NOT move towards the old margin!
+        p_after_sync = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(p_after_sync["price"], 250)
+        # Margin adjusts to the fixed price: (250 - 125) / 125 = 100%
+        self.assertEqual(p_after_sync["margin"], 100)
+        self.assertEqual(p_after_sync["supplier_price"], 125)
+        self.assertEqual(p_after_sync["fixed_price"], 1)
+
+        # 4. Supplier price increases further to $2.00 (200 cents)
+        mock_products_higher = [
+            {"id": "sp-fixed-1", "name": "Fixed Price Product", "description": "", "price_cents": 200, "stock": 10},
+        ]
+        with patch.object(bot.reseller, "get_products", new=AsyncMock(return_value=mock_products_higher)):
+            await bot.perform_supplier_sync()
+
+        p_after_sync2 = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(p_after_sync2["price"], 250)
+        # Margin adjusts to the fixed price: (250 - 200) / 200 = 25%
+        self.assertEqual(p_after_sync2["margin"], 25)
+        self.assertEqual(p_after_sync2["supplier_price"], 200)
+        self.assertEqual(p_after_sync2["fixed_price"], 1)
+
+        # 5. Admin switches product to margin mode via /setmargin 50%
+        mock_cmd.args = f"{pid} 50%"
+        await bot.admin_setmargin(mock_msg, mock_cmd)
+        p_margin_mode = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(p_margin_mode["fixed_price"], 0)
+        self.assertEqual(p_margin_mode["margin"], 50)
+        self.assertEqual(p_margin_mode["price"], 300)  # 200 * 1.50 = 300
+
+        # Now when supplier price changes to 220 cents in margin mode, price follows the 50% margin
+        mock_products_margin = [
+            {"id": "sp-fixed-1", "name": "Fixed Price Product", "description": "", "price_cents": 220, "stock": 10},
+        ]
+        with patch.object(bot.reseller, "get_products", new=AsyncMock(return_value=mock_products_margin)):
+            await bot.perform_supplier_sync()
+
+        p_after_margin_sync = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(p_after_margin_sync["price"], 330)  # 220 * 1.50 = 330
+        self.assertEqual(p_after_margin_sync["margin"], 50)
+        self.assertEqual(p_after_margin_sync["fixed_price"], 0)
 
     def test_category_detection_and_icons(self):
         self.assertEqual(bot.detect_category("Codex API 10M Tokens 1 Day"), "Codex API")
