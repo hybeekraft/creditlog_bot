@@ -2105,7 +2105,7 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p["price"], 1000)
         text = m.answer.call_args[0][0]
         self.assertIn("$10.00", text)
-        self.assertIn("₦14,500", text)
+        self.assertNotIn("₦14,500", text)
 
         # Set price using symbol ₦
         m.reset_mock()
@@ -2115,7 +2115,7 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p["price"], 2000)
         text = m.answer.call_args[0][0]
         self.assertIn("$20.00", text)
-        self.assertIn("₦29,000", text)
+        self.assertNotIn("₦29,000", text)
 
         # Set price with admin's currency set to NGN and no explicit symbol
         bot.db.execute("UPDATE users SET currency='NGN' WHERE id=?", (admin_id,))
@@ -2124,13 +2124,19 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         await bot.admin_setprice(m, cmd)
         p = bot.db.execute("SELECT price FROM products WHERE id=?", (pid,)).fetchone()
         self.assertEqual(p["price"], 1000)
+        text_ngn_admin = m.answer.call_args[0][0]
+        self.assertIn("₦14,500", text_ngn_admin)
+        self.assertNotIn("$10.00", text_ngn_admin)
 
-        # Set price in USD explicitly even if admin currency is NGN
+        # Set price in USD explicitly even if admin currency is NGN -> shown in admin's active currency (NGN)
         m.reset_mock()
         cmd.args = f"{pid} $5.00"
         await bot.admin_setprice(m, cmd)
         p = bot.db.execute("SELECT price FROM products WHERE id=?", (pid,)).fetchone()
         self.assertEqual(p["price"], 500)
+        text_usd_admin_ngn = m.answer.call_args[0][0]
+        self.assertIn("₦7,250", text_usd_admin_ngn)
+        self.assertNotIn("$5.00", text_usd_admin_ngn)
 
     async def test_admin_addproduct_multi_currency(self):
         bot.set_usd_ngn_rate(1450)
@@ -2149,9 +2155,9 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p1["price"], 1500)
         text1 = m.answer.call_args[0][0]
         self.assertIn("$15.00", text1)
-        self.assertIn("₦21,750", text1)
+        self.assertNotIn("₦21,750", text1)
 
-        # Add product in NGN
+        # Add product in NGN (admin currency is USD -> displayed in USD)
         m.reset_mock()
         cmd.args = "14500 NGN Netflix Premium 1M | UHD 4K"
         await bot.admin_addproduct(m, cmd)
@@ -2160,7 +2166,7 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p2["price"], 1000)
         text2 = m.answer.call_args[0][0]
         self.assertIn("$10.00", text2)
-        self.assertIn("₦14,500", text2)
+        self.assertNotIn("₦14,500", text2)
 
     async def test_admin_views_in_chosen_currency(self):
         bot.set_usd_ngn_rate(1450)
@@ -2181,13 +2187,22 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         text_ngn = m.answer.call_args[0][0]
         self.assertIn("Currency: NGN", text_ngn)
 
-        # Test admin stats in both currencies
+        # Test admin stats in NGN
         m.reset_mock()
         await bot.admin_stats(m)
         text_stats = m.answer.call_args[0][0]
         self.assertIn("Total revenue:", text_stats)
-        self.assertIn("USD", text_stats)
         self.assertIn("₦", text_stats)
+        self.assertNotIn("USD", text_stats)
+
+        # Test admin stats in USD
+        bot.db.execute("UPDATE users SET currency='USD' WHERE id=?", (admin_id,))
+        m.reset_mock()
+        await bot.admin_stats(m)
+        text_stats_usd = m.answer.call_args[0][0]
+        self.assertIn("Total revenue:", text_stats_usd)
+        self.assertIn("$", text_stats_usd)
+        self.assertNotIn("₦", text_stats_usd)
 
     async def test_custom_qty_and_payment_screens_currency_sync(self):
         bot.set_usd_ngn_rate(1450)
@@ -2210,8 +2225,8 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         c.data = f"manual_pay:{oid}"
         await bot.manual_pay_info(c)
         pay_info_text = c.edit_text.call_args[0][0] if c.edit_text.called else (c.message.edit_text.call_args[0][0] if c.message.edit_text.called else "")
-        self.assertIn("₦14,500", pay_info_text)
-        self.assertIn("$10.00 USDT", pay_info_text)
+        self.assertIn("Amount: <b>₦14,500</b>", pay_info_text)
+        self.assertNotIn("$10.00", pay_info_text)
 
     async def test_admin_refund_resilience(self):
         m = AsyncMock()

@@ -1289,10 +1289,11 @@ async def edit(c: CallbackQuery, text: str, markup=None):
         pass
 
 
-async def notify_admins(bot: Bot, text: str):
+async def notify_admins(bot: Bot, text_or_fn):
     for aid in ADMIN_IDS:
         try:
-            await bot.send_message(aid, text)
+            msg = text_or_fn(aid) if callable(text_or_fn) else text_or_fn
+            await bot.send_message(aid, msg)
         except Exception:
             pass
 
@@ -1664,11 +1665,13 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
         db.execute("UPDATE orders SET status='manual_pending' WHERE id=?", (oid,))
         await notify_admins(
             bot,
-            f"🔔 <b>New Manual Order #{oid}</b>\n"
-            f"• Item: <b>{esc(p['name'])}</b> (Qty: {qty})\n"
-            f"• User ID: <code>{o['user_id']}</code>\n"
-            f"• Amount: <b>{usd(o['price'])}</b>\n\n"
-            f"👉 Use <code>/deliver {oid} &lt;credentials/link&gt;</code> to send item to user."
+            lambda aid: (
+                f"🔔 <b>New Manual Order #{oid}</b>\n"
+                f"• Item: <b>{esc(p['name'])}</b> (Qty: {qty})\n"
+                f"• User ID: <code>{o['user_id']}</code>\n"
+                f"• Amount: <b>{format_user_price(o['price'], aid)}</b>\n\n"
+                f"👉 Use <code>/deliver {oid} &lt;credentials/link&gt;</code> to send item to user."
+            )
         )
         return "MANUAL_PENDING", None
 
@@ -2639,15 +2642,17 @@ async def handle_user_text_input(m: Message):
         user_mention = f"@{m.from_user.username}" if m.from_user.username else f"User {uid}"
         await notify_admins(
             m.bot,
-            f"🔔 <b>New Manual Payment Submitted!</b>\n"
-            f"• <b>Order:</b> #{oid}\n"
-            f"• <b>Buyer:</b> {user_mention} (<code>{uid}</code>)\n"
-            f"• <b>Product:</b> {esc(o['product_name'])}\n"
-            f"• <b>Amount:</b> {usd(o['price'])} USDT\n"
-            f"• <b>Method:</b> {esc(o['payment_method'] or 'Manual')}\n"
-            f"• <b>TxID:</b> <code>{esc(txid)}</code>\n\n"
-            f"✅ Approve & deliver: /approve_{oid}\n"
-            f"❌ Reject: /reject_{oid}"
+            lambda aid: (
+                f"🔔 <b>New Manual Payment Submitted!</b>\n"
+                f"• <b>Order:</b> #{oid}\n"
+                f"• <b>Buyer:</b> {user_mention} (<code>{uid}</code>)\n"
+                f"• <b>Product:</b> {esc(o['product_name'])}\n"
+                f"• <b>Amount:</b> {format_user_price(o['price'], aid)}\n"
+                f"• <b>Method:</b> {esc(o['payment_method'] or 'Manual')}\n"
+                f"• <b>TxID:</b> <code>{esc(txid)}</code>\n\n"
+                f"✅ Approve & deliver: /approve_{oid}\n"
+                f"❌ Reject: /reject_{oid}"
+            )
         )
 
 
@@ -2773,7 +2778,7 @@ async def check_cryptobot_payment(c: CallbackQuery):
             await c.answer()
         elif payload:
             await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
-            await notify_admins(c.bot, f"✅ Order #{oid} paid via @CryptoBot & delivered: {esc(o['product_name'])} ({usd(o['price'])} / {format_price(o['price'], 'NGN')}) to user {uid}")
+            await notify_admins(c.bot, lambda aid: f"✅ Order #{oid} paid via @CryptoBot & delivered: {esc(o['product_name'])} ({format_user_price(o['price'], aid)}) to user {uid}")
             await c.answer()
         else:
             await c.answer(t(uid, err or "supplier_error"), show_alert=True)
@@ -2837,7 +2842,7 @@ async def check_paystack_payment_callback(c: CallbackQuery):
             await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
             await notify_admins(
                 c.bot,
-                f"✅ Order #{oid} paid via Paystack & delivered: {esc(o['product_name'])} ({format_price(o['price'], 'NGN')} / {usd(o['price'])}) to user {uid} (Ref: {esc(ref_to_check)})"
+                lambda aid: f"✅ Order #{oid} paid via Paystack & delivered: {esc(o['product_name'])} ({format_user_price(o['price'], aid)}) to user {uid} (Ref: {esc(ref_to_check)})"
             )
             await c.answer("✅ Payment confirmed and delivered!", show_alert=False)
         else:
@@ -2862,8 +2867,6 @@ async def manual_pay_info(c: CallbackQuery):
         return await c.answer("Order not found.", show_alert=True)
     details = manual_crypto_details()
     amount_str = format_user_price(o["price"], uid)
-    if get_user_currency(uid) == "NGN":
-        amount_str = f"{amount_str} ({usd(o['price'])} USDT)"
     text = t(uid, "manual_crypto_info", oid=oid, name=esc(o["product_name"]), amount=amount_str, details=details)
     await edit(c, text, kb([[btn(t(uid, "btn_support"), url=SUPPORT_URL, style="primary")],
                             [btn(t(uid, "btn_back"), f"p:{o['product_id']}", style="danger")] ]))
@@ -3243,12 +3246,8 @@ async def admin_products(m: Message):
             calc_m = round(((p["price"] - cost) / cost) * 100)
             margin_info = f" · margin ~{calc_m}%"
 
-        if admin_curr == "NGN":
-            price_disp = f"{format_price(p['price'], 'NGN')} ({usd(p['price'])})"
-            cost_disp = f" (cost {format_price(p['supplier_price'], 'NGN')} / {usd(p['supplier_price'])})" if p["supplier_price"] else ""
-        else:
-            price_disp = f"{usd(p['price'])} ({format_price(p['price'], 'NGN')})"
-            cost_disp = f" (cost {usd(p['supplier_price'])})" if p["supplier_price"] else ""
+        price_disp = format_price(p["price"], admin_curr)
+        cost_disp = f" (cost {format_price(p['supplier_price'], admin_curr)})" if p["supplier_price"] else ""
 
         cat_disp = f" [{p['category']}]" if ("category" in p.keys() and p["category"]) else ""
         lines.append(
@@ -3298,7 +3297,7 @@ async def admin_addproduct(m: Message, command: CommandObject = None):
         cat = detect_category(name.strip())
         pid = db.execute("INSERT INTO products(name, description, price, category) VALUES(?,?,?,?)",
                          (name.strip(), desc.strip(), price_cents, cat)).lastrowid
-        disp_price = f"<b>{usd(price_cents)}</b> (<b>{format_price(price_cents, 'NGN')}</b>)"
+        disp_price = f"<b>{format_price(price_cents, admin_curr)}</b>"
         await m.answer(f"Product #{pid} added ({cat}) · Price: {disp_price}.")
     except Exception:
         await m.answer(
@@ -3343,7 +3342,7 @@ async def admin_setprice(m: Message, command: CommandObject = None):
         if not p:
             return await m.answer(f"Product #{pid} not found.")
 
-        disp_price = f"<b>{usd(new_price_cents)}</b> (<b>{format_price(new_price_cents, 'NGN')}</b>)"
+        disp_price = f"<b>{format_price(new_price_cents, admin_curr)}</b>"
         # If item has a supplier cost, calculate and lock in the implied margin so sync preserves it!
         if p["supplier_price"] and p["supplier_price"] > 0:
             cost = p["supplier_price"]
@@ -3351,7 +3350,7 @@ async def admin_setprice(m: Message, command: CommandObject = None):
             db.execute("UPDATE products SET price=?, margin=? WHERE id=?", (new_price_cents, calc_margin, pid))
             await m.answer(
                 f"✅ Price for #{pid} (<b>{esc(p['name'])}</b>) updated to {disp_price}.\n"
-                f"• Wholesale Cost: <b>{usd(cost)}</b> ({format_price(cost, 'NGN')})\n"
+                f"• Wholesale Cost: <b>{format_price(cost, admin_curr)}</b>\n"
                 f"• Locked Profit Margin: <b>{calc_margin}%</b> (preserved during future syncs)"
             )
         else:
@@ -3384,8 +3383,9 @@ async def admin_setmargin(m: Message, command: CommandObject = None):
         new_price = max(100, round(cost * (1 + margin / 100)))
         db.execute("UPDATE products SET margin=?, price=? WHERE id=?", (margin, new_price, pid))
 
-        cost_info = f"• Wholesale Cost: <b>{usd(cost)}</b> ({format_price(cost, 'NGN')})\n" if p["supplier_price"] else ""
-        disp_price = f"<b>{usd(new_price)}</b> (<b>{format_price(new_price, 'NGN')}</b>)"
+        admin_curr = get_user_currency(m.from_user.id)
+        cost_info = f"• Wholesale Cost: <b>{format_price(cost, admin_curr)}</b>\n" if p["supplier_price"] else ""
+        disp_price = f"<b>{format_price(new_price, admin_curr)}</b>"
         await m.answer(
             f"✅ Profit margin for #{pid} (<b>{esc(p['name'])}</b>) set to <b>{margin}%</b>.\n"
             f"{cost_info}"
@@ -3508,10 +3508,7 @@ async def admin_stats(m: Message):
     revenue = q("SELECT SUM(price) FROM orders WHERE status='completed' AND refunded=0")
     pending = q("SELECT COUNT(*) FROM orders WHERE status='pending'")
     admin_curr = get_user_currency(m.from_user.id)
-    if admin_curr == "NGN":
-        rev_disp = f"{format_price(revenue, 'NGN')} ({usd(revenue)} USD)"
-    else:
-        rev_disp = f"{usd(revenue)} USD ({format_price(revenue, 'NGN')})"
+    rev_disp = format_price(revenue, admin_curr)
     await m.answer(
         f"👥 Total buyers: {users}\n"
         f"📦 Completed purchases: {orders_n}\n"
@@ -3812,20 +3809,12 @@ async def admin_supplier_products(m: Message, command: CommandObject = None):
         pid = p["id"]
         linked = local_map.get(pid)
         if linked:
-            local_price_disp = (
-                f"{format_price(linked['price'], 'NGN')} ({usd(linked['price'])})"
-                if admin_curr == "NGN"
-                else f"{usd(linked['price'])} ({format_price(linked['price'], 'NGN')})"
-            )
+            local_price_disp = format_price(linked['price'], admin_curr)
             status = f"✅ In shop (Local #{linked['id']}, {local_price_disp})"
         else:
             status = "⚪ Not linked"
 
-        cost_disp = (
-            f"{format_price(p['price_cents'], 'NGN')} ({usd(p['price_cents'])})"
-            if admin_curr == "NGN"
-            else f"{usd(p['price_cents'])} ({format_price(p['price_cents'], 'NGN')})"
-        )
+        cost_disp = format_price(p['price_cents'], admin_curr)
         stock_disp = f", stock: {p['stock']}" if p.get("stock") is not None else ""
         lines.append(
             f"• <code>{esc(pid)}</code>: <b>{esc(p['name'])}</b>\n"
@@ -3978,8 +3967,9 @@ async def admin_supplier_sync(m: Message, command: CommandObject = None):
         else:
             manual_items.append(p)
 
+    admin_curr = get_user_currency(m.from_user.id)
     lines = [
-        "🔄 <b>Catalog Sync & Health Report</b>\n",
+        f"🔄 <b>Catalog Sync & Health Report ({admin_curr})</b>\n",
         f"• Suppliers Synced: <b>{', '.join(target_suppliers)}</b>",
         f"• Default Margin: <b>{markup}%</b>",
         f"• Total Processed from Feed: <b>{total_items}</b>\n",
@@ -3993,7 +3983,7 @@ async def admin_supplier_sync(m: Message, command: CommandObject = None):
         lines.append("🟢 <b>Available Auto-Delivery (Samples):</b>")
         for p in in_stock_auto[:8]:
             s_disp = f" (Stock: {p['supplier_stock']})" if ("supplier_stock" in p.keys() and p['supplier_stock'] is not None) else ""
-            lines.append(f" • <code>#{p['id']}</code> {esc(p['name'])} · {usd(p['price'])}{s_disp}")
+            lines.append(f" • <code>#{p['id']}</code> {esc(p['name'])} · {format_price(p['price'], admin_curr)}{s_disp}")
         if len(in_stock_auto) > 8:
             lines.append(f" <i>...and {len(in_stock_auto) - 8} more in-stock items</i>\n")
         else:
@@ -4002,7 +3992,7 @@ async def admin_supplier_sync(m: Message, command: CommandObject = None):
     if manual_items:
         lines.append("🟡 <b>Manual / Assisted Services:</b>")
         for p in manual_items[:8]:
-            lines.append(f" • <code>#{p['id']}</code> {esc(p['name'])} · {usd(p['price'])}")
+            lines.append(f" • <code>#{p['id']}</code> {esc(p['name'])} · {format_price(p['price'], admin_curr)}")
         if len(manual_items) > 8:
             lines.append(f" <i>...and {len(manual_items) - 8} more manual services</i>\n")
         else:
