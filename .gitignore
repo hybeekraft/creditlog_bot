@@ -7,3 +7,4 @@ data/
 *.py[cod]
 .pytest_cache/
 *.xlsx
+scratch/
