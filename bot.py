@@ -247,6 +247,25 @@ def get_korapay_key() -> str:
     return (os.environ.get("KORAPAY_SECRET_KEY") or get_setting("korapay_secret_key", "")).strip()
 
 
+def get_bank_details() -> dict[str, str]:
+    """Returns configured direct bank transfer details."""
+    bank_name = (os.environ.get("BANK_NAME") or get_setting("bank_name", "OPay")).strip()
+    account_number = (os.environ.get("BANK_ACCOUNT_NUMBER") or get_setting("bank_account_number", "")).strip()
+    account_name = (os.environ.get("BANK_ACCOUNT_NAME") or get_setting("bank_account_name", "CreditLog Store")).strip()
+    return {
+        "bank_name": bank_name,
+        "account_number": account_number,
+        "account_name": account_name,
+    }
+
+
+def is_bank_configured() -> bool:
+    """Returns True if Bank Account details are configured with at least 8 digits."""
+    details = get_bank_details()
+    acc_num = "".join(c for c in details["account_number"] if c.isdigit())
+    return len(acc_num) >= 8
+
+
 # --------------------------------------------------------------------------
 # Force Subscribe (Mandatory Channel/Group Join Gate)
 # --------------------------------------------------------------------------
@@ -2159,6 +2178,10 @@ def render_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tupl
     rate = get_usd_ngn_rate()
     total_ngn = round((p["price"] * qty / 100.0) * rate)
 
+    if is_bank_configured():
+        bank = get_bank_details()
+        rows.append([btn(f"🇳🇬 Direct Bank Transfer ({bank['bank_name']}) — ₦{total_ngn:,}", f"pay_opt:bank:{p['id']}:{qty}:{ctx}", style="success")])
+
     if is_paystack_configured():
         rows.append([btn(f"🇳🇬 Paystack — Naira / Bank / Card (₦{total_ngn:,})", f"pay_opt:paystack:{p['id']}:{qty}:{ctx}", style="success")])
     if is_korapay_configured():
@@ -2269,6 +2292,43 @@ async def on_pay_option_selected(c: CallbackQuery):
         (uid, pid, p["name"], total_cents, qty, method)
     )
     oid = cur.lastrowid
+
+    # 0. Direct Nigerian Bank Transfer (OPay / PalmPay / Kuda / Traditional Bank)
+    if method == "bank":
+        rate = get_usd_ngn_rate()
+        amount_ngn = round((total_cents / 100.0) * rate)
+        bank = get_bank_details()
+        db.execute("UPDATE orders SET expected_amount=?, invoice_id=? WHERE id=?", (f"₦{amount_ngn:,} NGN", f"BANK-{oid}", oid))
+
+        text = (
+            "<u>🇳🇬 <b>Direct Bank Transfer (Naira)</b></u>\n"
+            "────────────────────────\n\n"
+            f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
+            f"🔢 <b>Quantity:</b> {qty}\n"
+            f"💵 <b>Price (USD):</b> ${total_usdt} USDT\n"
+            f"📈 <b>Rate:</b> ₦{rate:,} / USD\n"
+            "➡️ <b>Send exactly this amount:</b>\n"
+            f"<code>₦{amount_ngn:,}</code>\n"
+            "👆 <i>Tap to copy amount.</i>\n"
+            "────────────────────────\n"
+            f"🏦 <b>Bank Name:</b> <b>{esc(bank['bank_name'])}</b>\n"
+            f"🔢 <b>Account Number:</b> <code>{esc(bank['account_number'])}</code>\n"
+            "👆 <i>Tap to copy account number.</i>\n"
+            f"👤 <b>Account Name:</b> <b>{esc(bank['account_name'])}</b>\n"
+            f"📝 <b>Narration / Remark:</b> <code>CL-{oid}</code>\n"
+            "────────────────────────\n\n"
+            f"💸 <b>Step 1:</b> Transfer <b>₦{amount_ngn:,}</b> to the account above via your banking app (OPay, PalmPay, Kuda, GTB, etc.).\n"
+            "🔗 <b>Step 2:</b> Tap <b>Submit Transfer Reference / Name</b> below and paste your transaction reference or sender name.\n"
+            "✅ <b>Step 3:</b> Our admin verifies the transfer and your order is instantly delivered!\n\n"
+            "⌛ <b>Please pay within 60 minutes.</b>"
+        )
+        rows = [
+            [btn("🔗 Submit Transfer Reference / Name", f"submit_tx:{oid}", style="primary")],
+            [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
+            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
+        ]
+        return await edit(c, text, kb(rows))
 
     # 1. Paystack Gateway (Naira / Card / Bank Transfer)
     if method == "paystack":
@@ -2516,12 +2576,21 @@ async def on_submit_tx(c: CallbackQuery):
     if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
         return await c.answer(f"⚠️ This order cannot accept payments (status: {o['status']}).", show_alert=True)
     pending_inputs[uid] = {"action": "txid", "oid": oid}
-    await c.message.answer(
-        f"✍️ <b>Submit Transaction ID for Order #{oid}:</b>\n\n"
-        f"Please paste your <b>Transaction ID / Order ID / Hash</b> in this chat.\n"
-        f"Our admins will verify your payment and release your items immediately.\n\n"
-        f"Send /cancel to return to the order."
-    )
+    method = (o["payment_method"] or "").lower()
+    if method == "bank":
+        await c.message.answer(
+            f"✍️ <b>Submit Bank Transfer Reference for Order #{oid}:</b>\n\n"
+            f"Please send your <b>Sender Name</b> or <b>Transfer Transaction Reference / Session ID</b> in this chat.\n"
+            f"Our admin will verify the transfer in our bank app and release your order immediately.\n\n"
+            f"Send /cancel to return to the order."
+        )
+    else:
+        await c.message.answer(
+            f"✍️ <b>Submit Transaction ID for Order #{oid}:</b>\n\n"
+            f"Please paste your <b>Transaction ID / Order ID / Hash</b> in this chat.\n"
+            f"Our admins will verify your payment and release your items immediately.\n\n"
+            f"Send /cancel to return to the order."
+        )
     await c.answer()
 
 
@@ -2641,7 +2710,8 @@ async def on_check_manual_status(c: CallbackQuery):
 
     method = (o["payment_method"] or "").lower()
     if not o["txid"]:
-        return await c.answer("⚠️ Please tap 'Submit Transaction ID' first so we can verify your payment.", show_alert=True)
+        hint = "Submit Transfer Reference / Name" if method == "bank" else "Submit Transaction ID"
+        return await c.answer(f"⚠️ Please tap '{hint}' first so we can verify your payment.", show_alert=True)
 
     if "bep20" in method or "trc20" in method:
         verified, result = await check_and_fulfill_onchain(oid, o["txid"], uid, c.bot)
@@ -2862,14 +2932,23 @@ async def handle_user_text_input(m: Message):
                     return await m.answer(f"✅ {result}")
 
 
-        # Fallback to admin review (e.g. for Binance Pay or if block confirmation is still pending)
-        await m.answer(
-            f"✅ <b>Transaction ID Received!</b>\n\n"
-            f"• <b>Order:</b> #{oid}\n"
-            f"• <b>Reference:</b> <code>{esc(txid)}</code>\n\n"
-            f"Our team is verifying your payment. Your product will be delivered here automatically once confirmed!"
-        )
+        # Fallback to admin review (e.g. for Direct Bank Transfer, Binance Pay or if block confirmation is pending)
+        if method == "bank":
+            await m.answer(
+                f"✅ <b>Transfer Reference Received!</b>\n\n"
+                f"• <b>Order:</b> #{oid}\n"
+                f"• <b>Reference / Name:</b> <code>{esc(txid)}</code>\n\n"
+                f"Our admin has been notified and is verifying your bank transfer. Your items will be delivered here as soon as confirmed!"
+            )
+        else:
+            await m.answer(
+                f"✅ <b>Transaction ID Received!</b>\n\n"
+                f"• <b>Order:</b> #{oid}\n"
+                f"• <b>Reference:</b> <code>{esc(txid)}</code>\n\n"
+                f"Our team is verifying your payment. Your product will be delivered here automatically once confirmed!"
+            )
         user_mention = f"@{m.from_user.username}" if m.from_user.username else f"User {uid}"
+        expected_note = f"\n• <b>Expected:</b> {esc(o['expected_amount'])}" if ("expected_amount" in o.keys() and o["expected_amount"]) else ""
         await notify_admins(
             m.bot,
             lambda aid: (
@@ -2877,9 +2956,9 @@ async def handle_user_text_input(m: Message):
                 f"• <b>Order:</b> #{oid}\n"
                 f"• <b>Buyer:</b> {user_mention} (<code>{uid}</code>)\n"
                 f"• <b>Product:</b> {esc(o['product_name'])}\n"
-                f"• <b>Amount:</b> {format_user_price(o['price'], aid)}\n"
+                f"• <b>Amount:</b> {format_user_price(o['price'], aid)}{expected_note}\n"
                 f"• <b>Method:</b> {esc(o['payment_method'] or 'Manual')}\n"
-                f"• <b>TxID:</b> <code>{esc(txid)}</code>\n\n"
+                f"• <b>TxID / Sender:</b> <code>{esc(txid)}</code>\n\n"
                 f"✅ Approve & deliver: /approve_{oid}\n"
                 f"❌ Reject: /reject_{oid}"
             )
@@ -3356,6 +3435,8 @@ async def admin_help(m: Message):
         "/export - Download updated products Excel (.xlsx)\n"
         "/setrate [rate_ngn] - View or update USD to NGN exchange rate\n"
         "/currency - Switch your active display currency (USD / NGN)\n"
+        "/setbank [Bank | AccNum | Name] - Configure Direct Nigerian Bank Transfer\n"
+        "/bank - View current Bank Transfer configuration\n"
         "/setpaystack [secret_key] - View or set Paystack API Secret Key\n"
         "/setkorapay [secret_key] - View or set Korapay API Secret Key\n\n"
         "🎨 <b>Brand Custom Emojis</b>\n"
@@ -4027,6 +4108,59 @@ async def admin_setkorapay(m: Message, command: CommandObject = None):
     set_setting("korapay_secret_key", key)
     mode = "Live" if key.startswith("sk_live_") else "Test"
     await m.answer(f"✅ Korapay Secret Key successfully saved ({mode} Mode)! Korapay Naira payments are now active in the checkout menu.")
+
+
+@dp.message(Command("setbank"), is_admin)
+async def admin_setbank(m: Message, command: CommandObject = None):
+    args = (command.args or "").strip() if command else ""
+    if not args or "|" not in args:
+        details = get_bank_details()
+        configured = is_bank_configured()
+        status_text = "🟢 <b>Configured & Active</b>" if configured else "🔴 <b>Not Configured</b>"
+        return await m.answer(
+            f"🏦 <b>Direct Bank Transfer Status:</b> {status_text}\n\n"
+            f"• <b>Bank:</b> {esc(details['bank_name'])}\n"
+            f"• <b>Account Number:</b> <code>{esc(details['account_number']) or 'None'}</code>\n"
+            f"• <b>Account Name:</b> {esc(details['account_name'])}\n\n"
+            f"<b>To configure or update your Nigerian bank account:</b>\n"
+            f"<code>/setbank &lt;Bank Name&gt; | &lt;Account Number&gt; | &lt;Account Name&gt;</code>\n\n"
+            f"<b>Examples (OPay / PalmPay / Kuda / Moniepoint / Traditional Banks):</b>\n"
+            f"• <code>/setbank OPay | 8123456789 | Adebayo Olawale</code>\n"
+            f"• <code>/setbank PalmPay | 9012345678 | Adebayo Olawale</code>\n"
+            f"• <code>/setbank Kuda | 2012345678 | Adebayo Olawale</code>\n"
+            f"• <code>/setbank Moniepoint | 6012345678 | Adebayo Olawale</code>\n\n"
+            f"<i>Customers will see Direct Bank Transfer in checkout, transfer Naira directly, and submit their sender name/reference for you to approve with /approve_&lt;order_id&gt;!</i>"
+        )
+
+    parts = [p.strip() for p in args.split("|")]
+    if len(parts) < 3:
+        return await m.answer(
+            "⚠️ Please provide all 3 parts separated by vertical bars (|):\n"
+            "<code>/setbank &lt;Bank Name&gt; | &lt;Account Number&gt; | &lt;Account Name&gt;</code>\n\n"
+            "Example: <code>/setbank OPay | 8123456789 | Adebayo Olawale</code>"
+        )
+
+    bank_name, acc_num, acc_name = parts[0], parts[1], parts[2]
+    clean_num = "".join(c for c in acc_num if c.isdigit())
+    if len(clean_num) < 8:
+        return await m.answer("⚠️ Account number must contain at least 8 digits.")
+
+    set_setting("bank_name", bank_name)
+    set_setting("bank_account_number", clean_num)
+    set_setting("bank_account_name", acc_name)
+
+    await m.answer(
+        f"✅ <b>Direct Bank Transfer Configured Successfully!</b>\n\n"
+        f"• <b>Bank:</b> {esc(bank_name)}\n"
+        f"• <b>Account Number:</b> <code>{clean_num}</code>\n"
+        f"• <b>Account Name:</b> {esc(acc_name)}\n\n"
+        f"🇳🇬 Direct Bank Transfer is now active as a payment option in the checkout menu!"
+    )
+
+
+@dp.message(Command("bank"), is_admin)
+async def admin_view_bank(m: Message, command: CommandObject = None):
+    return await admin_setbank(m, command)
 
 
 

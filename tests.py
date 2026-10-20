@@ -3386,6 +3386,169 @@ class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
         c.answer.assert_called_with("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
 
+class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Reset settings
+        bot.db.execute("DELETE FROM settings WHERE key LIKE 'bank_%'")
+
+    def tearDown(self):
+        bot.db.execute("DELETE FROM settings WHERE key LIKE 'bank_%'")
+
+    def test_bank_configuration_helpers(self):
+        # Unconfigured by default (empty account number)
+        self.assertFalse(bot.is_bank_configured())
+        details = bot.get_bank_details()
+        self.assertEqual(details["account_number"], "")
+        self.assertEqual(details["bank_name"], "OPay")
+        self.assertEqual(details["account_name"], "CreditLog Store")
+
+        # Configure valid 10-digit account
+        bot.set_setting("bank_name", "OPay")
+        bot.set_setting("bank_account_number", "8123456789")
+        bot.set_setting("bank_account_name", "Adebayo Olawale")
+        self.assertTrue(bot.is_bank_configured())
+        details = bot.get_bank_details()
+        self.assertEqual(details["bank_name"], "OPay")
+        self.assertEqual(details["account_number"], "8123456789")
+        self.assertEqual(details["account_name"], "Adebayo Olawale")
+
+    async def test_admin_setbank_help_and_view(self):
+        m = AsyncMock()
+        admin_id = next(iter(bot.ADMIN_IDS)) if bot.ADMIN_IDS else 999999
+        m.from_user.id = admin_id
+
+        # No args -> returns status & usage instructions
+        cmd = MagicMock()
+        cmd.args = ""
+        await bot.admin_setbank(m, cmd)
+        self.assertIn("Direct Bank Transfer Status", m.answer.call_args[0][0])
+        self.assertIn("/setbank &lt;Bank Name&gt; | &lt;Account Number&gt; | &lt;Account Name&gt;", m.answer.call_args[0][0])
+
+        # /bank alias
+        m.reset_mock()
+        await bot.admin_view_bank(m, cmd)
+        self.assertIn("Direct Bank Transfer Status", m.answer.call_args[0][0])
+
+    async def test_admin_setbank_validation(self):
+        m = AsyncMock()
+        admin_id = next(iter(bot.ADMIN_IDS)) if bot.ADMIN_IDS else 999999
+        m.from_user.id = admin_id
+
+        # Less than 3 parts
+        cmd = MagicMock()
+        cmd.args = "OPay | 8123456789"
+        await bot.admin_setbank(m, cmd)
+        self.assertIn("Please provide all 3 parts", m.answer.call_args[0][0])
+
+        # Account number too short (< 8 digits)
+        m.reset_mock()
+        cmd.args = "OPay | 12345 | Adebayo Olawale"
+        await bot.admin_setbank(m, cmd)
+        self.assertIn("Account number must contain at least 8 digits", m.answer.call_args[0][0])
+
+    async def test_admin_setbank_success(self):
+        m = AsyncMock()
+        admin_id = next(iter(bot.ADMIN_IDS)) if bot.ADMIN_IDS else 999999
+        m.from_user.id = admin_id
+
+        cmd = MagicMock()
+        cmd.args = "PalmPay | 9012345678 | CreditLog Store Nig"
+        await bot.admin_setbank(m, cmd)
+        self.assertIn("Direct Bank Transfer Configured Successfully", m.answer.call_args[0][0])
+        self.assertTrue(bot.is_bank_configured())
+        details = bot.get_bank_details()
+        self.assertEqual(details["bank_name"], "PalmPay")
+        self.assertEqual(details["account_number"], "9012345678")
+        self.assertEqual(details["account_name"], "CreditLog Store Nig")
+
+    def test_render_payment_methods_includes_bank_when_configured(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Bank Prod', 'Desc', 1000, 1)").lastrowid
+        p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+
+        # When unconfigured
+        _, kb_unconf = bot.render_payment_methods(123, p, 1, "shop")
+        buttons_unconf = [b.callback_data for row in kb_unconf.inline_keyboard for b in row if b.callback_data]
+        self.assertFalse(any(b.startswith("pay_opt:bank:") for b in buttons_unconf))
+
+        # When configured
+        bot.set_setting("bank_name", "Kuda")
+        bot.set_setting("bank_account_number", "2012345678")
+        bot.set_setting("bank_account_name", "CreditLog Kuda")
+        _, kb_conf = bot.render_payment_methods(123, p, 1, "shop")
+        buttons_conf = [b.callback_data for row in kb_conf.inline_keyboard for b in row if b.callback_data]
+        self.assertTrue(any(b.startswith("pay_opt:bank:") for b in buttons_conf))
+
+    async def test_on_pay_option_selected_bank_order_creation(self):
+        bot.set_setting("bank_name", "OPay")
+        bot.set_setting("bank_account_number", "8123456789")
+        bot.set_setting("bank_account_name", "CreditLog OPay")
+
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Bank Flow Prod', 'Desc', 500, 1)").lastrowid
+        c = AsyncMock()
+        c.from_user.id = 777888
+        c.from_user.username = "bankbuyer"
+        c.data = f"pay_opt:bank:{pid}:1:shop"
+
+        with patch("bot.edit", new=AsyncMock()) as mock_edit:
+            await bot.on_pay_option_selected(c)
+            mock_edit.assert_called_once()
+            text_arg = mock_edit.call_args[0][1]
+            self.assertIn("Direct Bank Transfer (Naira)", text_arg)
+            self.assertIn("8123456789", text_arg)
+            self.assertIn("CreditLog OPay", text_arg)
+
+        # Verify order in DB
+        o = bot.db.execute("SELECT * FROM orders WHERE user_id=777888 AND product_id=? ORDER BY id DESC", (pid,)).fetchone()
+        self.assertIsNotNone(o)
+        self.assertEqual(o["payment_method"], "bank")
+        self.assertEqual(o["status"], "pending")
+        self.assertEqual(o["invoice_id"], f"BANK-{o['id']}")
+        self.assertTrue(o["expected_amount"].endswith("NGN"))
+
+    async def test_bank_transfer_submission_and_admin_notification(self):
+        bot.set_setting("bank_name", "OPay")
+        bot.set_setting("bank_account_number", "8123456789")
+        bot.set_setting("bank_account_name", "CreditLog OPay")
+
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Bank Sub Prod', 'Desc', 500, 1)").lastrowid
+        oid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, payment_method, status, expected_amount) VALUES(888999, ?, 'Bank Sub Prod', 500, 'bank', 'pending', '₦7,250 NGN')",
+            (pid,)
+        ).lastrowid
+
+        # 1. Tap Submit Transfer Reference
+        c = AsyncMock()
+        c.from_user.id = 888999
+        c.data = f"submit_tx:{oid}"
+        await bot.on_submit_tx(c)
+        self.assertEqual(bot.pending_inputs.get(888999), {"action": "txid", "oid": oid})
+        c.message.answer.assert_called_once()
+        self.assertIn("Submit Bank Transfer Reference", c.message.answer.call_args[0][0])
+
+        # 2. Check manual status without submitting reference gives tailored hint
+        c.reset_mock()
+        c.data = f"chk_manual:{oid}"
+        await bot.on_check_manual_status(c)
+        c.answer.assert_called_with("⚠️ Please tap 'Submit Transfer Reference / Name' first so we can verify your payment.", show_alert=True)
+
+        # 3. User sends sender name & reference in chat
+        m = AsyncMock()
+        m.from_user.id = 888999
+        m.from_user.username = "bankbuyer"
+        m.text = "Tunde Bakare / OPay Session 123456789"
+        m.bot = AsyncMock()
+
+        with patch("bot.notify_admins", new=AsyncMock()) as mock_notify:
+            await bot.handle_user_text_input(m)
+            m.answer.assert_called_once()
+            self.assertIn("Transfer Reference Received", m.answer.call_args[0][0])
+            mock_notify.assert_called_once()
+
+        # Verify DB updated
+        o_updated = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(o_updated["txid"], "Tunde Bakare / OPay Session 123456789")
+
+
 if __name__ == "__main__":
     unittest.main()
 
