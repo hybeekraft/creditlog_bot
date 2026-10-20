@@ -235,7 +235,27 @@ def get_db_path(custom_path: Optional[str] = None) -> str:
     return db_env
 
 
+CATALOG_COLUMNS = [
+    ("Bot ID", 10, "center"),
+    ("Product Name", 34, "left"),
+    ("Category", 20, "left"),
+    ("Brand / Service", 24, "left"),
+    ("Store Price (USD)", 16, "right"),
+    ("Supplier Cost (USD)", 16, "right"),
+    ("Profit Margin ($)", 16, "right"),
+    ("Fulfillment Type", 22, "center"),
+    ("Supplier ID", 14, "center"),
+    ("Stock Status", 18, "center"),
+    ("Delivery Format", 26, "left"),
+    ("Full Step-by-Step Instructions", 50, "left"),
+    ("Product Overview & Features", 40, "left"),
+    ("Warranty & Policy", 34, "left"),
+    ("Critical Handling Notes & Precautions", 48, "left"),
+]
+
+
 async def build_catalog_excel(target_db_path: Optional[str] = None):
+    columns = CATALOG_COLUMNS
     # 1. Connect to DB using active resolved path
     active_db = get_db_path(target_db_path)
     conn = sqlite3.connect(active_db)
@@ -352,23 +372,7 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
         bottom=Side(style="thin", color="E2E8F0"),
     )
 
-    columns = [
-        ("Bot ID", 10, "center"),
-        ("Product Name", 34, "left"),
-        ("Category", 20, "left"),
-        ("Brand / Service", 24, "left"),
-        ("Store Price (USD)", 16, "right"),
-        ("Supplier Cost (USD)", 16, "right"),
-        ("Profit Margin ($)", 16, "right"),
-        ("Fulfillment Type", 22, "center"),
-        ("Supplier ID", 14, "center"),
-        ("Stock Status", 18, "center"),
-        ("Delivery Format", 26, "left"),
-        ("Full Step-by-Step Instructions", 50, "left"),
-        ("Product Overview & Features", 40, "left"),
-        ("Warranty & Policy", 34, "left"),
-        ("Critical Handling Notes & Precautions", 48, "left"),
-    ]
+    columns = CATALOG_COLUMNS
 
     # ----------------------------------------------------
     # Sheet 1: Supplier API Catalog

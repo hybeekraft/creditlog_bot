@@ -3177,6 +3177,81 @@ class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
         await bot.check_korapay_payment_callback(c)
         c.answer.assert_called_with(f"⚠️ This Korapay reference was already claimed for Order #{oid}.", show_alert=True)
 
+    async def test_cancel_order_status_guards(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Cancel Test Prod', 'Desc', 500, 1)").lastrowid
+        
+        # 1. Non-pending order (completed)
+        oid_comp = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(777, ?, 'Cancel Test Prod', 500, 'completed')",
+            (pid,)
+        ).lastrowid
+        c = AsyncMock()
+        c.from_user.id = 777
+        c.data = f"cancel_order:{oid_comp}"
+        await bot.on_cancel_order(c)
+        c.answer.assert_called_with("⚠️ This order cannot be cancelled (status: completed).", show_alert=True)
+
+        # 2. Non-pending order (paid)
+        oid_paid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(777, ?, 'Cancel Test Prod', 500, 'paid')",
+            (pid,)
+        ).lastrowid
+        c.reset_mock()
+        c.data = f"cancel_order:{oid_paid}"
+        await bot.on_cancel_order(c)
+        c.answer.assert_called_with("⚠️ This order cannot be cancelled (status: paid).", show_alert=True)
+
+        # 3. Pending order successfully cancelled
+        oid_pend = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(777, ?, 'Cancel Test Prod', 500, 'pending')",
+            (pid,)
+        ).lastrowid
+        c3 = AsyncMock()
+        c3.from_user.id = 777
+        c3.data = f"cancel_order:{oid_pend}"
+        c3.message.edit_text = AsyncMock()
+        await bot.on_cancel_order(c3)
+        c3.answer.assert_any_call("❌ Order cancelled.", show_alert=True)
+        o_res = bot.db.execute("SELECT status FROM orders WHERE id=?", (oid_pend,)).fetchone()
+        self.assertEqual(o_res["status"], "cancelled")
+
+    async def test_recent_purchases_failed_status_display(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Failed Test Prod', 'Desc', 500, 1)").lastrowid
+        oid_failed = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(8888, ?, 'Failed Test Prod', 500, 'failed')",
+            (pid,)
+        ).lastrowid
+        
+        m = AsyncMock()
+        m.from_user.id = 8888
+        m.bot = AsyncMock()
+        with patch("bot.check_user_fsub", new=AsyncMock(return_value=(True, []))):
+            await bot.recent_purchases(m)
+            ans = m.answer.call_args[0][0]
+            self.assertIn("🔴", ans)
+            self.assertIn("Delivery issue — Please contact support", ans)
+
+    async def test_generate_catalog_csv_fallback_when_openpyxl_missing(self):
+        import generate_catalog_excel
+        with patch("generate_catalog_excel.HAS_OPENPYXL", False), \
+             patch("generate_catalog_excel.get_db_path", return_value=":memory:"):
+            # Provide empty or mocked supplier
+            with patch("generate_catalog_excel.SupplierRegistry.from_env") as mock_reg:
+                mock_client = AsyncMock()
+                mock_client.api_key = "test_key"
+                mock_client.get_products = AsyncMock(return_value=[])
+                mock_reg.return_value.get.return_value = mock_client
+                mock_reg.return_value.close_all = AsyncMock()
+                
+                out_path = await generate_catalog_excel.build_catalog_excel(":memory:")
+                self.assertTrue(out_path.endswith(".csv"))
+                self.assertTrue(os.path.exists(out_path))
+                # Clean up generated test csv
+                try:
+                    os.remove(out_path)
+                except Exception:
+                    pass
+
 
 if __name__ == "__main__":
     unittest.main()

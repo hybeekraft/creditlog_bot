@@ -2667,6 +2667,8 @@ async def on_cancel_order(c: CallbackQuery):
         return await c.answer("Order not found.", show_alert=True)
     if o["user_id"] != uid and uid not in ADMIN_IDS:
         return await c.answer("⚠️ Unauthorized access to this order.", show_alert=True)
+    if o["status"] != "pending":
+        return await c.answer(f"⚠️ This order cannot be cancelled (status: {o['status']}).", show_alert=True)
     db.execute("UPDATE orders SET status='cancelled' WHERE id=? AND status='pending'", (oid,))
     await c.answer("❌ Order cancelled.", show_alert=True)
     await edit(c, t(uid, "welcome"), home_kb(uid))
@@ -3213,6 +3215,8 @@ async def recent_purchases(event: Message | CallbackQuery):
             p_disp = format_user_price(o['price'], uid)
             if o["status"] == "completed" and o["payload"]:
                 return f"📦 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {p_disp}\n<code>{esc(o['payload'])}</code>"
+            elif o["status"] == "failed":
+                return f"🔴 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {p_disp}\n<i>Status: ⚠️ Delivery issue — Please contact support</i>"
             else:
                 return f"🟡 <b>Order #{o['id']}</b> · {esc(o['product_name'])} · {p_disp}\n<i>Status: Processing / Awaiting support delivery</i>"
 
