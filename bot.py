@@ -1598,7 +1598,7 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
     if not p:
         return None, "out_of_stock"
 
-    qty = o["quantity"] if ("quantity" in o.keys() and o["quantity"]) else 1
+    qty = o["quantity"] if ("quantity" in o.keys() and o["quantity"] and o["quantity"] > 0) else 1
 
     # Option A: Supplier Catalog Auto-fulfillment
     if p["auto_fulfill"] and p["supplier_product_id"]:
@@ -1663,7 +1663,7 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
             "SELECT * FROM stock WHERE product_id=? AND sold=0 ORDER BY id LIMIT ?",
             (p["id"], qty)
         ).fetchall()
-        if len(s_items) >= qty:
+        if s_items and len(s_items) >= qty:
             ids = [item["id"] for item in s_items]
             db.execute(f"UPDATE stock SET sold=1 WHERE id IN ({','.join(['?']*len(ids))})", ids)
             payload = "\n".join(item["payload"] for item in s_items)
@@ -2077,6 +2077,8 @@ def render_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tupl
 
 async def start_checkout(event: Message | CallbackQuery, uid: int, p: sqlite3.Row, qty: int, ctx: str):
     """Entrypoint to order summary screen."""
+    if not (1 <= qty <= 1000):
+        qty = 1
     pid = p["id"]
     is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
     deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
@@ -2105,10 +2107,13 @@ async def on_summary_back(c: CallbackQuery):
     if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
         return await c.answer("⚠️ Invalid callback data.", show_alert=True)
     _, pid_str, qty_str, ctx = parts
-    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (int(pid_str),)).fetchone()
+    pid, qty = int(pid_str), int(qty_str)
+    if not (1 <= qty <= 1000):
+        return await c.answer("⚠️ Invalid quantity.", show_alert=True)
+    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
     if not p:
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
-    text, markup = render_order_summary(uid, p, int(qty_str), ctx)
+    text, markup = render_order_summary(uid, p, qty, ctx)
     await edit(c, text, markup)
 
 
@@ -2120,10 +2125,13 @@ async def on_pay_directly(c: CallbackQuery):
     if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
         return await c.answer("⚠️ Invalid callback data.", show_alert=True)
     _, pid_str, qty_str, ctx = parts
-    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (int(pid_str),)).fetchone()
+    pid, qty = int(pid_str), int(qty_str)
+    if not (1 <= qty <= 1000):
+        return await c.answer("⚠️ Invalid quantity.", show_alert=True)
+    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
     if not p:
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
-    text, markup = render_payment_methods(uid, p, int(qty_str), ctx)
+    text, markup = render_payment_methods(uid, p, qty, ctx)
     await edit(c, text, markup)
 
 
@@ -2136,6 +2144,8 @@ async def on_pay_option_selected(c: CallbackQuery):
         return await c.answer("⚠️ Invalid callback data.", show_alert=True)
     _, method, pid_str, qty_str, ctx = parts
     pid, qty = int(pid_str), int(qty_str)
+    if not (1 <= qty <= 1000):
+        return await c.answer("⚠️ Invalid quantity.", show_alert=True)
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
     if not p:
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
@@ -2527,6 +2537,8 @@ async def on_buy_qty(c: CallbackQuery):
         return await c.answer("⚠️ Invalid callback data.", show_alert=True)
     _, pid_str, qty_str, ctx = parts
     pid, qty = int(pid_str), int(qty_str)
+    if not (1 <= qty <= 1000):
+        return await c.answer("⚠️ Invalid quantity.", show_alert=True)
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
     if not p or not is_product_available(p):
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
@@ -2648,6 +2660,9 @@ async def handle_user_text_input(m: Message):
         if not txid:
             pending_inputs[uid] = state
             return await m.answer("⚠️ Please enter a valid transaction reference or hash (or send /cancel):")
+        if len(txid) > 128:
+            pending_inputs[uid] = state
+            return await m.answer("⚠️ Transaction reference cannot exceed 128 characters (or send /cancel):")
 
         o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         if not o:
@@ -2721,7 +2736,7 @@ async def handle_user_text_input(m: Message):
         )
 
 
-@dp.message(F.text.regexp(r"^/approve_(\d+)$"), is_admin)
+@dp.message(F.text.regexp(r"^/approve_(\d+)(?:@\w+)?$"), is_admin)
 @dp.message(Command("approve"), is_admin)
 async def admin_approve_order(m: Message, command: CommandObject = None):
     oid = None
@@ -2732,7 +2747,7 @@ async def admin_approve_order(m: Message, command: CommandObject = None):
             pass
     elif m.text and m.text.startswith("/approve_"):
         try:
-            oid = int(m.text.split("_")[1])
+            oid = int(m.text.split("_")[1].split("@")[0])
         except (ValueError, IndexError):
             pass
 
@@ -2769,7 +2784,7 @@ async def admin_approve_order(m: Message, command: CommandObject = None):
         await m.answer(f"✅ Order #{oid} fulfilled, but could not message user: {esc(str(e))}\nPayload: <code>{esc(payload)}</code>")
 
 
-@dp.message(F.text.regexp(r"^/reject_(\d+)$"), is_admin)
+@dp.message(F.text.regexp(r"^/reject_(\d+)(?:@\w+)?$"), is_admin)
 @dp.message(Command("reject"), is_admin)
 async def admin_reject_order(m: Message, command: CommandObject = None):
     oid = None
@@ -2780,7 +2795,7 @@ async def admin_reject_order(m: Message, command: CommandObject = None):
             pass
     elif m.text and m.text.startswith("/reject_"):
         try:
-            oid = int(m.text.split("_")[1])
+            oid = int(m.text.split("_")[1].split("@")[0])
         except (ValueError, IndexError):
             pass
 

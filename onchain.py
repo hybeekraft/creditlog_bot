@@ -65,7 +65,8 @@ async def verify_bep20_usdt(
     if not tx_hash.startswith("0x"):
         tx_hash = "0x" + tx_hash
 
-    if len(tx_hash) != 66:
+    hex_part = tx_hash[2:]
+    if len(tx_hash) != 66 or not all(c in "0123456789abcdefABCDEF" for c in hex_part):
         return False, "Invalid BEP-20 transaction hash format (must be 66 hex characters).", None
 
     expected_recipient = expected_recipient.strip().lower()
@@ -168,7 +169,7 @@ async def verify_trc20_usdt(
     if tx_hash.startswith("0x"):
         tx_hash = tx_hash[2:]
 
-    if len(tx_hash) != 64:
+    if len(tx_hash) != 64 or not all(c in "0123456789abcdefABCDEF" for c in tx_hash):
         return False, "Invalid TRC-20 transaction hash format (must be 64 hex characters).", None
 
     expected_recipient = expected_recipient.strip()

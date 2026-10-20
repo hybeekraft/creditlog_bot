@@ -2898,6 +2898,91 @@ class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
             self.assertIn('<pre><code class="language-json">', ans)
             self.assertIn('&quot;store&quot;: &quot;Gemini Pro Store&quot;', ans)
 
+    async def test_callback_quantity_bounds_validation(self):
+        c = AsyncMock()
+        c.from_user.id = 12345
+        c.message = AsyncMock()
+
+        # 1. buyqty with 0
+        c.data = "buyqty:1:0:shop"
+        await bot.on_buy_qty(c)
+        c.answer.assert_called_with("⚠️ Invalid quantity.", show_alert=True)
+
+        # 2. buyqty with > 1000
+        c.reset_mock()
+        c.data = "buyqty:1:1001:shop"
+        await bot.on_buy_qty(c)
+        c.answer.assert_called_with("⚠️ Invalid quantity.", show_alert=True)
+
+        # 3. summary with 0
+        c.reset_mock()
+        c.data = "summary:1:0:shop"
+        await bot.on_summary_back(c)
+        c.answer.assert_called_with("⚠️ Invalid quantity.", show_alert=True)
+
+        # 4. pay_dir with 0
+        c.reset_mock()
+        c.data = "pay_dir:1:0:shop"
+        await bot.on_pay_directly(c)
+        c.answer.assert_called_with("⚠️ Invalid quantity.", show_alert=True)
+
+        # 5. pay_opt with 0
+        c.reset_mock()
+        c.data = "pay_opt:bep20:1:0:shop"
+        await bot.on_pay_option_selected(c)
+        c.answer.assert_called_with("⚠️ Invalid quantity.", show_alert=True)
+
+    async def test_admin_approve_and_reject_with_bot_username(self):
+        admin_id = 111222333
+        m = AsyncMock()
+        m.from_user.id = admin_id
+        m.bot = AsyncMock()
+
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Appr Test', 'Desc', 500, 1)").lastrowid
+        oid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(999, ?, 'Appr Test', 500, 'pending')",
+            (pid,)
+        ).lastrowid
+
+        # 1. /approve_<oid>@CreditLogBot
+        m.text = f"/approve_{oid}@CreditLogBot"
+        with patch("bot.fulfill_order", new=AsyncMock(return_value=("KEY_APPR", None))):
+            await bot.admin_approve_order(m)
+            ans = m.answer.call_args[0][0]
+            self.assertIn(f"Order #{oid} approved", ans)
+
+        # 2. /reject_<oid>@CreditLogBot
+        oid_rej = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(999, ?, 'Appr Test', 500, 'pending')",
+            (pid,)
+        ).lastrowid
+        m.reset_mock()
+        m.text = f"/reject_{oid_rej}@CreditLogBot"
+        await bot.admin_reject_order(m)
+        ans = m.answer.call_args[0][0]
+        self.assertIn(f"Order #{oid_rej} marked as rejected", ans)
+
+    async def test_txid_length_limit(self):
+        m = AsyncMock()
+        m.from_user.id = 55555
+        m.text = "A" * 150
+        bot.pending_inputs[55555] = {"action": "txid", "oid": 1}
+        await bot.handle_user_text_input(m)
+        ans = m.answer.call_args[0][0]
+        self.assertIn("cannot exceed 128 characters", ans)
+
+    async def test_onchain_hex_validation(self):
+        from onchain import verify_bep20_usdt, verify_trc20_usdt
+        # BEP20 with non-hex char 'g'
+        valid, msg, _ = await verify_bep20_usdt("0x" + "g" * 64, "0x1111111111111111111111111111111111111111", 10.0)
+        self.assertFalse(valid)
+        self.assertIn("Invalid BEP-20 transaction hash format", msg)
+
+        # TRC20 with non-hex char 'z'
+        valid, msg, _ = await verify_trc20_usdt("z" * 64, "T111111111111111111111111111111111", 10.0)
+        self.assertFalse(valid)
+        self.assertIn("Invalid TRC-20 transaction hash format", msg)
+
 
 if __name__ == "__main__":
     unittest.main()
