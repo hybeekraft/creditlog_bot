@@ -2332,8 +2332,16 @@ async def on_pay_option_selected(c: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("submit_tx:"))
 async def on_submit_tx(c: CallbackQuery):
-    oid = int(c.data.split(":")[1])
+    parts = c.data.split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await c.answer("⚠️ Invalid order data.", show_alert=True)
+    oid = int(parts[1])
     uid = c.from_user.id
+    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o:
+        return await c.answer("Order not found.", show_alert=True)
+    if o["user_id"] != uid and uid not in ADMIN_IDS:
+        return await c.answer("⚠️ Unauthorized access to this order.", show_alert=True)
     pending_inputs[uid] = {"action": "txid", "oid": oid}
     await c.message.answer(
         f"✍️ <b>Submit Transaction ID for Order #{oid}:</b>\n\n"
@@ -2439,11 +2447,16 @@ async def check_and_fulfill_onchain(oid: int, txid: str, uid: int, bot_instance:
 
 @dp.callback_query(F.data.startswith("chk_manual:"))
 async def on_check_manual_status(c: CallbackQuery):
-    oid = int(c.data.split(":")[1])
+    parts = c.data.split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
+    oid = int(parts[1])
     uid = c.from_user.id
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return await c.answer("Order not found.", show_alert=True)
+    if o["user_id"] != uid and uid not in ADMIN_IDS:
+        return await c.answer("⚠️ Unauthorized access to this order.", show_alert=True)
     if o["status"] == "completed":
         if o["payload"]:
             await edit(c, t(uid, "purchased", oid=oid, payload=esc(o["payload"])), kb([[btn(t(uid, "btn_back"), "home", style="primary")]]))
@@ -2475,10 +2488,18 @@ async def on_check_manual_status(c: CallbackQuery):
 @dp.callback_query(F.data.startswith("cancel_order:"))
 async def on_cancel_order(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
-    oid = int(c.data.split(":")[1])
+    parts = c.data.split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
+    oid = int(parts[1])
+    uid = c.from_user.id
+    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o:
+        return await c.answer("Order not found.", show_alert=True)
+    if o["user_id"] != uid and uid not in ADMIN_IDS:
+        return await c.answer("⚠️ Unauthorized access to this order.", show_alert=True)
     db.execute("UPDATE orders SET status='cancelled' WHERE id=? AND status='pending'", (oid,))
     await c.answer("❌ Order cancelled.", show_alert=True)
-    uid = c.from_user.id
     await edit(c, t(uid, "welcome"), home_kb(uid))
 
 
@@ -2609,6 +2630,8 @@ async def handle_user_text_input(m: Message):
         o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         if not o:
             return await m.answer("⚠️ Order not found.")
+        if o["user_id"] != uid and uid not in ADMIN_IDS:
+            return await m.answer("⚠️ Unauthorized access to this order.")
         if o["status"] == "completed":
             return await m.answer(f"✅ Order #{oid} is already completed.")
         if o["refunded"] or o["status"] in ("refunded", "cancelled"):
@@ -2758,13 +2781,17 @@ async def admin_reject_order(m: Message, command: CommandObject = None):
 
 @dp.callback_query(F.data.startswith("chk_cb:"))
 async def check_cryptobot_payment(c: CallbackQuery):
-    _, oid_str, inv_id_str = c.data.split(":")
-    oid, inv_id = int(oid_str), int(inv_id_str)
+    parts = c.data.split(":")
+    if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        return await c.answer("⚠️ Invalid payment callback data.", show_alert=True)
+    oid, inv_id = int(parts[1]), int(parts[2])
     uid = c.from_user.id
 
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return await c.answer("Order not found.", show_alert=True)
+    if o["user_id"] != uid and uid not in ADMIN_IDS:
+        return await c.answer("⚠️ Unauthorized access to this order.", show_alert=True)
     if o["status"] == "completed":
         if o["payload"]:
             await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
@@ -2810,6 +2837,8 @@ async def check_cryptobot_payment(c: CallbackQuery):
 @dp.callback_query(F.data.startswith("chk_paystack:"))
 async def check_paystack_payment_callback(c: CallbackQuery):
     parts = c.data.split(":", 2)
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await c.answer("⚠️ Invalid payment callback data.", show_alert=True)
     oid = int(parts[1])
     ref = parts[2] if len(parts) > 2 else ""
     uid = c.from_user.id
@@ -2817,6 +2846,8 @@ async def check_paystack_payment_callback(c: CallbackQuery):
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return await c.answer("Order not found.", show_alert=True)
+    if o["user_id"] != uid and uid not in ADMIN_IDS:
+        return await c.answer("⚠️ Unauthorized access to this order.", show_alert=True)
     if o["status"] == "completed":
         if o["payload"]:
             await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
@@ -2880,11 +2911,16 @@ async def check_paystack_payment_callback(c: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("manual_pay:"))
 async def manual_pay_info(c: CallbackQuery):
-    oid = int(c.data.split(":")[1])
+    parts = c.data.split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
+    oid = int(parts[1])
     uid = c.from_user.id
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return await c.answer("Order not found.", show_alert=True)
+    if o["user_id"] != uid and uid not in ADMIN_IDS:
+        return await c.answer("⚠️ Unauthorized access to this order.", show_alert=True)
     details = manual_crypto_details()
     amount_str = format_user_price(o["price"], uid)
     text = t(uid, "manual_crypto_info", oid=oid, name=esc(o["product_name"]), amount=amount_str, details=details)
@@ -3136,7 +3172,7 @@ async def admin_fsub(m: Message, command: CommandObject = None):
 
 
 @dp.message(Command("setemoji"), is_admin)
-async def admin_setemoji(m: Message, command: CommandObject):
+async def admin_setemoji(m: Message, command: CommandObject = None):
     """
     Sets custom emoji ID for a brand, category, or UI button.
     Usage: /setemoji <key> [custom_emoji_or_id]
@@ -3145,7 +3181,8 @@ async def admin_setemoji(m: Message, command: CommandObject):
       /setemoji chatgpt 5368324170671202288
       /setemoji gemini
     """
-    if not command.args:
+    args = (command.args or "").strip() if command else ""
+    if not args:
         avail_keys = ", ".join(k for k, _, _ in CATEGORIES)
         return await m.answer(
             f"<b>Usage:</b> <code>/setemoji &lt;key&gt; [emoji]</code>\n\n"
@@ -3153,7 +3190,7 @@ async def admin_setemoji(m: Message, command: CommandObject):
             f"<b>Available keys:</b>\n<code>{avail_keys}, shop, orders, lang, support, news, search, all_items, back</code>"
         )
 
-    parts = command.args.split(None, 1)
+    parts = args.split(None, 1)
     key = parts[0].strip().lower()
 
     # Look for custom_emoji in message entities
@@ -3204,10 +3241,11 @@ async def admin_list_emojis(m: Message):
 
 
 @dp.message(Command("delemoji"), is_admin)
-async def admin_del_emoji(m: Message, command: CommandObject):
-    if not command.args:
+async def admin_del_emoji(m: Message, command: CommandObject = None):
+    args = (command.args or "").strip() if command else ""
+    if not args:
         return await m.answer("Usage: /delemoji <key>")
-    key = command.args.strip().lower()
+    key = args.lower()
     db.execute("DELETE FROM custom_emojis WHERE key=?", (key,))
     await m.answer(f"Custom emoji for <b>{esc(key)}</b> removed.")
 
@@ -4070,7 +4108,7 @@ async def admin_supplier_sync(m: Message, command: CommandObject = None):
 
 
 @dp.message(Command("s_link"), is_admin)
-async def admin_supplier_link(m: Message, command: CommandObject):
+async def admin_supplier_link(m: Message, command: CommandObject = None):
     try:
         if not command or not command.args:
             return await m.answer("Usage: /s_link <local_product_id> <supplier_product_id> [supplier_name]")
@@ -4093,7 +4131,7 @@ async def admin_supplier_link(m: Message, command: CommandObject):
 
 
 @dp.message(Command("s_unlink"), is_admin)
-async def admin_supplier_unlink(m: Message, command: CommandObject):
+async def admin_supplier_unlink(m: Message, command: CommandObject = None):
     try:
         if not command or not command.args:
             return await m.answer("Usage: /s_unlink <local_product_id>")

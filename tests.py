@@ -2444,7 +2444,203 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
             alert_text2 = c.answer.call_args[0][0]
             self.assertIn("Transaction failed / reverted on blockchain.", alert_text2)
 
+    async def test_order_callbacks_idor_unauthorized_rejection(self):
+        owner_id = 111111
+        attacker_id = 999999
+        admin_id = 111222333
+
+        cur = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, status, payment_method) VALUES(?, 1, 'Secured Item', 1000, 1, 'pending', 'bep20')",
+            (owner_id,)
+        )
+        oid = cur.lastrowid
+
+        # 1. on_check_manual_status
+        c = AsyncMock()
+        c.from_user.id = attacker_id
+        c.data = f"chk_manual:{oid}"
+        await bot.on_check_manual_status(c)
+        c.answer.assert_called_with("⚠️ Unauthorized access to this order.", show_alert=True)
+
+        # 2. on_cancel_order
+        c.reset_mock()
+        c.from_user.id = attacker_id
+        c.data = f"cancel_order:{oid}"
+        await bot.on_cancel_order(c)
+        c.answer.assert_called_with("⚠️ Unauthorized access to this order.", show_alert=True)
+        # Verify order was not cancelled
+        o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(o["status"], "pending")
+
+        # 3. on_submit_tx
+        c.reset_mock()
+        c.from_user.id = attacker_id
+        c.data = f"submit_tx:{oid}"
+        await bot.on_submit_tx(c)
+        c.answer.assert_called_with("⚠️ Unauthorized access to this order.", show_alert=True)
+        self.assertNotIn(attacker_id, bot.pending_inputs)
+
+        # 4. check_cryptobot_payment
+        c.reset_mock()
+        c.from_user.id = attacker_id
+        c.data = f"chk_cb:{oid}:12345"
+        await bot.check_cryptobot_payment(c)
+        c.answer.assert_called_with("⚠️ Unauthorized access to this order.", show_alert=True)
+
+        # 5. check_paystack_payment_callback
+        c.reset_mock()
+        c.from_user.id = attacker_id
+        c.data = f"chk_paystack:{oid}:ref123"
+        await bot.check_paystack_payment_callback(c)
+        c.answer.assert_called_with("⚠️ Unauthorized access to this order.", show_alert=True)
+
+        # 6. manual_pay_info
+        c.reset_mock()
+        c.from_user.id = attacker_id
+        c.data = f"manual_pay:{oid}"
+        await bot.manual_pay_info(c)
+        c.answer.assert_called_with("⚠️ Unauthorized access to this order.", show_alert=True)
+
+        # 7. text input txid with attacker ID
+        bot.pending_inputs[attacker_id] = {"action": "txid", "oid": oid}
+        m = AsyncMock()
+        m.from_user.id = attacker_id
+        m.text = "0xhash123"
+        await bot.handle_user_text_input(m)
+        m.answer.assert_called_with("⚠️ Unauthorized access to this order.")
+
+        # 8. Admin bypasses and is allowed
+        c.reset_mock()
+        c.from_user.id = admin_id
+        c.data = f"cancel_order:{oid}"
+        c.message.edit_text = AsyncMock()
+        await bot.on_cancel_order(c)
+        c.answer.assert_any_call("❌ Order cancelled.", show_alert=True)
+        o_admin = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(o_admin["status"], "cancelled")
+
+    async def test_order_callbacks_malformed_data_handling(self):
+        c = AsyncMock()
+        c.from_user.id = 111111
+
+        for bad_cb, handler in [
+            ("chk_cb:abc", bot.check_cryptobot_payment),
+            ("chk_cb:1", bot.check_cryptobot_payment),
+            ("chk_paystack:", bot.check_paystack_payment_callback),
+            ("cancel_order:abc", bot.on_cancel_order),
+            ("submit_tx:abc", bot.on_submit_tx),
+            ("chk_manual:abc", bot.on_check_manual_status),
+            ("manual_pay:abc", bot.manual_pay_info),
+        ]:
+            c.reset_mock()
+            c.data = bad_cb
+            await handler(c)
+            self.assertTrue(c.answer.called)
+            alert_text = c.answer.call_args[0][0]
+            self.assertIn("Invalid", alert_text)
+
+    async def test_admin_commands_resilience_without_command_object(self):
+        m = AsyncMock()
+
+        # admin_setemoji with command=None
+        await bot.admin_setemoji(m, command=None)
+        self.assertTrue(m.answer.called)
+        self.assertIn("Usage", m.answer.call_args[0][0])
+
+        # admin_del_emoji with command=None
+        m.reset_mock()
+        await bot.admin_del_emoji(m, command=None)
+        self.assertTrue(m.answer.called)
+        self.assertIn("Usage: /delemoji", m.answer.call_args[0][0])
+
+        # admin_supplier_link with command=None
+        m.reset_mock()
+        await bot.admin_supplier_link(m, command=None)
+        self.assertTrue(m.answer.called)
+        self.assertIn("Usage: /s_link", m.answer.call_args[0][0])
+
+        # admin_supplier_unlink with command=None
+        m.reset_mock()
+        await bot.admin_supplier_unlink(m, command=None)
+        self.assertTrue(m.answer.called)
+        self.assertIn("Usage: /s_unlink", m.answer.call_args[0][0])
+
+    async def test_bep20_usdt_multiple_transfers_accumulated(self):
+        recipient = "0x55d398326f99059fF775485246999027B3197955".lower()
+        padded_recipient = "0x" + "0" * 24 + recipient[2:]
+        transfer_topic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+        # 5 USDT in hex (18 decimals): 5 * 10^18
+        val_hex_5 = hex(5 * 10**18)
+
+        mock_receipt = {
+            "status": "0x1",
+            "logs": [
+                {
+                    "address": onchain.USDT_BEP20_CONTRACT,
+                    "topics": [transfer_topic, "0x" + "0" * 64, padded_recipient],
+                    "data": val_hex_5,
+                },
+                {
+                    "address": onchain.USDT_BEP20_CONTRACT,
+                    "topics": [transfer_topic, "0x" + "0" * 64, padded_recipient],
+                    "data": val_hex_5,
+                }
+            ]
+        }
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"result": mock_receipt})
+
+        session = AsyncMock()
+        session.closed = False
+        session.post = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_resp), __aexit__=AsyncMock()))
+
+        dummy_hash = "0x" + "b" * 64
+        valid, msg, amt = await onchain.verify_bep20_usdt(dummy_hash, recipient, 10.0, session=session)
+        self.assertTrue(valid)
+        self.assertAlmostEqual(amt, 10.0)
+        self.assertIn("successfully", msg)
+
+    async def test_verify_trc20_usdt_events_404_fallback_to_direct_tx(self):
+        recipient = "TUaDYfZ2fBRXSRDm9d6kN9j2J7bi7ZsBLW"
+        recipient_hex = onchain.tron_base58_to_hex_variants(recipient)[1]  # 0x...
+        padded_to = "0x" + "0" * 24 + recipient_hex[2:]
+
+        # Mock events endpoint returning 404
+        events_resp = AsyncMock()
+        events_resp.status = 404
+
+        # Mock direct node tx info returning success with transfer log
+        tx_info_resp = AsyncMock()
+        tx_info_resp.status = 200
+        transfer_topic = "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+        # 20 USDT in hex (6 decimals): 20 * 1,000,000 = 20,000,000 = 0x1312d00
+        tx_info_resp.json = AsyncMock(return_value={
+            "receipt": {"result": "SUCCESS"},
+            "log": [
+                {
+                    "address": onchain.USDT_TRC20_CONTRACT.lower(),
+                    "topics": [transfer_topic, "0" * 64, padded_to],
+                    "data": hex(20 * 1_000_000)
+                }
+            ]
+        })
+
+        session = AsyncMock()
+        session.closed = False
+        session.get = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=events_resp), __aexit__=AsyncMock()))
+        session.post = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=tx_info_resp), __aexit__=AsyncMock()))
+
+        dummy_hash = "d" * 64
+        valid, msg, amt = await onchain.verify_trc20_usdt(dummy_hash, recipient, 20.0, session=session)
+        self.assertTrue(valid)
+        self.assertEqual(amt, 20.0)
+        self.assertIn("successfully", msg)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

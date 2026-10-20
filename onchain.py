@@ -129,10 +129,10 @@ async def verify_bep20_usdt(
                         data_hex = log_entry.get("data", "0x0")
                         try:
                             raw_units = int(data_hex, 16)
-                            detected_amount = raw_units / (10**18)
+                            amt = raw_units / (10**18)
+                            detected_amount = (detected_amount or 0.0) + amt
                         except (ValueError, TypeError):
                             pass
-                        break
 
         if not matched_recipient:
             return False, "Transaction recipient does not match your configured BEP-20 wallet.", None
@@ -182,12 +182,16 @@ async def verify_trc20_usdt(
 
     try:
         events_url = TRONGRID_EVENTS_URL.format(hash=tx_hash)
-        async with session.get(events_url, headers={"Accept": "application/json"}) as resp:
-            if resp.status != 200:
-                return False, f"TronGrid query failed with HTTP {resp.status}.", None
-            data = await resp.json()
-
-        events = data.get("data", [])
+        events = []
+        try:
+            async with session.get(events_url, headers={"Accept": "application/json"}) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    events = data.get("data", [])
+                else:
+                    log.warning("TronGrid events query returned HTTP %s for %s", resp.status, tx_hash)
+        except Exception as ex:
+            log.warning("TronGrid events query failed for %s: %s", tx_hash, ex)
         matched_recipient = False
         detected_amount = None
         expected_variants = set(tron_base58_to_hex_variants(expected_recipient))
