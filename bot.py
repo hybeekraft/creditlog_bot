@@ -1604,9 +1604,9 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return None, "out_of_stock"
-    if o["payload"] and o["status"] == "completed":
-        return o["payload"], None
-    if o["refunded"] or o["status"] in ("refunded", "cancelled"):
+    if o["status"] == "completed":
+        return o["payload"] or "COMPLETED", None
+    if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
         return None, "order_cancelled"
 
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (o["product_id"],)).fetchone()
@@ -2511,6 +2511,10 @@ async def on_submit_tx(c: CallbackQuery):
         return await c.answer("Order not found.", show_alert=True)
     if o["user_id"] != uid and uid not in ADMIN_IDS:
         return await c.answer("⚠️ Unauthorized access to this order.", show_alert=True)
+    if o["status"] == "completed":
+        return await c.answer("✅ This order is already completed.", show_alert=True)
+    if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
+        return await c.answer(f"⚠️ This order cannot accept payments (status: {o['status']}).", show_alert=True)
     pending_inputs[uid] = {"action": "txid", "oid": oid}
     await c.message.answer(
         f"✍️ <b>Submit Transaction ID for Order #{oid}:</b>\n\n"
@@ -2534,12 +2538,12 @@ async def check_and_fulfill_onchain(oid: int, txid: str, uid: int, bot_instance:
         return True, "Order already completed."
     if o["status"] in ("paid", "manual_pending"):
         return True, "Payment already received and pending fulfillment."
-    if o["refunded"] or o["status"] in ("refunded", "rejected"):
+    if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
         return False, "⚠️ This order was cancelled or refunded."
 
     # Prevent replay attack: check if this txid was already used for a completed or in-flight order
     dup = db.execute(
-        "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending') AND id != ?",
+        "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending', 'refunded') AND id != ?",
         (txid.strip(), oid)
     ).fetchone()
     if dup:
@@ -2632,7 +2636,7 @@ async def on_check_manual_status(c: CallbackQuery):
         return await c.answer("✅ Order completed and delivered!", show_alert=True)
     if o["status"] == "manual_pending":
         return await c.answer("⏳ Payment received! Your order is currently pending fulfillment by support.", show_alert=True)
-    if o["refunded"] or o["status"] in ("refunded", "rejected"):
+    if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
         return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
     method = (o["payment_method"] or "").lower()
@@ -2817,12 +2821,12 @@ async def handle_user_text_input(m: Message):
             return await m.answer("⚠️ Unauthorized access to this order.")
         if o["status"] == "completed":
             return await m.answer(f"✅ Order #{oid} is already completed.")
-        if o["refunded"] or o["status"] in ("refunded", "cancelled"):
+        if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
             return await m.answer(f"⚠️ Order #{oid} was cancelled or refunded. Please contact support.")
 
         # Check for replay attack before accepting txid
         dup = db.execute(
-            "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending') AND id != ?",
+            "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending', 'refunded') AND id != ?",
             (txid, oid)
         ).fetchone()
         if dup:
@@ -2903,9 +2907,9 @@ async def admin_approve_order(m: Message, command: CommandObject = None):
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return await m.answer(f"Order #{oid} not found.")
-    if o["status"] == "completed" and o["payload"]:
+    if o["status"] == "completed":
         return await m.answer(f"Order #{oid} is already completed.")
-    if o["refunded"] or o["status"] in ("refunded", "cancelled"):
+    if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
         return await m.answer(f"⚠️ Order #{oid} was refunded or cancelled.")
 
     payload, err = await fulfill_order(m.bot, oid, force_supplier=True)
@@ -2981,14 +2985,14 @@ async def check_cryptobot_payment(c: CallbackQuery):
         return await c.answer("✅ Order already completed!", show_alert=False)
     if o["status"] == "manual_pending":
         return await c.answer("⏳ Payment confirmed! Your order is currently pending fulfillment by support.", show_alert=True)
-    if o["refunded"] or o["status"] in ("refunded", "rejected"):
+    if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
         return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
     if o["invoice_id"] and str(o["invoice_id"]) != str(inv_id):
         return await c.answer("⚠️ Invoice ID does not match this order.", show_alert=True)
 
     dup = db.execute(
-        "SELECT id FROM orders WHERE invoice_id=? AND status IN ('completed', 'paid', 'manual_pending') AND id != ?",
+        "SELECT id FROM orders WHERE invoice_id=? AND status IN ('completed', 'paid', 'manual_pending', 'refunded') AND id != ?",
         (str(inv_id), oid)
     ).fetchone()
     if dup:
@@ -3037,7 +3041,7 @@ async def check_paystack_payment_callback(c: CallbackQuery):
         return await c.answer("✅ Order already completed!", show_alert=False)
     if o["status"] == "manual_pending":
         return await c.answer("⏳ Payment confirmed! Your order is currently pending fulfillment by support.", show_alert=True)
-    if o["refunded"] or o["status"] in ("refunded", "rejected"):
+    if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
         return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
     ref_to_check = ref or o["txid"] or o["invoice_id"]
@@ -3046,7 +3050,7 @@ async def check_paystack_payment_callback(c: CallbackQuery):
 
     # Prevent replay attack: verify reference is not already claimed by another order
     dup = db.execute(
-        "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending') AND id != ?",
+        "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending', 'refunded') AND id != ?",
         (ref_to_check.strip(), oid)
     ).fetchone()
     if dup:
@@ -3057,8 +3061,11 @@ async def check_paystack_payment_callback(c: CallbackQuery):
         # Sanity check: verify amount paid matches expected amount in kobo (with tolerance)
         rate = get_usd_ngn_rate()
         expected_kobo = round((o["price"] / 100.0) * rate) * 100
-        paid_kobo = tx_data.get("amount", 0)
-        if paid_kobo and paid_kobo < (expected_kobo * 0.95):  # paid less than 95%
+        try:
+            paid_kobo = float(tx_data.get("amount") or 0)
+        except (ValueError, TypeError):
+            paid_kobo = 0.0
+        if not paid_kobo or paid_kobo < (expected_kobo * 0.95):  # paid less than 95% or 0
             log.warning("Paystack amount mismatch for order %s: paid %s kobo, expected %s kobo", oid, paid_kobo, expected_kobo)
             return await c.answer("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
 
@@ -3109,7 +3116,7 @@ async def check_korapay_payment_callback(c: CallbackQuery):
         return await c.answer("✅ Order already completed!", show_alert=False)
     if o["status"] == "manual_pending":
         return await c.answer("⏳ Payment confirmed! Your order is currently pending fulfillment by support.", show_alert=True)
-    if o["refunded"] or o["status"] in ("refunded", "rejected"):
+    if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
         return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
     ref_to_check = ref or o["txid"] or o["invoice_id"]
@@ -3118,7 +3125,7 @@ async def check_korapay_payment_callback(c: CallbackQuery):
 
     # Prevent replay attack: verify reference is not already claimed by another order
     dup = db.execute(
-        "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending') AND id != ?",
+        "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending', 'refunded') AND id != ?",
         (ref_to_check.strip(), oid)
     ).fetchone()
     if dup:
@@ -3134,7 +3141,7 @@ async def check_korapay_payment_callback(c: CallbackQuery):
         except (ValueError, TypeError):
             paid_amount = 0.0
 
-        if paid_amount and paid_amount < (expected_ngn * 0.95):
+        if not paid_amount or paid_amount < (expected_ngn * 0.95):
             log.warning("Korapay amount mismatch for order %s: paid %s NGN, expected %s NGN", oid, paid_amount, expected_ngn)
             return await c.answer("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
 
@@ -3811,7 +3818,7 @@ async def admin_deliver(m: Message, command: CommandObject = None):
         o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         if not o:
             return await m.answer(f"Order #{oid} not found.")
-        if o["refunded"] or o["status"] in ("refunded", "cancelled"):
+        if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
             return await m.answer(f"⚠️ Order #{oid} was refunded or cancelled.")
 
         db.execute("UPDATE orders SET payload=?, status='completed' WHERE id=?", (payload.strip(), oid))

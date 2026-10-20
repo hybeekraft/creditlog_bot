@@ -3252,6 +3252,139 @@ class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
                 except Exception:
                     pass
 
+    async def test_payment_zero_or_missing_amount_rejected(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Amount Test Prod', 'Desc', 1000, 1)").lastrowid
+        oid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status, payment_method, txid) VALUES(999, ?, 'Amount Test Prod', 1000, 'pending', 'korapay', 'KP_ZERO_1')",
+            (pid,)
+        ).lastrowid
+        c = AsyncMock()
+        c.from_user.id = 999
+        c.data = f"chk_korapay:{oid}:KP_ZERO_1"
+
+        # 1. Korapay with amount = 0
+        with patch("bot.verify_korapay_transaction", new=AsyncMock(return_value=(True, {"status": "success", "amount": 0}))):
+            await bot.check_korapay_payment_callback(c)
+            c.answer.assert_called_with("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
+
+        # 2. Korapay with missing amount key
+        c.reset_mock()
+        with patch("bot.verify_korapay_transaction", new=AsyncMock(return_value=(True, {"status": "success"}))):
+            await bot.check_korapay_payment_callback(c)
+            c.answer.assert_called_with("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
+
+        # 3. Paystack with amount = 0
+        oid_ps = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status, payment_method, txid) VALUES(999, ?, 'Amount Test Prod', 1000, 'pending', 'paystack', 'PS_ZERO_1')",
+            (pid,)
+        ).lastrowid
+        c.reset_mock()
+        c.data = f"chk_paystack:{oid_ps}:PS_ZERO_1"
+        with patch("bot.verify_paystack_transaction", new=AsyncMock(return_value=(True, {"status": "success", "amount": 0}))):
+            await bot.check_paystack_payment_callback(c)
+            c.answer.assert_called_with("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
+
+    async def test_replay_attack_prevents_refunded_order_reference_reuse(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Replay Prod', 'Desc', 1000, 1)").lastrowid
+        
+        # Order 1 was previously refunded
+        bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status, refunded, payment_method, txid) VALUES(111, ?, 'Replay Prod', 1000, 'refunded', 1, 'korapay', 'KP_REFUNDED_REF_1')",
+            (pid,)
+        )
+        
+        # Order 2 tries to reuse the refunded txid
+        oid_new = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status, payment_method) VALUES(222, ?, 'Replay Prod', 1000, 'pending', 'korapay')",
+            (pid,)
+        ).lastrowid
+
+        c = AsyncMock()
+        c.from_user.id = 222
+        c.data = f"chk_korapay:{oid_new}:KP_REFUNDED_REF_1"
+        await bot.check_korapay_payment_callback(c)
+        self.assertIn("already claimed", c.answer.call_args[0][0])
+
+    async def test_on_submit_tx_status_guards(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('SubmitTx Prod', 'Desc', 500, 1)").lastrowid
+        
+        # 1. Order is completed
+        oid_comp = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(333, ?, 'SubmitTx Prod', 500, 'completed')",
+            (pid,)
+        ).lastrowid
+        c = AsyncMock()
+        c.from_user.id = 333
+        c.data = f"submit_tx:{oid_comp}"
+        await bot.on_submit_tx(c)
+        c.answer.assert_called_with("✅ This order is already completed.", show_alert=True)
+
+        # 2. Order is cancelled
+        oid_canc = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(333, ?, 'SubmitTx Prod', 500, 'cancelled')",
+            (pid,)
+        ).lastrowid
+        c.reset_mock()
+        c.data = f"submit_tx:{oid_canc}"
+        await bot.on_submit_tx(c)
+        c.answer.assert_called_with("⚠️ This order cannot accept payments (status: cancelled).", show_alert=True)
+
+    async def test_admin_approve_and_fulfill_guards_completed_orders(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active, auto_fulfill, supplier_product_id) VALUES('Double Appr Prod', 'Desc', 500, 1, 1, 'SUPP_99')",).lastrowid
+        oid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status, payload) VALUES(444, ?, 'Double Appr Prod', 500, 'completed', '')",
+            (pid,)
+        ).lastrowid
+
+        # Admin approve should not re-fulfill an already completed order even if payload is empty
+        m = AsyncMock()
+        m.from_user.id = next(iter(bot.ADMIN_IDS)) if bot.ADMIN_IDS else 999999
+        m.text = f"/approve_{oid}"
+        with patch("bot.fulfill_order", new=AsyncMock()) as mock_fulfill:
+            await bot.admin_approve_order(m)
+            m.answer.assert_called_with(f"Order #{oid} is already completed.")
+            mock_fulfill.assert_not_called()
+
+        # Direct fulfill_order call on completed order returns immediately
+        with patch.object(bot.reseller, "create_order", new=AsyncMock()) as mock_create:
+            payload, err = await bot.fulfill_order(AsyncMock(), oid)
+            self.assertEqual(payload, "COMPLETED")
+            self.assertIsNone(err)
+            mock_create.assert_not_called()
+
+    async def test_terminal_order_status_guards_across_payment_handlers(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Terminal Prod', 'Desc', 500, 1)").lastrowid
+        
+        # Test that rejected order is blocked across callbacks
+        oid_rej = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(555, ?, 'Terminal Prod', 500, 'rejected')",
+            (pid,)
+        ).lastrowid
+
+        c = AsyncMock()
+        c.from_user.id = 555
+
+        # Paystack callback on rejected order
+        c.data = f"chk_paystack:{oid_rej}:REF1"
+        await bot.check_paystack_payment_callback(c)
+        c.answer.assert_called_with("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
+
+        # Korapay callback on rejected order
+        c.reset_mock()
+        c.data = f"chk_korapay:{oid_rej}:REF2"
+        await bot.check_korapay_payment_callback(c)
+        c.answer.assert_called_with("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
+
+        # Manual status check on cancelled order
+        oid_canc = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(555, ?, 'Terminal Prod', 500, 'cancelled')",
+            (pid,)
+        ).lastrowid
+        c.reset_mock()
+        c.data = f"chk_manual:{oid_canc}"
+        await bot.on_check_manual_status(c)
+        c.answer.assert_called_with("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
+
 
 if __name__ == "__main__":
     unittest.main()
