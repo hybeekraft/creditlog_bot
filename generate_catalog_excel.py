@@ -5,6 +5,7 @@ import asyncio
 import csv
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 from typing import Optional
