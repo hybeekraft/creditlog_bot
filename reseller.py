@@ -257,6 +257,10 @@ class ResellerClient:
                 or order_obj.get("key")
                 or order_obj.get("payload")
                 or order_obj.get("delivered")
+                or order_obj.get("keys")
+                or order_obj.get("tokens")
+                or order_obj.get("token")
+                or order_obj.get("items")
             )
             order_code = (
                 order_obj.get("orderCode")
@@ -267,12 +271,36 @@ class ResellerClient:
 
         # Fallback to top-level if not inside order object
         if value is None and isinstance(data, dict):
-            value = data.get("value") or data.get("code") or data.get("key")
+            value = (
+                data.get("value")
+                or data.get("code")
+                or data.get("key")
+                or data.get("payload")
+                or data.get("delivered")
+                or data.get("keys")
+                or data.get("tokens")
+                or data.get("token")
+                or data.get("items")
+            )
         if order_code is None and isinstance(data, dict):
             order_code = data.get("orderCode") or data.get("order_id")
 
         if isinstance(value, list):
-            value_str = "\n".join(str(v) for v in value)
+            formatted_items = []
+            for v in value:
+                if isinstance(v, dict):
+                    extracted = (
+                        v.get("code")
+                        or v.get("key")
+                        or v.get("pin")
+                        or v.get("value")
+                        or v.get("token")
+                        or v.get("payload")
+                    )
+                    formatted_items.append(str(extracted) if extracted is not None else str(v))
+                else:
+                    formatted_items.append(str(v))
+            value_str = "\n".join(formatted_items)
         elif value is not None:
             value_str = str(value)
         else:

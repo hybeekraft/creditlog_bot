@@ -74,6 +74,32 @@ class TestResellerClient(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ResellerAPIError):
             await client.get_products()
 
+    async def test_create_order_extracts_tokens_and_items_list(self):
+        client = ResellerClient(api_key="test_key")
+        mock_resp = {
+            "order": {
+                "id": "ORD-1234",
+                "tokens": ["KEY-AAAA-BBBB", "KEY-CCCC-DDDD"]
+            }
+        }
+        with patch.object(client, "_request", new=AsyncMock(return_value=mock_resp)):
+            order = await client.create_order("canva-1", quantity=2)
+            self.assertEqual(order["order_code"], "ORD-1234")
+            self.assertEqual(order["value"], "KEY-AAAA-BBBB\nKEY-CCCC-DDDD")
+
+    async def test_create_order_extracts_list_of_dicts(self):
+        client = ResellerClient(api_key="test_key")
+        mock_resp = {
+            "order": {
+                "id": "ORD-5678",
+                "items": [{"code": "CODE-1111"}, {"pin": "PIN-2222"}]
+            }
+        }
+        with patch.object(client, "_request", new=AsyncMock(return_value=mock_resp)):
+            order = await client.create_order("card-1", quantity=2)
+            self.assertEqual(order["order_code"], "ORD-5678")
+            self.assertEqual(order["value"], "CODE-1111\nPIN-2222")
+
 
 class TestSupplierRegistry(unittest.IsolatedAsyncioTestCase):
     def test_registry_register_and_get(self):
@@ -2031,7 +2057,7 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
             await bot.admin_supplier_info(m)
             self.assertTrue(m.answer.called)
             text = m.answer.call_args[0][0]
-            self.assertIn("Configured Suppliers / Resellers", text)
+            self.assertIn("🌐 <b>Supplier API Status</b>", text)
             self.assertIn("$12.50 USD", text)
 
             # Details with valid supplier name
@@ -2039,7 +2065,7 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
             cmd.args = "default"
             await bot.admin_supplier_info(m, cmd)
             text = m.answer.call_args[0][0]
-            self.assertIn("Supplier: <code>default</code>", text)
+            self.assertIn("🌐 <b>Supplier API Status</b>", text)
             self.assertIn("$12.50 USD", text)
 
             # Query with invalid supplier name
@@ -2638,6 +2664,239 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(valid)
         self.assertEqual(amt, 20.0)
         self.assertIn("successfully", msg)
+
+
+class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        bot.db = sqlite3.connect(":memory:", isolation_level=None)
+        bot.db.row_factory = sqlite3.Row
+        bot.db.executescript("""
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS users(
+          id INTEGER PRIMARY KEY,
+          lang TEXT DEFAULT 'en',
+          currency TEXT DEFAULT 'USD',
+          created TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS products(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          description TEXT DEFAULT '',
+          price INTEGER NOT NULL,
+          active INTEGER DEFAULT 1,
+          supplier_product_id TEXT DEFAULT NULL,
+          supplier_price INTEGER DEFAULT NULL,
+          auto_fulfill INTEGER DEFAULT 0,
+          margin INTEGER DEFAULT NULL,
+          fixed_price INTEGER DEFAULT 0,
+          category TEXT DEFAULT 'AI Tools',
+          supplier TEXT DEFAULT 'default',
+          supplier_stock INTEGER DEFAULT NULL,
+          delivery_type TEXT DEFAULT 'auto');
+        CREATE TABLE IF NOT EXISTS stock(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          product_id INTEGER NOT NULL,
+          payload TEXT NOT NULL,
+          sold INTEGER DEFAULT 0);
+        CREATE INDEX IF NOT EXISTS idx_stock ON stock(product_id, sold);
+        CREATE TABLE IF NOT EXISTS orders(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER,
+          product_id INTEGER,
+          product_name TEXT,
+          price INTEGER,
+          quantity INTEGER DEFAULT 1,
+          payload TEXT,
+          refunded INTEGER DEFAULT 0,
+          supplier_order_id TEXT DEFAULT NULL,
+          supplier TEXT DEFAULT 'default',
+          payment_method TEXT DEFAULT NULL,
+          txid TEXT DEFAULT NULL,
+          expected_amount TEXT DEFAULT NULL,
+          invoice_id TEXT DEFAULT NULL,
+          status TEXT DEFAULT 'completed',
+          created TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS settings(
+          key TEXT PRIMARY KEY,
+          value TEXT);
+        """)
+
+    async def test_fulfill_order_edge_cases(self):
+        bot_mock = AsyncMock()
+        # 1. Non-existent order
+        res, err = await bot.fulfill_order(bot_mock, 999999)
+        self.assertIsNone(res)
+        self.assertEqual(err, "out_of_stock")
+
+        # 2. Already completed order with payload
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Prod', 'Desc', 500, 1)").lastrowid
+        oid_comp = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status, payload) VALUES(1, ?, 'Prod', 500, 'completed', 'SAVED_KEY_123')",
+            (pid,)
+        ).lastrowid
+        res, err = await bot.fulfill_order(bot_mock, oid_comp)
+        self.assertEqual(res, "SAVED_KEY_123")
+        self.assertIsNone(err)
+
+        # 3. Cancelled order
+        oid_canc = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(1, ?, 'Prod', 500, 'cancelled')",
+            (pid,)
+        ).lastrowid
+        res, err = await bot.fulfill_order(bot_mock, oid_canc)
+        self.assertIsNone(res)
+        self.assertEqual(err, "order_cancelled")
+
+        # 4. Refunded order
+        oid_ref = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status, refunded) VALUES(1, ?, 'Prod', 500, 'pending', 1)",
+            (pid,)
+        ).lastrowid
+        res, err = await bot.fulfill_order(bot_mock, oid_ref)
+        self.assertIsNone(res)
+        self.assertEqual(err, "order_cancelled")
+
+    async def test_callback_validation_malformed_inputs(self):
+        c = AsyncMock()
+        c.from_user.id = 12345
+        c.message = AsyncMock()
+
+        # cat: with missing key
+        c.data = "cat:"
+        with patch("bot.check_user_fsub", new=AsyncMock(return_value=(True, []))):
+            await bot.on_category(c)
+            c.answer.assert_called_with("⚠️ Invalid category callback data.", show_alert=True)
+
+        # p: with non-digit
+        c.reset_mock()
+        c.data = "p:invalid"
+        await bot.on_product(c)
+        c.answer.assert_called_with("⚠️ Invalid product callback data.", show_alert=True)
+
+        # summary: with invalid parts
+        c.reset_mock()
+        c.data = "summary:abc:123"
+        await bot.on_summary_back(c)
+        c.answer.assert_called_with("⚠️ Invalid callback data.", show_alert=True)
+
+        # pay_dir: with invalid parts
+        c.reset_mock()
+        c.data = "pay_dir:1:bad"
+        await bot.on_pay_directly(c)
+        c.answer.assert_called_with("⚠️ Invalid callback data.", show_alert=True)
+
+        # pay_opt: with invalid parts
+        c.reset_mock()
+        c.data = "pay_opt:usdt:bad:bad:shop"
+        await bot.on_pay_option_selected(c)
+        c.answer.assert_called_with("⚠️ Invalid callback data.", show_alert=True)
+
+        # buyqty: with invalid parts
+        c.reset_mock()
+        c.data = "buyqty:abc:def:shop"
+        await bot.on_buy_qty(c)
+        c.answer.assert_called_with("⚠️ Invalid callback data.", show_alert=True)
+
+        # buy: with non-digit
+        c.reset_mock()
+        c.data = "buy:invalid"
+        await bot.buy(c)
+        c.answer.assert_called_with("⚠️ Invalid callback data.", show_alert=True)
+
+        # cqty: with non-digit
+        c.reset_mock()
+        c.data = "cqty:not_a_num"
+        await bot.on_custom_qty(c)
+        c.answer.assert_called_with("⚠️ Invalid callback data.", show_alert=True)
+
+        # setlang: with no code
+        c.reset_mock()
+        c.data = "setlang"
+        await bot.set_lang(c)
+        c.answer.assert_called_with("⚠️ Invalid language callback data.", show_alert=True)
+
+        # setcurrency: with no code
+        c.reset_mock()
+        c.data = "setcurrency"
+        await bot.set_currency(c)
+        c.answer.assert_called_with("⚠️ Invalid currency callback data.", show_alert=True)
+
+    async def test_html_escaping_in_delivery_and_notifications(self):
+        admin_id = 111222333
+        m = AsyncMock()
+        m.from_user.id = admin_id
+        m.bot = AsyncMock()
+
+        # Add order
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Escape Test', 'Desc', 500, 1)").lastrowid
+        oid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(999, ?, 'Escape Test', 500, 'pending')",
+            (pid,)
+        ).lastrowid
+
+        # 1. admin_deliver with send_message error containing HTML tag characters <TelegramBadRequest>
+        m.bot.send_message = AsyncMock(side_effect=Exception("<TelegramBadRequest: user blocked>"))
+        cmd = AsyncMock()
+        cmd.args = f"{oid} DELIVERED_CONTENT_TEST"
+        await bot.admin_deliver(m, cmd)
+        delivered_ans = m.answer.call_args[0][0]
+        self.assertIn("&lt;TelegramBadRequest: user blocked&gt;", delivered_ans)
+        self.assertNotIn("<TelegramBadRequest: user blocked>", delivered_ans)
+
+        # 2. admin_approve_order with user send_message exception containing <BotBlocked>
+        oid_appr = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(999, ?, 'Escape Test 2', 500, 'pending')",
+            (pid,)
+        ).lastrowid
+        with patch("bot.fulfill_order", new=AsyncMock(return_value=("SECRET_KEY_999", None))):
+            m.reset_mock()
+            m.bot.send_message = AsyncMock(side_effect=Exception("<BotBlocked: user deactivated>"))
+            cmd.args = str(oid_appr)
+            await bot.admin_approve_order(m, cmd)
+            appr_ans = m.answer.call_args[0][0]
+            self.assertIn("&lt;BotBlocked: user deactivated&gt;", appr_ans)
+            self.assertNotIn("<BotBlocked: user deactivated>", appr_ans)
+
+    async def test_show_alert_truncation_limits(self):
+        c = AsyncMock()
+        c.from_user.id = 12345
+        c.bot = AsyncMock()
+
+        # Onchain manual status long result
+        oid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status, payment_method, txid) VALUES(12345, 1, 'P', 100, 'pending', 'usdt_bep20', '0x123')",
+        ).lastrowid
+        c.data = f"chk_manual:{oid}"
+        long_result = "X" * 350
+        with patch("bot.check_and_fulfill_onchain", new=AsyncMock(return_value=(False, long_result))):
+            await bot.on_check_manual_status(c)
+            alert_text = c.answer.call_args[0][0]
+            self.assertLessEqual(len(alert_text), 200)
+            self.assertTrue(alert_text.startswith("⏳ "))
+
+    async def test_admin_supplier_info_format(self):
+        m = AsyncMock()
+        m.from_user.id = 111222333
+        mock_info = {
+            "ok": True,
+            "ownerUserId": 1569053301,
+            "store": "Gemini Pro Store",
+            "apiVersion": "v1",
+            "ordersEnabled": True,
+            "note": "Orders use your store balance and return delivered digital goods."
+        }
+        mock_bal = {"balance": 0.0, "currency": "USD"}
+
+        with patch.object(bot.reseller, "get_balance", new=AsyncMock(return_value=mock_bal)), \
+             patch.object(bot.reseller, "get_info", new=AsyncMock(return_value=mock_info)):
+            await bot.admin_supplier_info(m)
+            ans = m.answer.call_args[0][0]
+            self.assertIn("🌐 <b>Supplier API Status</b>", ans)
+            self.assertIn(f"Base URL: {bot.reseller.base_url}", ans)
+            self.assertIn("API Key: Set (✓)", ans)
+            self.assertIn("Supplier Balance: $0.00 USD", ans)
+            self.assertIn("<b>Account Info:</b>", ans)
+            self.assertIn('<pre><code class="language-json">', ans)
+            self.assertIn('&quot;store&quot;: &quot;Gemini Pro Store&quot;', ans)
 
 
 if __name__ == "__main__":

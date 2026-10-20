@@ -1591,6 +1591,8 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
         return None, "out_of_stock"
     if o["payload"] and o["status"] == "completed":
         return o["payload"], None
+    if o["refunded"] or o["status"] in ("refunded", "cancelled"):
+        return None, "order_cancelled"
 
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (o["product_id"],)).fetchone()
     if not p:
@@ -1775,6 +1777,8 @@ async def on_category(c: CallbackQuery):
         text, markup = render_fsub_gate(missing)
         return await edit(c, text, markup)
     parts = c.data.split(":")
+    if len(parts) < 2 or not parts[1]:
+        return await c.answer("⚠️ Invalid category callback data.", show_alert=True)
     key = parts[1]
     page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
     avail_only = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
@@ -1851,6 +1855,8 @@ async def on_product(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
     parts = c.data.split(":", 2)
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await c.answer("⚠️ Invalid product callback data.", show_alert=True)
     pid = int(parts[1])
     ctx = parts[2] if len(parts) > 2 else "shop"
     p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
@@ -2095,7 +2101,10 @@ async def start_checkout(event: Message | CallbackQuery, uid: int, p: sqlite3.Ro
 async def on_summary_back(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
-    _, pid_str, qty_str, ctx = c.data.split(":", 3)
+    parts = c.data.split(":", 3)
+    if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
+        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
+    _, pid_str, qty_str, ctx = parts
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (int(pid_str),)).fetchone()
     if not p:
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
@@ -2107,7 +2116,10 @@ async def on_summary_back(c: CallbackQuery):
 async def on_pay_directly(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
-    _, pid_str, qty_str, ctx = c.data.split(":", 3)
+    parts = c.data.split(":", 3)
+    if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
+        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
+    _, pid_str, qty_str, ctx = parts
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (int(pid_str),)).fetchone()
     if not p:
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
@@ -2119,7 +2131,10 @@ async def on_pay_directly(c: CallbackQuery):
 async def on_pay_option_selected(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
-    _, method, pid_str, qty_str, ctx = c.data.split(":", 4)
+    parts = c.data.split(":", 4)
+    if len(parts) < 5 or not parts[2].isdigit() or not parts[3].isdigit():
+        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
+    _, method, pid_str, qty_str, ctx = parts
     pid, qty = int(pid_str), int(qty_str)
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
     if not p:
@@ -2410,7 +2425,7 @@ async def check_and_fulfill_onchain(oid: int, txid: str, uid: int, bot_instance:
             log.error("Failed to fulfill auto-verified order %s: %s", oid, err)
             await notify_admins(
                 bot_instance,
-                f"⚠️ Payment verified on-chain for Order #{oid}, but auto-fulfillment failed: {err}\n"
+                f"⚠️ Payment verified on-chain for Order #{oid}, but auto-fulfillment failed: {esc(str(err))}\n"
                 f"• Method: {esc(method.upper())}\n"
                 f"• TxID: <code>{esc(txid)}</code>\n"
                 f"👉 Use <code>/deliver {oid} &lt;item&gt;</code> to deliver manually."
@@ -2480,7 +2495,7 @@ async def on_check_manual_status(c: CallbackQuery):
         elif verified and result == "MANUAL_PENDING":
             return await c.answer("⏳ Payment verified on blockchain! Our support team is fulfilling your order shortly.", show_alert=True)
         elif not verified and result:
-            return await c.answer(f"⏳ {result}", show_alert=True)
+            return await c.answer(f"⏳ {result}"[:200], show_alert=True)
 
     return await c.answer("⏳ Your payment is currently under verification. You will receive your item automatically once confirmed!", show_alert=True)
 
@@ -2507,7 +2522,10 @@ async def on_cancel_order(c: CallbackQuery):
 async def on_buy_qty(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
     uid = c.from_user.id
-    _, pid_str, qty_str, ctx = c.data.split(":", 3)
+    parts = c.data.split(":", 3)
+    if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
+        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
+    _, pid_str, qty_str, ctx = parts
     pid, qty = int(pid_str), int(qty_str)
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
     if not p or not is_product_available(p):
@@ -2519,6 +2537,8 @@ async def on_buy_qty(c: CallbackQuery):
 async def buy(c: CallbackQuery):
     """Backward compatibility for single quantity checkout."""
     pending_inputs.pop(c.from_user.id, None)
+    if not c.data.startswith("buy:") or not c.data[4:].isdigit():
+        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
     uid, pid = c.from_user.id, int(c.data[4:])
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
     if not p or not is_product_available(p):
@@ -2530,6 +2550,8 @@ async def buy(c: CallbackQuery):
 async def on_custom_qty(c: CallbackQuery):
     uid = c.from_user.id
     parts = c.data.split(":", 2)
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
     pid = int(parts[1])
     ctx = parts[2] if len(parts) > 2 else "shop"
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
@@ -2711,7 +2733,7 @@ async def admin_approve_order(m: Message, command: CommandObject = None):
     elif m.text and m.text.startswith("/approve_"):
         try:
             oid = int(m.text.split("_")[1])
-        except ValueError:
+        except (ValueError, IndexError):
             pass
 
     if not oid:
@@ -2727,7 +2749,7 @@ async def admin_approve_order(m: Message, command: CommandObject = None):
 
     payload, err = await fulfill_order(m.bot, oid, force_supplier=True)
     if err:
-        return await m.answer(f"⚠️ Failed to fulfill order #{oid}: {err}")
+        return await m.answer(f"⚠️ Failed to fulfill order #{oid}: {esc(str(err))}")
 
     try:
         buyer_uid = o["user_id"]
@@ -2744,7 +2766,7 @@ async def admin_approve_order(m: Message, command: CommandObject = None):
         await m.bot.send_message(buyer_uid, t(buyer_uid, "purchased", oid=oid, payload=esc(payload)))
         await m.answer(f"✅ Order #{oid} approved and delivered to user {buyer_uid}!")
     except Exception as e:
-        await m.answer(f"✅ Order #{oid} fulfilled, but could not message user: {e}\nPayload: <code>{esc(payload)}</code>")
+        await m.answer(f"✅ Order #{oid} fulfilled, but could not message user: {esc(str(e))}\nPayload: <code>{esc(payload)}</code>")
 
 
 @dp.message(F.text.regexp(r"^/reject_(\d+)$"), is_admin)
@@ -2759,7 +2781,7 @@ async def admin_reject_order(m: Message, command: CommandObject = None):
     elif m.text and m.text.startswith("/reject_"):
         try:
             oid = int(m.text.split("_")[1])
-        except ValueError:
+        except (ValueError, IndexError):
             pass
 
     if not oid:
@@ -2828,8 +2850,8 @@ async def check_cryptobot_payment(c: CallbackQuery):
             await notify_admins(c.bot, lambda aid: f"✅ Order #{oid} paid via @CryptoBot & delivered: {esc(o['product_name'])} ({format_user_price(o['price'], aid)}) to user {uid}")
             await c.answer()
         else:
-            await c.answer(t(uid, err or "supplier_error"), show_alert=True)
-            await notify_admins(c.bot, f"⚠️ Order #{oid} paid via @CryptoBot by user {uid} but delivery failed: {err}")
+            await c.answer(t(uid, err or "supplier_error")[:200], show_alert=True)
+            await notify_admins(c.bot, f"⚠️ Order #{oid} paid via @CryptoBot by user {uid} but delivery failed: {esc(str(err))}")
     else:
         await c.answer(t(uid, "pay_pending"), show_alert=True)
 
@@ -2897,10 +2919,10 @@ async def check_paystack_payment_callback(c: CallbackQuery):
             )
             await c.answer("✅ Payment confirmed and delivered!", show_alert=False)
         else:
-            await c.answer(t(uid, err or "supplier_error"), show_alert=True)
+            await c.answer(t(uid, err or "supplier_error")[:200], show_alert=True)
             await notify_admins(
                 c.bot,
-                f"⚠️ Order #{oid} paid via Paystack by user {uid} but delivery failed: {err}\nRef: <code>{esc(ref_to_check)}</code>"
+                f"⚠️ Order #{oid} paid via Paystack by user {uid} but delivery failed: {esc(str(err))}\nRef: <code>{esc(ref_to_check)}</code>"
             )
     else:
         await c.answer("⏳ Payment is still pending on Paystack. Complete the transfer or card payment, then check again!", show_alert=True)
@@ -3000,7 +3022,10 @@ async def lang_menu(c: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("setlang:"))
 async def set_lang(c: CallbackQuery):
-    code = c.data.split(":")[1]
+    parts = c.data.split(":", 1)
+    if len(parts) < 2:
+        return await c.answer("⚠️ Invalid language callback data.", show_alert=True)
+    code = parts[1]
     if code in TR:
         get_user(c.from_user.id)
         db.execute("UPDATE users SET lang=? WHERE id=?", (code, c.from_user.id))
@@ -3038,7 +3063,10 @@ async def currency_menu(c: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("setcurrency:"))
 async def set_currency(c: CallbackQuery):
-    code = c.data.split(":")[1].upper()
+    parts = c.data.split(":", 1)
+    if len(parts) < 2:
+        return await c.answer("⚠️ Invalid currency callback data.", show_alert=True)
+    code = parts[1].upper()
     uid = c.from_user.id
     if code in CURRENCY_NAMES:
         get_user(uid)
@@ -3559,7 +3587,7 @@ async def admin_deliver(m: Message, command: CommandObject = None):
             )
             await m.answer(f"✅ Order #{oid} delivered to user {o['user_id']}!")
         except Exception as e:
-            await m.answer(f"✅ Order #{oid} marked completed, but could not message user: {e}\nPayload: <code>{esc(payload)}</code>")
+            await m.answer(f"✅ Order #{oid} marked completed, but could not message user: {esc(str(e))}\nPayload: <code>{esc(payload)}</code>")
     except Exception:
         await m.answer("Usage: /deliver <order_id> <delivered_content_or_link>")
 
@@ -3742,72 +3770,58 @@ async def admin_setpaystack(m: Message, command: CommandObject = None):
 @dp.message(Command("supplier", "suppliers"), is_admin)
 async def admin_supplier_info(m: Message, command: CommandObject = None):
     registered = supplier_registry.list_suppliers()
-    if not registered:
-        return await m.answer("⚠️ No suppliers registered. Configure <code>RESELLER_API_KEY</code> or <code>SUPPLIER_&lt;NAME&gt;_KEY</code> in .env.")
+    if not registered and not RESELLER_API_KEY:
+        return await m.answer("⚠️ <code>RESELLER_API_KEY</code> is not configured in .env.")
 
     arg = (command.args or "").strip().lower() if command else ""
+    client = None
+
     if arg:
         if arg in registered:
-            sup_client = registered[arg]
-            try:
-                bal_res = await sup_client.get_balance()
-                b_val = bal_res.get('balance', 0)
-                try:
-                    b_float = float(b_val) if b_val is not None else 0.0
-                    bal_str = f"${b_float:.2f} {bal_res.get('currency', 'USD')}"
-                except (ValueError, TypeError):
-                    bal_str = f"{b_val} {bal_res.get('currency', 'USD')}"
-            except Exception as e:
-                bal_str = f"Error: {e}"
-
-            try:
-                info_res = await sup_client.get_info()
-                info_text = json.dumps(info_res, indent=2, ensure_ascii=False)
-                if len(info_text) > 400:
-                    info_text = info_text[:400] + "..."
-            except Exception as e:
-                info_text = f"Error: {e}"
-
-            p_count = db.execute("SELECT COUNT(*) FROM products WHERE supplier=? AND active=1", (arg,)).fetchone()[0]
-
-            return await m.answer(
-                f"🌐 <b>Supplier: <code>{esc(arg)}</code></b>\n"
-                f"<b>Base URL:</b> <code>{esc(sup_client.base_url)}</code>\n"
-                f"<b>Balance:</b> <b>{esc(bal_str)}</b>\n"
-                f"<b>Active Linked Products:</b> {p_count}\n\n"
-                f"<b>Account Info:</b>\n<pre>{esc(info_text)}</pre>"
-            )
+            client = registered[arg]
         else:
             avail = ", ".join(f"<code>{esc(k)}</code>" for k in registered.keys())
             return await m.answer(
                 f"⚠️ Supplier '<code>{esc(arg)}</code>' not found in registry.\n"
                 f"<b>Configured Suppliers:</b> {avail}\n\n"
-                f"<i>Tip: Use <code>/supplier</code> to view an overview of all suppliers.</i>"
+                f"<i>Tip: Use <code>/supplier</code> to view the primary supplier.</i>"
             )
+    else:
+        def_name = supplier_registry.default_name() if hasattr(supplier_registry, "default_name") else "default"
+        client = registered.get(def_name) or registered.get("default") or reseller
 
-    # All suppliers overview
-    lines = ["🌐 <b>Configured Suppliers / Resellers:</b>\n"]
-    for name, client in registered.items():
+    if not client:
+        return await m.answer("⚠️ Supplier client not available. Please check .env configuration.")
+
+    has_key = bool(client.api_key and not client.api_key.startswith("your_"))
+
+    try:
+        bal_res = await client.get_balance()
+        b_val = bal_res.get('balance', 0)
         try:
-            bal_res = await client.get_balance()
-            b_val = bal_res.get('balance', 0)
-            try:
-                b_float = float(b_val) if b_val is not None else 0.0
-                bal_disp = f"${b_float:.2f} {bal_res.get('currency', 'USD')}"
-            except (ValueError, TypeError):
-                bal_disp = f"{b_val} {bal_res.get('currency', 'USD')}"
-        except Exception as e:
-            bal_disp = f"Error ({e})"
+            b_float = float(b_val) if b_val is not None else 0.0
+            bal_str = f"${b_float:.2f} {bal_res.get('currency', 'USD')}"
+        except (ValueError, TypeError):
+            bal_str = f"{b_val} {bal_res.get('currency', 'USD')}"
+    except Exception as e:
+        bal_str = f"Error: {e}"
 
-        p_count = db.execute("SELECT COUNT(*) FROM products WHERE supplier=? AND active=1", (name,)).fetchone()[0]
-        is_def = " (default)" if name == supplier_registry.default_name() else ""
-        lines.append(
-            f"• <b>{esc(name.upper())}</b>{is_def}\n"
-            f"  URL: <code>{esc(client.base_url)}</code>\n"
-            f"  Balance: <b>{esc(bal_disp)}</b> · Products: {p_count}\n"
-        )
+    try:
+        info_res = await client.get_info()
+        info_text = json.dumps(info_res, indent=2, ensure_ascii=False)
+        if len(info_text) > 1500:
+            info_text = info_text[:1500] + "..."
+    except Exception as e:
+        info_text = f"Error: {e}"
 
-    lines.append("<i>Tip: Type <code>/supplier &lt;name&gt;</code> for details or <code>/s_sync &lt;name&gt; [margin]</code> to sync products.</i>")
+    lines = [
+        "🌐 <b>Supplier API Status</b>",
+        f"Base URL: {esc(client.base_url)}",
+        f"API Key: {'Set (✓)' if has_key else 'Missing (✗)'}",
+        f"Supplier Balance: {esc(bal_str)}\n",
+        f"<b>Account Info:</b>",
+        f'<pre><code class="language-json">{esc(info_text)}</code></pre>',
+    ]
     await m.answer("\n".join(lines))
 
 
