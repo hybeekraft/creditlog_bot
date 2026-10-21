@@ -868,15 +868,22 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
 
         text, markup = bot.render_payment_methods(uid=1001, p=p, qty=2, ctx="shop")
-        self.assertIn("Choose how to pay:", text)
+        self.assertIn("Choose a payment method:", text)
 
         flat_btns = [b for row in markup.inline_keyboard for b in row]
         labels = [b.text for b in flat_btns]
-        self.assertTrue(any("Binance Pay" in lbl for lbl in labels))
-        self.assertTrue(any("USDT BEP20" in lbl for lbl in labels))
-        self.assertTrue(any("USDT TRC20" in lbl for lbl in labels))
-        self.assertTrue(any("CryptoBot" in lbl for lbl in labels))
+        self.assertTrue(any("CryptoPay (Crypto Bot) +3%" in lbl for lbl in labels))
+        self.assertTrue(any("Binance Pay (USDT only)" in lbl for lbl in labels))
+        self.assertTrue(any("USDT (TRC20 / BEP20)" in lbl for lbl in labels))
+        self.assertTrue(any("Don't have crypto?" in lbl for lbl in labels))
         self.assertTrue(any("Back" in lbl for lbl in labels))
+
+        # Check styles matching design
+        self.assertEqual(markup.inline_keyboard[0][0].style, "success")  # CryptoPay green
+        self.assertEqual(markup.inline_keyboard[1][0].style, "success")  # Binance Pay green
+        self.assertEqual(markup.inline_keyboard[2][0].style, "success")  # USDT green
+        self.assertEqual(markup.inline_keyboard[3][0].style, "primary")  # Don't have crypto blue
+        self.assertEqual(markup.inline_keyboard[4][0].style, "danger")   # Back red
 
     async def test_admin_approve_and_reject_order(self):
         pid = bot.db.execute(
@@ -1588,7 +1595,11 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
         with patch.object(bot, "is_paystack_configured", return_value=True):
             text, markup = bot.render_payment_methods(12345, p, 1, "shop")
             buttons = [b.text for row in markup.inline_keyboard for b in row]
-            self.assertTrue(any("Naira / Bank" in b for b in buttons))
+            self.assertTrue(any("Don't have crypto?" in b for b in buttons))
+
+            text_fiat, markup_fiat = bot.render_fiat_payment_methods(12345, p, 1, "shop")
+            fiat_buttons = [b.text for row in markup_fiat.inline_keyboard for b in row]
+            self.assertTrue(any("Paystack" in b for b in fiat_buttons))
 
     async def test_paystack_checkout_flow_and_callback(self):
         # Insert test order
@@ -3028,8 +3039,11 @@ class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
              patch("bot.is_korapay_configured", return_value=True), \
              patch("bot.get_usd_ngn_rate", return_value=1500):
             text, kb = bot.render_payment_methods(999, p, qty=1, ctx="shop")
+            self.assertTrue(any("Don't have crypto?" in b.text for row in kb.inline_keyboard for b in row))
+
+            text_fiat, kb_fiat = bot.render_fiat_payment_methods(999, p, qty=1, ctx="shop")
             korapay_btn = None
-            for row in kb.inline_keyboard:
+            for row in kb_fiat.inline_keyboard:
                 for b in row:
                     if "Korapay" in b.text:
                         korapay_btn = b
@@ -3039,9 +3053,9 @@ class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
 
         with patch("bot.is_paystack_configured", return_value=False), \
              patch("bot.is_korapay_configured", return_value=False):
-            text, kb = bot.render_payment_methods(999, p, qty=1, ctx="shop")
+            text_fiat, kb_fiat = bot.render_fiat_payment_methods(999, p, qty=1, ctx="shop")
             korapay_btn = None
-            for row in kb.inline_keyboard:
+            for row in kb_fiat.inline_keyboard:
                 for b in row:
                     if "Korapay" in b.text:
                         korapay_btn = b
@@ -3466,7 +3480,10 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
         p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
 
         # When unconfigured
-        _, kb_unconf = bot.render_payment_methods(123, p, 1, "shop")
+        bot.set_setting("bank_name", "")
+        bot.set_setting("bank_account_number", "")
+        bot.set_setting("bank_account_name", "")
+        _, kb_unconf = bot.render_fiat_payment_methods(123, p, 1, "shop")
         buttons_unconf = [b.callback_data for row in kb_unconf.inline_keyboard for b in row if b.callback_data]
         self.assertFalse(any(b.startswith("pay_opt:bank:") for b in buttons_unconf))
 
@@ -3474,9 +3491,14 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
         bot.set_setting("bank_name", "Kuda")
         bot.set_setting("bank_account_number", "2012345678")
         bot.set_setting("bank_account_name", "CreditLog Kuda")
-        _, kb_conf = bot.render_payment_methods(123, p, 1, "shop")
+        _, kb_conf = bot.render_fiat_payment_methods(123, p, 1, "shop")
         buttons_conf = [b.callback_data for row in kb_conf.inline_keyboard for b in row if b.callback_data]
         self.assertTrue(any(b.startswith("pay_opt:bank:") for b in buttons_conf))
+
+        # Also verify main payment method menu has pay_fiat routing button
+        _, kb_main = bot.render_payment_methods(123, p, 1, "shop")
+        main_cbs = [b.callback_data for row in kb_main.inline_keyboard for b in row if b.callback_data]
+        self.assertTrue(any(b.startswith("pay_fiat:") for b in main_cbs))
 
     async def test_on_pay_option_selected_bank_order_creation(self):
         bot.set_setting("bank_name", "OPay")
@@ -3547,6 +3569,71 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
         # Verify DB updated
         o_updated = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         self.assertEqual(o_updated["txid"], "Tunde Bakare / OPay Session 123456789")
+
+    async def test_on_pay_usdt_network_submenu(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Network Item', 'Desc', 500, 1)").lastrowid
+        c = AsyncMock()
+        c.from_user.id = 112233
+        c.data = f"pay_usdt_net:{pid}:1:shop"
+        with patch("bot.edit", new=AsyncMock()) as mock_edit:
+            await bot.on_pay_usdt_network(c)
+            mock_edit.assert_called_once()
+            text_arg, markup_arg = mock_edit.call_args[0][1], mock_edit.call_args[0][2]
+            self.assertIn("Choose USDT Network:", text_arg)
+            btns = [b for row in markup_arg.inline_keyboard for b in row]
+            labels = [b.text for b in btns]
+            self.assertTrue(any("BEP20" in l for l in labels))
+            self.assertTrue(any("TRC20" in l for l in labels))
+            self.assertTrue(any("Back" in l for l in labels))
+            # Verify Back button is red (style="danger") and points to pay_dir
+            back_btn = [b for b in btns if "Back" in b.text][0]
+            self.assertEqual(back_btn.style, "danger")
+            self.assertTrue(back_btn.callback_data.startswith(f"pay_dir:{pid}:1:shop"))
+
+    async def test_on_pay_fiat_submenu(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Fiat Item', 'Desc', 1000, 1)").lastrowid
+        c = AsyncMock()
+        c.from_user.id = 112233
+        c.data = f"pay_fiat:{pid}:1:shop"
+
+        # Case 1: unconfigured -> alert
+        bot.set_setting("bank_name", "")
+        with patch.object(bot, "is_paystack_configured", return_value=False), \
+             patch.object(bot, "is_korapay_configured", return_value=False):
+            await bot.on_pay_fiat(c)
+            c.answer.assert_called_with("⚠️ Bank transfer / local payment is currently being set up. Please select CryptoPay, Binance Pay, or USDT.", show_alert=True)
+
+        # Case 2: configured -> opens submenu
+        bot.set_setting("bank_name", "Kuda")
+        bot.set_setting("bank_account_number", "1234567890")
+        bot.set_setting("bank_account_name", "Store Account")
+        c.reset_mock()
+        with patch("bot.edit", new=AsyncMock()) as mock_edit:
+            await bot.on_pay_fiat(c)
+            mock_edit.assert_called_once()
+            text_arg, markup_arg = mock_edit.call_args[0][1], mock_edit.call_args[0][2]
+            self.assertIn("Don't have crypto? Pay with Naira", text_arg)
+            btns = [b for row in markup_arg.inline_keyboard for b in row]
+            self.assertTrue(any("Direct Bank Transfer" in b.text for b in btns))
+
+    async def test_cryptobot_plus_3_percent_fee(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('CB Fee Item', 'Desc', 1000, 1)").lastrowid
+        c = AsyncMock()
+        c.from_user.id = 998877
+        c.from_user.username = "cbuser"
+        c.data = f"pay_opt:cryptobot:{pid}:1:shop"
+
+        mock_inv = {"invoice_id": 99991, "bot_invoice_url": "https://t.me/CryptoBot?start=inv99991"}
+        with patch.object(bot, "CRYPTOBOT_TOKEN", "test-live-token"), \
+             patch("bot.create_cryptobot_invoice", new=AsyncMock(return_value=mock_inv)) as mock_create_inv, \
+             patch("bot.edit", new=AsyncMock()) as mock_edit:
+            await bot.on_pay_option_selected(c)
+            # 1000 cents * 1.03 = 1030 cents
+            mock_create_inv.assert_called_once_with(mock_create_inv.call_args[0][0], "CB Fee Item x1", 1030)
+            mock_edit.assert_called_once()
+            text_arg = mock_edit.call_args[0][1]
+            self.assertIn("Processing Fee (+3%):</b> $0.30 USDT", text_arg)
+            self.assertIn("Total to pay:</b> <b>$10.30 USDT", text_arg)
 
 
 if __name__ == "__main__":

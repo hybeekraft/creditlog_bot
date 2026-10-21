@@ -2173,28 +2173,58 @@ def render_order_summary(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[
 
 
 def render_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
-    """Payment method selection screen matching Screenshot 3."""
-    rows = []
+    """Payment method selection screen matching the reference layout."""
+    pid = p["id"]
+    cb_emoji = get_custom_emoji_id("cryptopay") or get_custom_emoji_id("cryptobot")
+    binance_emoji = get_custom_emoji_id("binance") or get_custom_emoji_id("binance_pay")
+    usdt_emoji = get_custom_emoji_id("usdt") or get_custom_emoji_id("tether")
+    card_emoji = get_custom_emoji_id("card") or get_custom_emoji_id("fiat")
+    back_emoji = get_custom_emoji_id("back")
+
+    cb_label = "CryptoPay (Crypto Bot) +3%" if cb_emoji else "🤖 CryptoPay (Crypto Bot) +3%"
+    binance_label = "Binance Pay (USDT only)" if binance_emoji else "🟡 Binance Pay (USDT only)"
+    usdt_label = "USDT (TRC20 / BEP20)" if usdt_emoji else "🟢 USDT (TRC20 / BEP20)"
+    card_label = "Don't have crypto?" if card_emoji else "💳 Don't have crypto?"
+    back_label = "Back" if back_emoji else "↩️ Back"
+
+    rows = [
+        [btn(cb_label, f"pay_opt:cryptobot:{pid}:{qty}:{ctx}", style="success", emoji_id=cb_emoji)],
+        [btn(binance_label, f"pay_opt:binance:{pid}:{qty}:{ctx}", style="success", emoji_id=binance_emoji)],
+        [btn(usdt_label, f"pay_usdt_net:{pid}:{qty}:{ctx}", style="success", emoji_id=usdt_emoji)],
+        [btn(card_label, f"pay_fiat:{pid}:{qty}:{ctx}", style="primary", emoji_id=card_emoji)],
+        [btn(back_label, f"summary:{pid}:{qty}:{ctx}", style="danger", emoji_id=back_emoji)]
+    ]
+    return "<b>Choose a payment method:</b>", kb(rows)
+
+
+def render_fiat_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
+    """Fiat / Local Naira payment method selection (Don't have crypto?)."""
+    pid = p["id"]
     rate = get_usd_ngn_rate()
     total_ngn = round((p["price"] * qty / 100.0) * rate)
 
+    rows = []
     if is_bank_configured():
         bank = get_bank_details()
-        rows.append([btn(f"🇳🇬 Direct Bank Transfer ({bank['bank_name']}) — ₦{total_ngn:,}", f"pay_opt:bank:{p['id']}:{qty}:{ctx}", style="success")])
+        rows.append([btn(f"🇳🇬 Direct Bank Transfer ({bank['bank_name']}) — ₦{total_ngn:,}", f"pay_opt:bank:{pid}:{qty}:{ctx}", style="success")])
 
     if is_paystack_configured():
-        rows.append([btn(f"🇳🇬 Paystack — Naira / Bank / Card (₦{total_ngn:,})", f"pay_opt:paystack:{p['id']}:{qty}:{ctx}", style="success")])
-    if is_korapay_configured():
-        rows.append([btn(f"⚡ Korapay — Naira / Bank / Card (₦{total_ngn:,})", f"pay_opt:korapay:{p['id']}:{qty}:{ctx}", style="success")])
+        rows.append([btn(f"🇳🇬 Paystack — Naira / Card / Bank (₦{total_ngn:,})", f"pay_opt:paystack:{pid}:{qty}:{ctx}", style="success")])
 
-    rows.extend([
-        [btn("🟡 Binance Pay", f"pay_opt:binance:{p['id']}:{qty}:{ctx}", style="primary")],
-        [btn("🟠 USDT BEP20", f"pay_opt:bep20:{p['id']}:{qty}:{ctx}", style="primary")],
-        [btn("🔴 USDT TRC20", f"pay_opt:trc20:{p['id']}:{qty}:{ctx}", style="primary")],
-        [btn("🤖 CryptoBot", f"pay_opt:cryptobot:{p['id']}:{qty}:{ctx}", style="primary")],
-        [btn("◀️ Back", f"summary:{p['id']}:{qty}:{ctx}", style="primary")]
-    ])
-    return "<b>Choose how to pay:</b>", kb(rows)
+    if is_korapay_configured():
+        rows.append([btn(f"⚡ Korapay — Naira / Card / Bank (₦{total_ngn:,})", f"pay_opt:korapay:{pid}:{qty}:{ctx}", style="success")])
+
+    back_emoji = get_custom_emoji_id("back")
+    back_label = "Back" if back_emoji else "↩️ Back"
+    rows.append([btn(back_label, f"pay_dir:{pid}:{qty}:{ctx}", style="danger", emoji_id=back_emoji)])
+
+    text = (
+        "<b>Don't have crypto? Pay with Naira / Bank Transfer:</b>\n\n"
+        f"💵 <b>Exchange Rate:</b> ₦{rate:,} / USD\n"
+        f"➡️ <b>Total Amount:</b> <b>₦{total_ngn:,} NGN</b>\n\n"
+        "Select your preferred payment method below:"
+    )
+    return text, kb(rows)
 
 
 
@@ -2255,6 +2285,61 @@ async def on_pay_directly(c: CallbackQuery):
     if not p:
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
     text, markup = render_payment_methods(uid, p, qty, ctx)
+    await edit(c, text, markup)
+
+
+@dp.callback_query(F.data.startswith("pay_usdt_net:"))
+async def on_pay_usdt_network(c: CallbackQuery):
+    pending_inputs.pop(c.from_user.id, None)
+    parts = c.data.split(":", 3)
+    if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
+        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
+    _, pid_str, qty_str, ctx = parts
+    pid, qty = int(pid_str), int(qty_str)
+    if not (1 <= qty <= 1000):
+        return await c.answer("⚠️ Invalid quantity.", show_alert=True)
+    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
+    if not p:
+        return await c.answer(t(c.from_user.id, "out_of_stock"), show_alert=True)
+
+    bep20_emoji = get_custom_emoji_id("bep20") or get_custom_emoji_id("binance")
+    trc20_emoji = get_custom_emoji_id("trc20") or get_custom_emoji_id("tron")
+    back_emoji = get_custom_emoji_id("back")
+
+    bep20_label = "USDT (BEP20)" if bep20_emoji else "🟠 USDT (BEP20)"
+    trc20_label = "USDT (TRC20)" if trc20_emoji else "🔴 USDT (TRC20)"
+    back_label = "Back" if back_emoji else "↩️ Back"
+
+    text = (
+        "<b>Choose USDT Network:</b>\n\n"
+        "Please select the blockchain network you wish to use for payment:"
+    )
+    rows = [
+        [btn(bep20_label, f"pay_opt:bep20:{pid}:{qty}:{ctx}", style="success", emoji_id=bep20_emoji)],
+        [btn(trc20_label, f"pay_opt:trc20:{pid}:{qty}:{ctx}", style="success", emoji_id=trc20_emoji)],
+        [btn(back_label, f"pay_dir:{pid}:{qty}:{ctx}", style="danger", emoji_id=back_emoji)]
+    ]
+    await edit(c, text, kb(rows))
+
+
+@dp.callback_query(F.data.startswith("pay_fiat:"))
+async def on_pay_fiat(c: CallbackQuery):
+    pending_inputs.pop(c.from_user.id, None)
+    parts = c.data.split(":", 3)
+    if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
+        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
+    _, pid_str, qty_str, ctx = parts
+    pid, qty = int(pid_str), int(qty_str)
+    if not (1 <= qty <= 1000):
+        return await c.answer("⚠️ Invalid quantity.", show_alert=True)
+    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
+    if not p:
+        return await c.answer(t(c.from_user.id, "out_of_stock"), show_alert=True)
+
+    if not is_bank_configured() and not is_paystack_configured() and not is_korapay_configured():
+        return await c.answer("⚠️ Bank transfer / local payment is currently being set up. Please select CryptoPay, Binance Pay, or USDT.", show_alert=True)
+
+    text, markup = render_fiat_payment_methods(c.from_user.id, p, qty, ctx)
     await edit(c, text, markup)
 
 
@@ -2325,7 +2410,7 @@ async def on_pay_option_selected(c: CallbackQuery):
         rows = [
             [btn("🔗 Submit Transfer Reference / Name", f"submit_tx:{oid}", style="primary")],
             [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
-            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("↩️ Back", f"pay_fiat:{pid}:{qty}:{ctx}", style="danger")],
             [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
         ]
         return await edit(c, text, kb(rows))
@@ -2369,7 +2454,7 @@ async def on_pay_option_selected(c: CallbackQuery):
         rows = [
             [btn(f"💳 Pay ₦{amount_ngn:,} via Paystack", url=pay_url, style="success")],
             [btn("✅ I've Paid — Check Status", f"chk_paystack:{oid}:{ref}", style="success")],
-            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("↩️ Back", f"pay_fiat:{pid}:{qty}:{ctx}", style="danger")],
             [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
         ]
         return await edit(c, text, kb(rows))
@@ -2413,18 +2498,20 @@ async def on_pay_option_selected(c: CallbackQuery):
         rows = [
             [btn(f"💳 Pay ₦{amount_ngn:,} via Korapay", url=pay_url, style="success")],
             [btn("✅ I've Paid — Check Status", f"chk_korapay:{oid}:{ref}", style="success")],
-            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("↩️ Back", f"pay_fiat:{pid}:{qty}:{ctx}", style="danger")],
             [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
         ]
         return await edit(c, text, kb(rows))
 
-    # 2. CryptoBot Gateway (Screenshot 1)
+    # 2. CryptoBot Gateway (CryptoPay +3%)
     if method == "cryptobot":
         pay_url = None
         inv_id = None
+        cb_cents = round(total_cents * 1.03)
+        cb_usdt = f"{cb_cents / 100:.2f}"
         if CRYPTOBOT_TOKEN and not CRYPTOBOT_TOKEN.startswith("token-from"):
             try:
-                inv = await create_cryptobot_invoice(oid, f"{p['name']} x{qty}", total_cents)
+                inv = await create_cryptobot_invoice(oid, f"{p['name']} x{qty}", cb_cents)
                 inv_id = inv["invoice_id"]
                 db.execute("UPDATE orders SET invoice_id=? WHERE id=?", (str(inv_id), oid))
                 pay_url = inv.get("bot_invoice_url") or inv.get("pay_url")
@@ -2436,23 +2523,25 @@ async def on_pay_option_selected(c: CallbackQuery):
             return await c.answer("⚠️ CryptoBot checkout could not be initialized. Please try again or choose another payment method.", show_alert=True)
 
         user_curr = get_user_currency(c.from_user.id)
-        ngn_approx = f" (≈ {format_price(total_cents, 'NGN')})" if user_curr == "NGN" else ""
+        ngn_approx = f" (≈ {format_price(cb_cents, 'NGN')})" if user_curr == "NGN" else ""
 
         text = (
-            "<u>🤖 <b>CryptoBot Checkout</b></u>\n"
+            "<u>🤖 <b>CryptoPay Checkout (Crypto Bot)</b></u>\n"
             "────────────────────────\n\n"
             f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
             f"🔢 <b>Quantity:</b> {qty}\n"
-            f"➡️ <b>Total to pay:</b> <b>${total_usdt} USDT{ngn_approx}</b>\n"
+            f"💵 <b>Subtotal:</b> ${total_usdt} USDT\n"
+            f"📊 <b>Processing Fee (+3%):</b> ${(cb_cents - total_cents) / 100:.2f} USDT\n"
+            f"➡️ <b>Total to pay:</b> <b>${cb_usdt} USDT{ngn_approx}</b>\n"
             "────────────────────────\n\n"
-            f"1. Tap <b>Pay ${total_usdt} USDT</b> below to open CryptoBot.\n"
+            f"1. Tap <b>Pay ${cb_usdt} USDT</b> below to open CryptoBot.\n"
             "2. Complete payment in Telegram.\n"
             "3. Return and tap <b>I've Paid — Check Status</b> for instant delivery."
         )
         rows = [
-            [btn(f"💳 Pay ${total_usdt} USDT", url=pay_url, style="success")],
+            [btn(f"💳 Pay ${cb_usdt} USDT", url=pay_url, style="success")],
             [btn("✅ I've Paid — Check Status", f"chk_cb:{oid}:{inv_id}", style="success")],
-            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("↩️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="danger")],
             [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
         ]
         return await edit(c, text, kb(rows))
@@ -2484,7 +2573,7 @@ async def on_pay_option_selected(c: CallbackQuery):
         rows = [
             [btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary")],
             [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
-            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("↩️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="danger")],
             [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
         ]
         return await edit(c, text, kb(rows))
@@ -2523,7 +2612,7 @@ async def on_pay_option_selected(c: CallbackQuery):
         rows = [
             [btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary")],
             [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
-            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("↩️ Back", f"pay_usdt_net:{pid}:{qty}:{ctx}", style="danger")],
             [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
         ]
         return await edit(c, text, kb(rows))
@@ -2553,7 +2642,7 @@ async def on_pay_option_selected(c: CallbackQuery):
         rows = [
             [btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary")],
             [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
-            [btn("◀️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="primary")],
+            [btn("↩️ Back", f"pay_usdt_net:{pid}:{qty}:{ctx}", style="danger")],
             [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
         ]
         return await edit(c, text, kb(rows))
