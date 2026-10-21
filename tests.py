@@ -2729,6 +2729,10 @@ class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
         CREATE TABLE IF NOT EXISTS settings(
           key TEXT PRIMARY KEY,
           value TEXT);
+        CREATE TABLE IF NOT EXISTS custom_emojis(
+          key TEXT PRIMARY KEY,
+          emoji_id TEXT NOT NULL,
+          created TEXT DEFAULT CURRENT_TIMESTAMP);
         """)
 
     async def test_fulfill_order_edge_cases(self):
@@ -3579,16 +3583,15 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
             await bot.on_pay_usdt_network(c)
             mock_edit.assert_called_once()
             text_arg, markup_arg = mock_edit.call_args[0][1], mock_edit.call_args[0][2]
-            self.assertIn("Choose USDT Network:", text_arg)
-            btns = [b for row in markup_arg.inline_keyboard for b in row]
-            labels = [b.text for b in btns]
-            self.assertTrue(any("BEP20" in l for l in labels))
-            self.assertTrue(any("TRC20" in l for l in labels))
-            self.assertTrue(any("Back" in l for l in labels))
-            # Verify Back button is red (style="danger") and points to pay_dir
-            back_btn = [b for b in btns if "Back" in b.text][0]
-            self.assertEqual(back_btn.style, "danger")
-            self.assertTrue(back_btn.callback_data.startswith(f"pay_dir:{pid}:1:shop"))
+            self.assertIn("Choose USDT network:", text_arg)
+            # Verify row 0 is TRC20, row 1 is BEP20, row 2 is Back
+            self.assertIn("TRC20", markup_arg.inline_keyboard[0][0].text)
+            self.assertIn("BEP20", markup_arg.inline_keyboard[1][0].text)
+            self.assertIn("Back", markup_arg.inline_keyboard[2][0].text)
+            self.assertEqual(markup_arg.inline_keyboard[0][0].style, "success")
+            self.assertEqual(markup_arg.inline_keyboard[1][0].style, "success")
+            self.assertEqual(markup_arg.inline_keyboard[2][0].style, "danger")
+            self.assertTrue(markup_arg.inline_keyboard[2][0].callback_data.startswith(f"pay_dir:{pid}:1:shop"))
 
     async def test_on_pay_fiat_submenu(self):
         pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Fiat Item', 'Desc', 1000, 1)").lastrowid
@@ -3634,6 +3637,38 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
             text_arg = mock_edit.call_args[0][1]
             self.assertIn("Processing Fee (+3%):</b> $0.30 USDT", text_arg)
             self.assertIn("Total to pay:</b> <b>$10.30 USDT", text_arg)
+
+    async def test_admin_get_and_set_emoji(self):
+        m = AsyncMock()
+        m.from_user.id = 111222333  # admin
+        m.entities = []
+        m.reply_to_message = None
+
+        # 1. /getemoji with no emoji shows guide
+        await bot.admin_get_emoji(m)
+        m.answer.assert_called_once()
+        self.assertIn("How to find a Custom Emoji ID", m.answer.call_args[0][0])
+
+        # 2. /getemoji with custom emoji entity
+        m.reset_mock()
+        mock_ent = MagicMock()
+        mock_ent.type = "custom_emoji"
+        mock_ent.custom_emoji_id = "5368324170671232287"
+        m.entities = [mock_ent]
+        await bot.admin_get_emoji(m)
+        m.answer.assert_called_once()
+        self.assertIn("5368324170671232287", m.answer.call_args[0][0])
+        self.assertIn("/setemoji trc20 5368324170671232287", m.answer.call_args[0][0])
+
+        # 3. Set trc20 emoji
+        m.reset_mock()
+        cmd = MagicMock()
+        cmd.args = "trc20 5368324170671232287"
+        m.entities = []
+        await bot.admin_setemoji(m, cmd)
+        m.answer.assert_called_once()
+        self.assertIn("Brand emoji for <b>trc20</b> updated!", m.answer.call_args[0][0])
+        self.assertEqual(bot.get_custom_emoji_id("trc20"), "5368324170671232287")
 
 
 if __name__ == "__main__":

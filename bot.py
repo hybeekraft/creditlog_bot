@@ -177,6 +177,10 @@ CREATE TABLE IF NOT EXISTS orders(
 CREATE TABLE IF NOT EXISTS settings(
   key TEXT PRIMARY KEY,
   value TEXT);
+CREATE TABLE IF NOT EXISTS custom_emojis(
+  key TEXT PRIMARY KEY,
+  emoji_id TEXT NOT NULL,
+  created TEXT DEFAULT CURRENT_TIMESTAMP);
 """)
 
 try:
@@ -2302,21 +2306,18 @@ async def on_pay_usdt_network(c: CallbackQuery):
     if not p:
         return await c.answer(t(c.from_user.id, "out_of_stock"), show_alert=True)
 
-    bep20_emoji = get_custom_emoji_id("bep20") or get_custom_emoji_id("binance")
     trc20_emoji = get_custom_emoji_id("trc20") or get_custom_emoji_id("tron")
+    bep20_emoji = get_custom_emoji_id("bep20") or get_custom_emoji_id("binance")
     back_emoji = get_custom_emoji_id("back")
 
-    bep20_label = "USDT (BEP20)" if bep20_emoji else "🟠 USDT (BEP20)"
-    trc20_label = "USDT (TRC20)" if trc20_emoji else "🔴 USDT (TRC20)"
+    trc20_label = "USDT TRC20" if trc20_emoji else "🔴 USDT TRC20"
+    bep20_label = "USDT BEP20" if bep20_emoji else "🟡 USDT BEP20"
     back_label = "Back" if back_emoji else "↩️ Back"
 
-    text = (
-        "<b>Choose USDT Network:</b>\n\n"
-        "Please select the blockchain network you wish to use for payment:"
-    )
+    text = "<b>Choose USDT network:</b>"
     rows = [
-        [btn(bep20_label, f"pay_opt:bep20:{pid}:{qty}:{ctx}", style="success", emoji_id=bep20_emoji)],
         [btn(trc20_label, f"pay_opt:trc20:{pid}:{qty}:{ctx}", style="success", emoji_id=trc20_emoji)],
+        [btn(bep20_label, f"pay_opt:bep20:{pid}:{qty}:{ctx}", style="success", emoji_id=bep20_emoji)],
         [btn(back_label, f"pay_dir:{pid}:{qty}:{ctx}", style="danger", emoji_id=back_emoji)]
     ]
     await edit(c, text, kb(rows))
@@ -3632,7 +3633,9 @@ async def admin_setemoji(m: Message, command: CommandObject = None):
         return await m.answer(
             f"<b>Usage:</b> <code>/setemoji &lt;key&gt; [emoji]</code>\n\n"
             f"Send with a custom emoji or paste its numeric ID.\n\n"
-            f"<b>Available keys:</b>\n<code>{avail_keys}, shop, orders, lang, support, news, search, all_items, back</code>"
+            f"<b>Payment & Navigation Keys:</b>\n"
+            f"<code>trc20, bep20, binance, cryptopay, usdt, card, back, bank</code>\n\n"
+            f"<b>Category Keys:</b>\n<code>{avail_keys}, shop, orders, lang, support, news, search, all_items</code>"
         )
 
     parts = args.split(None, 1)
@@ -3659,6 +3662,13 @@ async def admin_setemoji(m: Message, command: CommandObject = None):
             f"<code>/setemoji {esc(key)} &lt;custom_emoji_or_id&gt;</code>"
         )
 
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS custom_emojis(
+          key TEXT PRIMARY KEY,
+          emoji_id TEXT NOT NULL,
+          created TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
     db.execute(
         "INSERT INTO custom_emojis(key, emoji_id) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET emoji_id=excluded.emoji_id",
         (key, emoji_id)
@@ -3667,6 +3677,38 @@ async def admin_setemoji(m: Message, command: CommandObject = None):
         f"✅ Brand emoji for <b>{esc(key)}</b> updated!\n"
         f"• Custom Emoji ID: <code>{esc(emoji_id)}</code>"
     )
+
+
+@dp.message(Command("getemoji"), is_admin)
+async def admin_get_emoji(m: Message):
+    """Inspect and extract Telegram custom emoji ID from any message or emoji."""
+    found = []
+    if m.entities:
+        for ent in m.entities:
+            if ent.type == "custom_emoji" and ent.custom_emoji_id:
+                found.append(str(ent.custom_emoji_id))
+    if not found and m.reply_to_message and m.reply_to_message.entities:
+        for ent in m.reply_to_message.entities:
+            if ent.type == "custom_emoji" and ent.custom_emoji_id:
+                found.append(str(ent.custom_emoji_id))
+
+    if not found:
+        return await m.answer(
+            "<b>How to find a Custom Emoji ID:</b>\n\n"
+            "1. Send <code>/getemoji &lt;custom emoji&gt;</code> with a custom emoji from your Telegram sticker/emoji pack.\n"
+            "2. Or reply to any message containing custom emojis with <code>/getemoji</code>.\n"
+            "3. You can also send the emoji to the public bot <b>@EmojiID</b> or <b>@get_emoji_id_bot</b> to get its ID."
+        )
+
+    lines = ["<b>Detected Custom Emoji ID(s):</b>\n"]
+    for eid in found:
+        lines.append(f"• ID: <code>{esc(eid)}</code>")
+    lines.append("\n<b>Quick Setup Commands:</b>")
+    first = found[0]
+    lines.append(f"• Set TRC20: <code>/setemoji trc20 {first}</code>")
+    lines.append(f"• Set BEP20: <code>/setemoji bep20 {first}</code>")
+    lines.append(f"• Set Back: <code>/setemoji back {first}</code>")
+    await m.answer("\n".join(lines))
 
 
 @dp.message(Command("emojis"), is_admin)
