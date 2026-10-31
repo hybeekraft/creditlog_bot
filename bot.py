@@ -115,14 +115,8 @@ CRYPTO_USDT_TRC20 = (os.environ.get("CRYPTO_USDT_TRC20", "") or "").strip()
 if not CRYPTO_USDT_TRC20 or CRYPTO_USDT_TRC20.startswith("TYour") or CRYPTO_USDT_TRC20.startswith("TR7NH"):
     CRYPTO_USDT_TRC20 = "TUaDYfZ2fBRXSRDm9d6kN9j2J7bi7ZsBLW"
 
-# Paystack (Naira / Card / Bank Transfer)
-PAYSTACK_SECRET_KEY = (os.environ.get("PAYSTACK_SECRET_KEY", "") or "").strip()
+# Naira Payments (Direct Bank Transfer)
 DEFAULT_USD_NGN_RATE = safe_int_env("USD_NGN_RATE", 1450)
-PAYSTACK_CALLBACK_URL = os.environ.get("PAYSTACK_CALLBACK_URL", "https://t.me/creditlogbot")
-
-# Korapay (Naira / Card / Bank Transfer)
-KORAPAY_SECRET_KEY = (os.environ.get("KORAPAY_SECRET_KEY", "") or "").strip()
-KORAPAY_CALLBACK_URL = os.environ.get("KORAPAY_CALLBACK_URL", "https://t.me/creditlogbot")
 
 # --------------------------------------------------------------------------
 # Database
@@ -229,26 +223,6 @@ def get_usd_ngn_rate() -> int:
 
 def set_usd_ngn_rate(rate: int):
     set_setting("usd_ngn_rate", str(max(1, rate)))
-
-
-def is_paystack_configured() -> bool:
-    """Returns True if Paystack API secret key is configured."""
-    key = os.environ.get("PAYSTACK_SECRET_KEY") or get_setting("paystack_secret_key", "")
-    return bool(key and not key.startswith("your_"))
-
-
-def get_paystack_key() -> str:
-    return (os.environ.get("PAYSTACK_SECRET_KEY") or get_setting("paystack_secret_key", "")).strip()
-
-
-def is_korapay_configured() -> bool:
-    """Returns True if Korapay API secret key is configured."""
-    key = os.environ.get("KORAPAY_SECRET_KEY") or get_setting("korapay_secret_key", "")
-    return bool(key and not key.startswith("your_"))
-
-
-def get_korapay_key() -> str:
-    return (os.environ.get("KORAPAY_SECRET_KEY") or get_setting("korapay_secret_key", "")).strip()
 
 
 def get_bank_details() -> dict[str, str]:
@@ -1975,163 +1949,6 @@ async def check_cryptobot_invoice(invoice_id: int) -> bool:
         return False
 
 
-async def initialize_paystack_transaction(
-    order_id: int,
-    user_id: int,
-    item_name: str,
-    amount_kobo: int,
-    customer_email: Optional[str] = None
-) -> dict:
-    """
-    Initializes a Paystack transaction checkout session.
-    Returns: dict with 'authorization_url', 'reference', and 'access_code'.
-    """
-    key = get_paystack_key()
-    if not key:
-        raise RuntimeError("Paystack API key is not configured.")
-
-    email = customer_email or f"user_{user_id}@creditlog.bot"
-    reference = f"CL_{order_id}_{int(time.time())}"
-    payload = {
-        "email": email,
-        "amount": amount_kobo,
-        "reference": reference,
-        "callback_url": PAYSTACK_CALLBACK_URL,
-        "metadata": {
-            "order_id": order_id,
-            "user_id": user_id,
-            "product": item_name
-        }
-    }
-    timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as s:
-        async with s.post(
-            "https://api.paystack.co/transaction/initialize",
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json"
-            }
-        ) as r:
-            try:
-                data = await r.json()
-            except Exception:
-                text_resp = await r.text()
-                raise RuntimeError(f"Paystack API HTTP {r.status}: {text_resp[:200]}")
-            if not data.get("status"):
-                raise RuntimeError(f"Paystack API error: {data.get('message', 'Unknown error')}")
-            return data["data"]
-
-
-async def verify_paystack_transaction(reference: str) -> Tuple[bool, dict]:
-    """
-    Verifies a Paystack payment reference with Paystack API.
-    Returns (is_successful: bool, data: dict).
-    """
-    key = get_paystack_key()
-    if not key or not reference:
-        return False, {}
-
-    safe_ref = urllib.parse.quote(reference.strip(), safe="")
-    try:
-        timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(timeout=timeout) as s:
-            async with s.get(
-                f"https://api.paystack.co/transaction/verify/{safe_ref}",
-                headers={"Authorization": f"Bearer {key}"}
-            ) as r:
-                if r.status != 200:
-                    return False, {}
-                data = await r.json()
-                if data.get("status") and data.get("data"):
-                    tx_data = data["data"]
-                    return tx_data.get("status") == "success", tx_data
-                return False, {}
-    except Exception as e:
-        log.warning("Paystack verify transaction exception: %s", e)
-        return False, {}
-
-
-async def initialize_korapay_transaction(
-    order_id: int,
-    user_id: int,
-    item_name: str,
-    amount_ngn: int,
-    customer_email: Optional[str] = None,
-    customer_name: Optional[str] = None
-) -> dict:
-    """
-    Initializes a Korapay checkout session.
-    Returns: dict with 'checkout_url', 'reference', and 'amount'.
-    """
-    key = get_korapay_key()
-    if not key:
-        raise RuntimeError("Korapay API key is not configured.")
-
-    email = customer_email or f"user_{user_id}@creditlog.bot"
-    name = customer_name or f"User {user_id}"
-    reference = f"KP_{order_id}_{int(time.time())}"
-    payload = {
-        "reference": reference,
-        "amount": amount_ngn,
-        "currency": "NGN",
-        "customer": {
-            "name": name,
-            "email": email
-        },
-        "narration": f"Order #{order_id} - {item_name}"[:100],
-        "redirect_url": KORAPAY_CALLBACK_URL,
-        "channels": ["card", "bank_transfer"]
-    }
-    timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as s:
-        async with s.post(
-            "https://api.korapay.com/merchant/api/v1/charges/initialize",
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json"
-            }
-        ) as r:
-            try:
-                data = await r.json()
-            except Exception:
-                text_resp = await r.text()
-                raise RuntimeError(f"Korapay API HTTP {r.status}: {text_resp[:200]}")
-            if not data.get("status"):
-                raise RuntimeError(f"Korapay API error: {data.get('message', 'Unknown error')}")
-            return data["data"]
-
-
-async def verify_korapay_transaction(reference: str) -> Tuple[bool, dict]:
-    """
-    Verifies a Korapay payment reference with Korapay API.
-    Returns (is_successful: bool, data: dict).
-    """
-    key = get_korapay_key()
-    if not key or not reference:
-        return False, {}
-
-    safe_ref = urllib.parse.quote(reference.strip(), safe="")
-    try:
-        timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(timeout=timeout) as s:
-            async with s.get(
-                f"https://api.korapay.com/merchant/api/v1/charges/{safe_ref}",
-                headers={"Authorization": f"Bearer {key}"}
-            ) as r:
-                if r.status != 200:
-                    return False, {}
-                data = await r.json()
-                if data.get("status") and data.get("data"):
-                    tx_data = data["data"]
-                    return tx_data.get("status") == "success", tx_data
-                return False, {}
-    except Exception as e:
-        log.warning("Korapay verify transaction exception: %s", e)
-        return False, {}
-
-
 
 def render_order_summary(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
     """Order Summary matching Screenshot 2."""
@@ -2211,12 +2028,6 @@ def render_fiat_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) ->
     if is_bank_configured():
         bank = get_bank_details()
         rows.append([btn(f"🇳🇬 Direct Bank Transfer ({bank['bank_name']}) — ₦{total_ngn:,}", f"pay_opt:bank:{pid}:{qty}:{ctx}", style="success")])
-
-    if is_paystack_configured():
-        rows.append([btn(f"🇳🇬 Paystack — Naira / Card / Bank (₦{total_ngn:,})", f"pay_opt:paystack:{pid}:{qty}:{ctx}", style="success")])
-
-    if is_korapay_configured():
-        rows.append([btn(f"⚡ Korapay — Naira / Card / Bank (₦{total_ngn:,})", f"pay_opt:korapay:{pid}:{qty}:{ctx}", style="success")])
 
     back_emoji = get_custom_emoji_id("back")
     back_label = "Back" if back_emoji else "↩️ Back"
@@ -2337,7 +2148,7 @@ async def on_pay_fiat(c: CallbackQuery):
     if not p:
         return await c.answer(t(c.from_user.id, "out_of_stock"), show_alert=True)
 
-    if not is_bank_configured() and not is_paystack_configured() and not is_korapay_configured():
+    if not is_bank_configured():
         return await c.answer("⚠️ Bank transfer / local payment is currently being set up. Please select CryptoPay, Binance Pay, or USDT.", show_alert=True)
 
     text, markup = render_fiat_payment_methods(c.from_user.id, p, qty, ctx)
@@ -2411,94 +2222,6 @@ async def on_pay_option_selected(c: CallbackQuery):
         rows = [
             [btn("🔗 Submit Transfer Reference / Name", f"submit_tx:{oid}", style="primary")],
             [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
-            [btn("↩️ Back", f"pay_fiat:{pid}:{qty}:{ctx}", style="danger")],
-            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
-        ]
-        return await edit(c, text, kb(rows))
-
-    # 1. Paystack Gateway (Naira / Card / Bank Transfer)
-    if method == "paystack":
-        rate = get_usd_ngn_rate()
-        amount_ngn = round((total_cents / 100.0) * rate)
-        amount_kobo = amount_ngn * 100
-        pay_url = None
-        ref = f"CL_{oid}_{int(time.time())}"
-
-        try:
-            user_email = f"user_{uid}@creditlog.bot"
-            if c.from_user.username:
-                user_email = f"{c.from_user.username.lower()}@creditlog.bot"
-            res = await initialize_paystack_transaction(oid, uid, f"{p['name']} x{qty}", amount_kobo, user_email)
-            pay_url = res.get("authorization_url")
-            ref = res.get("reference", ref)
-            db.execute("UPDATE orders SET txid=?, invoice_id=? WHERE id=?", (ref, ref, oid))
-        except Exception as e:
-            log.exception("Paystack initialization failed: %s", e)
-
-        if not pay_url:
-            db.execute("DELETE FROM orders WHERE id=?", (oid,))
-            return await c.answer("⚠️ Paystack checkout could not be initialized. Please try again or choose another payment method.", show_alert=True)
-
-        text = (
-            "<u>🇳🇬 <b>Pay with Naira (Card / Bank Transfer)</b></u>\n"
-            "────────────────────────\n\n"
-            f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
-            f"🔢 <b>Quantity:</b> {qty}\n"
-            f"💵 <b>Price (USD):</b> ${total_usdt} USDT\n"
-            f"📈 <b>Rate:</b> ₦{rate:,} / USD\n"
-            f"➡️ <b>Total to pay:</b> <b>₦{amount_ngn:,} NGN</b>\n"
-            "────────────────────────\n\n"
-            f"1. Tap <b>Pay ₦{amount_ngn:,} via Paystack</b> below.\n"
-            "2. Pay securely using <b>Card, Bank Transfer, USSD, or OPay</b>.\n"
-            "3. Return here and tap <b>I've Paid — Check Status</b> for immediate delivery!"
-        )
-        rows = [
-            [btn(f"💳 Pay ₦{amount_ngn:,} via Paystack", url=pay_url, style="success")],
-            [btn("✅ I've Paid — Check Status", f"chk_paystack:{oid}:{ref}", style="success")],
-            [btn("↩️ Back", f"pay_fiat:{pid}:{qty}:{ctx}", style="danger")],
-            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
-        ]
-        return await edit(c, text, kb(rows))
-
-    # 1b. Korapay Gateway (Naira / Card / Bank Transfer)
-    if method == "korapay":
-        rate = get_usd_ngn_rate()
-        amount_ngn = round((total_cents / 100.0) * rate)
-        pay_url = None
-        ref = f"KP_{oid}_{int(time.time())}"
-
-        try:
-            user_email = f"user_{uid}@creditlog.bot"
-            user_name = c.from_user.full_name or f"User {uid}"
-            if c.from_user.username:
-                user_email = f"{c.from_user.username.lower()}@creditlog.bot"
-            res = await initialize_korapay_transaction(oid, uid, f"{p['name']} x{qty}", amount_ngn, user_email, user_name)
-            pay_url = res.get("checkout_url")
-            ref = res.get("reference", ref)
-            db.execute("UPDATE orders SET txid=?, invoice_id=? WHERE id=?", (ref, ref, oid))
-        except Exception as e:
-            log.exception("Korapay initialization failed: %s", e)
-
-        if not pay_url:
-            db.execute("DELETE FROM orders WHERE id=?", (oid,))
-            return await c.answer("⚠️ Korapay checkout could not be initialized. Please try again or choose another payment method.", show_alert=True)
-
-        text = (
-            "<u>⚡ <b>Pay with Korapay (Naira / Card / Bank Transfer)</b></u>\n"
-            "────────────────────────\n\n"
-            f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
-            f"🔢 <b>Quantity:</b> {qty}\n"
-            f"💵 <b>Price (USD):</b> ${total_usdt} USDT\n"
-            f"📈 <b>Rate:</b> ₦{rate:,} / USD\n"
-            f"➡️ <b>Total to pay:</b> <b>₦{amount_ngn:,} NGN</b>\n"
-            "────────────────────────\n\n"
-            f"1. Tap <b>Pay ₦{amount_ngn:,} via Korapay</b> below.\n"
-            "2. Pay securely using <b>Card, Bank Transfer, or USSD</b>.\n"
-            "3. Return here and tap <b>I've Paid — Check Status</b> for immediate delivery!"
-        )
-        rows = [
-            [btn(f"💳 Pay ₦{amount_ngn:,} via Korapay", url=pay_url, style="success")],
-            [btn("✅ I've Paid — Check Status", f"chk_korapay:{oid}:{ref}", style="success")],
             [btn("↩️ Back", f"pay_fiat:{pid}:{qty}:{ctx}", style="danger")],
             [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
         ]
@@ -3190,160 +2913,6 @@ async def check_cryptobot_payment(c: CallbackQuery):
         await c.answer(t(uid, "pay_pending"), show_alert=True)
 
 
-@dp.callback_query(F.data.startswith("chk_paystack:"))
-async def check_paystack_payment_callback(c: CallbackQuery):
-    parts = c.data.split(":", 2)
-    if len(parts) < 2 or not parts[1].isdigit():
-        return await c.answer("⚠️ Invalid payment callback data.", show_alert=True)
-    oid = int(parts[1])
-    ref = parts[2] if len(parts) > 2 else ""
-    uid = c.from_user.id
-
-    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
-    if not o:
-        return await c.answer("Order not found.", show_alert=True)
-    if o["user_id"] != uid and uid not in ADMIN_IDS:
-        return await c.answer("⚠️ Unauthorized access to this order.", show_alert=True)
-    if o["status"] == "completed":
-        if o["payload"]:
-            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
-        return await c.answer("✅ Order already completed!", show_alert=False)
-    if o["status"] == "manual_pending":
-        return await c.answer("⏳ Payment confirmed! Your order is currently pending fulfillment by support.", show_alert=True)
-    if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
-        return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
-
-    ref_to_check = ref or o["txid"] or o["invoice_id"]
-    if not ref_to_check:
-        return await c.answer("⚠️ No payment reference found. Please try opening the payment link again.", show_alert=True)
-
-    # Prevent replay attack: verify reference is not already claimed by another order
-    dup = db.execute(
-        "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending', 'refunded') AND id != ?",
-        (ref_to_check.strip(), oid)
-    ).fetchone()
-    if dup:
-        return await c.answer(f"⚠️ This Paystack reference was already claimed for Order #{dup['id']}.", show_alert=True)
-
-    paid, tx_data = await verify_paystack_transaction(ref_to_check)
-    if paid:
-        # Sanity check: verify amount paid matches expected amount in kobo (with tolerance)
-        rate = get_usd_ngn_rate()
-        expected_kobo = round((o["price"] / 100.0) * rate) * 100
-        try:
-            paid_kobo = float(tx_data.get("amount") or 0)
-        except (ValueError, TypeError):
-            paid_kobo = 0.0
-        if not paid_kobo or paid_kobo < (expected_kobo * 0.95):  # paid less than 95% or 0
-            log.warning("Paystack amount mismatch for order %s: paid %s kobo, expected %s kobo", oid, paid_kobo, expected_kobo)
-            return await c.answer("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
-
-        db.execute("UPDATE orders SET txid=?, status='paid' WHERE id=?", (ref_to_check, oid))
-        payload, err = await fulfill_order(c.bot, oid)
-        if payload == "MANUAL_PENDING":
-            await c.message.answer(
-                f"🎉 <b>Payment Confirmed via Paystack for Order #{oid}!</b>\n\n"
-                f"Item: <b>{esc(o['product_name'])}</b>\n\n"
-                f"🟡 <i>Your order has been queued and is being processed by our support team. Your credentials/items will be delivered directly to you here shortly!</i>\n\n"
-                f"If you have any questions, contact Support: {SUPPORT_URL}"
-            )
-            await c.answer("✅ Payment confirmed!", show_alert=False)
-        elif payload:
-            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
-            await notify_admins(
-                c.bot,
-                lambda aid: f"✅ Order #{oid} paid via Paystack & delivered: {esc(o['product_name'])} ({format_user_price(o['price'], aid)}) to user {uid} (Ref: {esc(ref_to_check)})"
-            )
-            await c.answer("✅ Payment confirmed and delivered!", show_alert=False)
-        else:
-            await c.answer(t(uid, err or "supplier_error")[:200], show_alert=True)
-            await notify_admins(
-                c.bot,
-                f"⚠️ Order #{oid} paid via Paystack by user {uid} but delivery failed: {esc(str(err))}\nRef: <code>{esc(ref_to_check)}</code>"
-            )
-    else:
-        await c.answer("⏳ Payment is still pending on Paystack. Complete the transfer or card payment, then check again!", show_alert=True)
-
-
-@dp.callback_query(F.data.startswith("chk_korapay:"))
-async def check_korapay_payment_callback(c: CallbackQuery):
-    parts = c.data.split(":", 2)
-    if len(parts) < 2 or not parts[1].isdigit():
-        return await c.answer("⚠️ Invalid payment callback data.", show_alert=True)
-    oid = int(parts[1])
-    ref = parts[2] if len(parts) > 2 else ""
-    uid = c.from_user.id
-
-    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
-    if not o:
-        return await c.answer("Order not found.", show_alert=True)
-    if o["user_id"] != uid and uid not in ADMIN_IDS:
-        return await c.answer("⚠️ Unauthorized access to this order.", show_alert=True)
-    if o["status"] == "completed":
-        if o["payload"]:
-            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
-        return await c.answer("✅ Order already completed!", show_alert=False)
-    if o["status"] == "manual_pending":
-        return await c.answer("⏳ Payment confirmed! Your order is currently pending fulfillment by support.", show_alert=True)
-    if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
-        return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
-
-    ref_to_check = ref or o["txid"] or o["invoice_id"]
-    if not ref_to_check:
-        return await c.answer("⚠️ No payment reference found. Please try opening the payment link again.", show_alert=True)
-
-    # Prevent replay attack: verify reference is not already claimed by another order
-    dup = db.execute(
-        "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending', 'refunded') AND id != ?",
-        (ref_to_check.strip(), oid)
-    ).fetchone()
-    if dup:
-        return await c.answer(f"⚠️ This Korapay reference was already claimed for Order #{dup['id']}.", show_alert=True)
-
-    paid, tx_data = await verify_korapay_transaction(ref_to_check)
-    if paid:
-        # Sanity check: verify amount paid matches expected amount in NGN (with 5% tolerance)
-        rate = get_usd_ngn_rate()
-        expected_ngn = round((o["price"] / 100.0) * rate)
-        try:
-            paid_amount = float(tx_data.get("amount") or 0)
-        except (ValueError, TypeError):
-            paid_amount = 0.0
-
-        if not paid_amount or paid_amount < (expected_ngn * 0.95):
-            log.warning("Korapay amount mismatch for order %s: paid %s NGN, expected %s NGN", oid, paid_amount, expected_ngn)
-            return await c.answer("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
-
-        db.execute("UPDATE orders SET txid=?, status='paid' WHERE id=?", (ref_to_check, oid))
-        payload, err = await fulfill_order(c.bot, oid)
-        if payload == "MANUAL_PENDING":
-            await c.message.answer(
-                f"🎉 <b>Payment Confirmed via Korapay for Order #{oid}!</b>\n\n"
-                f"Item: <b>{esc(o['product_name'])}</b>\n\n"
-                f"🟡 <i>Your order has been queued and is being processed by our support team. Your credentials/items will be delivered directly to you here shortly!</i>\n\n"
-                f"If you have any questions, contact Support: {SUPPORT_URL}"
-            )
-            await c.answer("✅ Payment confirmed!", show_alert=False)
-        elif payload:
-            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
-            await notify_admins(
-                c.bot,
-                lambda aid: f"✅ Order #{oid} paid via Korapay & delivered: {esc(o['product_name'])} ({format_user_price(o['price'], aid)}) to user {uid} (Ref: {esc(ref_to_check)})"
-            )
-            await c.answer("✅ Payment confirmed and delivered!", show_alert=False)
-        else:
-            await c.answer(t(uid, err or "supplier_error")[:200], show_alert=True)
-            await notify_admins(
-                c.bot,
-                f"⚠️ Order #{oid} paid via Korapay by user {uid} but delivery failed: {esc(str(err))}\nRef: <code>{esc(ref_to_check)}</code>"
-            )
-    else:
-        await c.answer("⏳ Payment is still pending on Korapay. Complete the payment, then check again!", show_alert=True)
-
-
-
-
-
 @dp.callback_query(F.data.startswith("manual_pay:"))
 async def manual_pay_info(c: CallbackQuery):
     parts = c.data.split(":")
@@ -3526,9 +3095,7 @@ async def admin_help(m: Message):
         "/setrate [rate_ngn] - View or update USD to NGN exchange rate\n"
         "/currency - Switch your active display currency (USD / NGN)\n"
         "/setbank [Bank | AccNum | Name] - Configure Direct Nigerian Bank Transfer\n"
-        "/bank - View current Bank Transfer configuration\n"
-        "/setpaystack [secret_key] - View or set Paystack API Secret Key\n"
-        "/setkorapay [secret_key] - View or set Korapay API Secret Key\n\n"
+        "/bank - View current Bank Transfer configuration\n\n"
         "🎨 <b>Brand Custom Emojis</b>\n"
         "/setemoji &lt;key&gt; [emoji] - Set official brand custom emoji ID\n"
         "/emojis - View configured brand custom emojis\n"
@@ -4201,46 +3768,6 @@ async def admin_setrate(m: Message, command: CommandObject = None):
         await m.answer("⚠️ Please specify a valid integer rate, e.g. <code>/setrate 1450</code>")
 
 
-@dp.message(Command("setpaystack"), is_admin)
-async def admin_setpaystack(m: Message, command: CommandObject = None):
-    args = (command.args or "").strip() if command else ""
-    if not args:
-        configured = is_paystack_configured()
-        status_text = "🟢 <b>Configured & Active</b>" if configured else "🔴 <b>Not Configured</b>"
-        return await m.answer(
-            f"💳 <b>Paystack Integration Status:</b> {status_text}\n\n"
-            f"To configure or update your Paystack secret key, send:\n"
-            f"<code>/setpaystack sk_live_xxxxxxxx...</code>\n\n"
-            f"<i>You can find your Secret Key on your Paystack Dashboard under Settings &gt; API Keys &amp; Webhooks.</i>"
-        )
-    key = args
-    if not key.startswith("sk_"):
-        return await m.answer("⚠️ Paystack secret keys usually begin with <code>sk_live_</code> or <code>sk_test_</code>. Please check your key.")
-    set_setting("paystack_secret_key", key)
-    mode = "Live" if key.startswith("sk_live_") else "Test"
-    await m.answer(f"✅ Paystack Secret Key successfully saved ({mode} Mode)! Naira / Bank payments are now active in the checkout menu.")
-
-
-@dp.message(Command("setkorapay"), is_admin)
-async def admin_setkorapay(m: Message, command: CommandObject = None):
-    args = (command.args or "").strip() if command else ""
-    if not args:
-        configured = is_korapay_configured()
-        status_text = "🟢 <b>Configured & Active</b>" if configured else "🔴 <b>Not Configured</b>"
-        return await m.answer(
-            f"⚡ <b>Korapay Integration Status:</b> {status_text}\n\n"
-            f"To configure or update your Korapay secret key, send:\n"
-            f"<code>/setkorapay sk_live_xxxxxxxx...</code>\n\n"
-            f"<i>You can find your Secret Key on your Korapay Dashboard under Settings &gt; API &amp; Webhooks.</i>"
-        )
-    key = args
-    if not key.startswith("sk_"):
-        return await m.answer("⚠️ Korapay secret keys usually begin with <code>sk_live_</code> or <code>sk_test_</code>. Please check your key.")
-    set_setting("korapay_secret_key", key)
-    mode = "Live" if key.startswith("sk_live_") else "Test"
-    await m.answer(f"✅ Korapay Secret Key successfully saved ({mode} Mode)! Korapay Naira payments are now active in the checkout menu.")
-
-
 @dp.message(Command("setbank"), is_admin)
 async def admin_setbank(m: Message, command: CommandObject = None):
     args = (command.args or "").strip() if command else ""
@@ -4782,8 +4309,8 @@ async def main():
             BotCommand(command="s_orders", description="Recent supplier orders"),
             BotCommand(command="supplier", description="Supplier balance & info"),
             BotCommand(command="setrate", description="Update USD/NGN exchange rate"),
-            BotCommand(command="setpaystack", description="Set Paystack secret key"),
-            BotCommand(command="setkorapay", description="Set Korapay secret key"),
+            BotCommand(command="setbank", description="Configure Direct Bank Transfer"),
+            BotCommand(command="bank", description="View Bank Transfer details"),
             BotCommand(command="fsub", description="Manage Force-Subscribe"),
             BotCommand(command="broadcast", description="Broadcast message to buyers"),
         ]

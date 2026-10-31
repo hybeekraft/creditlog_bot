@@ -1579,7 +1579,7 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(doc.filename.endswith(".db"))
         self.assertIn("Database Backup", kwargs.get("caption", ""))
 
-    async def test_paystack_rate_command_and_helpers(self):
+    async def test_rate_command_and_helpers(self):
         m = AsyncMock()
         cmd = MagicMock()
         cmd.args = ""
@@ -1590,39 +1590,19 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
         await bot.admin_setrate(m, cmd)
         self.assertEqual(bot.get_usd_ngn_rate(), 1650)
 
-    async def test_render_payment_methods_with_paystack(self):
+    async def test_render_payment_methods_with_bank(self):
         p = {"id": 1, "name": "Item 1", "price": 1000, "category": "AI Tools"}
-        with patch.object(bot, "is_paystack_configured", return_value=True):
-            text, markup = bot.render_payment_methods(12345, p, 1, "shop")
-            buttons = [b.text for row in markup.inline_keyboard for b in row]
-            self.assertTrue(any("Don't have crypto?" in b for b in buttons))
+        bot.set_setting("bank_name", "Kuda")
+        bot.set_setting("bank_account_number", "1234567890")
+        bot.set_setting("bank_account_name", "CreditLog Kuda")
 
-            text_fiat, markup_fiat = bot.render_fiat_payment_methods(12345, p, 1, "shop")
-            fiat_buttons = [b.text for row in markup_fiat.inline_keyboard for b in row]
-            self.assertTrue(any("Paystack" in b for b in fiat_buttons))
+        text, markup = bot.render_payment_methods(12345, p, 1, "shop")
+        buttons = [b.text for row in markup.inline_keyboard for b in row]
+        self.assertTrue(any("Don't have crypto?" in b for b in buttons))
 
-    async def test_paystack_checkout_flow_and_callback(self):
-        # Insert test order
-        cur = bot.db.execute(
-            "INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status) VALUES(?,?,?,?,?,?,'pending')",
-            (12345, 1, "Test Paystack Item", 1000, 1, "paystack")
-        )
-        oid = cur.lastrowid
-
-        c = AsyncMock()
-        c.data = f"chk_paystack:{oid}:CL_{oid}_12345"
-        c.from_user.id = 12345
-        c.bot = AsyncMock()
-        c.message = AsyncMock()
-        c.answer = AsyncMock()
-
-        mock_paystack_data = {"status": "success", "amount": 1650000}
-        with patch.object(bot, "verify_paystack_transaction", new=AsyncMock(return_value=(True, mock_paystack_data))):
-            with patch.object(bot, "fulfill_order", new=AsyncMock(return_value=("KEY_12345_TOKEN", None))):
-                await bot.check_paystack_payment_callback(c)
-                self.assertTrue(c.message.answer.called)
-                updated_o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
-                self.assertEqual(updated_o["status"], "paid")
+        text_fiat, markup_fiat = bot.render_fiat_payment_methods(12345, p, 1, "shop")
+        fiat_buttons = [b.text for row in markup_fiat.inline_keyboard for b in row]
+        self.assertTrue(any("Direct Bank Transfer" in b for b in fiat_buttons))
 
     async def test_manual_delivery_product_checkout_not_blocked(self):
         # Insert a manual assisted setup product with 0 local stock rows
@@ -1656,34 +1636,34 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
     async def test_payment_callbacks_repeat_click_on_manual_pending(self):
         cur = bot.db.execute(
             "INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, txid) VALUES(?,?,?,?,?,?,'manual_pending',?)",
-            (12345, 1, "Manual Item", 1000, 1, "paystack", "REF_REPEAT_123")
+            (12345, 1, "Manual Item", 1000, 1, "bank", "REF_REPEAT_123")
         )
         oid = cur.lastrowid
 
         c = AsyncMock()
-        c.data = f"chk_paystack:{oid}:REF_REPEAT_123"
+        c.data = f"chk_manual:{oid}"
         c.from_user.id = 12345
         c.answer = AsyncMock()
 
         with patch.object(bot, "fulfill_order") as mock_fulfill:
-            await bot.check_paystack_payment_callback(c)
+            await bot.on_check_manual_status(c)
             # Must NOT call fulfill_order again
             self.assertFalse(mock_fulfill.called)
-            c.answer.assert_called_with("⏳ Payment confirmed! Your order is currently pending fulfillment by support.", show_alert=True)
+            c.answer.assert_called_with("⏳ Payment received! Your order is currently pending fulfillment by support.", show_alert=True)
 
     async def test_payment_callbacks_rejected_or_refunded(self):
         cur = bot.db.execute(
             "INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, txid) VALUES(?,?,?,?,?,?,'rejected',?)",
-            (12345, 1, "Item", 1000, 1, "paystack", "REF_REJ_123")
+            (12345, 1, "Item", 1000, 1, "bank", "REF_REJ_123")
         )
         oid = cur.lastrowid
 
         c = AsyncMock()
-        c.data = f"chk_paystack:{oid}:REF_REJ_123"
+        c.data = f"chk_manual:{oid}"
         c.from_user.id = 12345
         c.answer = AsyncMock()
 
-        await bot.check_paystack_payment_callback(c)
+        await bot.on_check_manual_status(c)
         c.answer.assert_called_with("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
     async def test_admin_commands_empty_args_do_not_crash(self):
@@ -1713,7 +1693,7 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
     async def test_recent_purchases_includes_manual_pending(self):
         cur = bot.db.execute(
             "INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status) VALUES(?,?,?,?,?,?,'manual_pending')",
-            (99999, 1, "Assisted Subscription", 2500, 1, "paystack")
+            (99999, 1, "Assisted Subscription", 2500, 1, "bank")
         )
         oid = cur.lastrowid
 
@@ -1771,7 +1751,7 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(o["status"], "cancelled")
 
     async def test_admin_refund_sets_status_and_notifies_user(self):
-        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, refunded) VALUES(5555, 1, 'Refundable Item', 1000, 1, 'paystack', 'completed', 0)")
+        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, refunded) VALUES(5555, 1, 'Refundable Item', 1000, 1, 'bank', 'completed', 0)")
         oid = cur.lastrowid
 
         m = AsyncMock()
@@ -2086,14 +2066,14 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
             self.assertIn("not found in registry", text)
             self.assertIn("unknown_supplier", text)
 
-        # Verify command=None resilience for setrate and setpaystack
+        # Verify command=None resilience for setrate and setbank
         m.reset_mock()
         await bot.admin_setrate(m)
         self.assertIn("USD / NGN Exchange Rate", m.answer.call_args[0][0])
 
         m.reset_mock()
-        await bot.admin_setpaystack(m)
-        self.assertIn("Paystack Integration Status", m.answer.call_args[0][0])
+        await bot.admin_setbank(m)
+        self.assertIn("Direct Bank Transfer Status", m.answer.call_args[0][0])
 
     def test_usd_formatting_resilience(self):
         self.assertEqual(bot.usd(100), "$1.00")
@@ -2524,14 +2504,7 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         await bot.check_cryptobot_payment(c)
         c.answer.assert_called_with("⚠️ Unauthorized access to this order.", show_alert=True)
 
-        # 5. check_paystack_payment_callback
-        c.reset_mock()
-        c.from_user.id = attacker_id
-        c.data = f"chk_paystack:{oid}:ref123"
-        await bot.check_paystack_payment_callback(c)
-        c.answer.assert_called_with("⚠️ Unauthorized access to this order.", show_alert=True)
-
-        # 6. manual_pay_info
+        # 5. manual_pay_info
         c.reset_mock()
         c.from_user.id = attacker_id
         c.data = f"manual_pay:{oid}"
@@ -2563,7 +2536,6 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         for bad_cb, handler in [
             ("chk_cb:abc", bot.check_cryptobot_payment),
             ("chk_cb:1", bot.check_cryptobot_payment),
-            ("chk_paystack:", bot.check_paystack_payment_callback),
             ("cancel_order:abc", bot.on_cancel_order),
             ("submit_tx:abc", bot.on_submit_tx),
             ("chk_manual:abc", bot.on_check_manual_status),
@@ -2998,203 +2970,6 @@ class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(valid)
         self.assertIn("Invalid TRC-20 transaction hash format", msg)
 
-    async def test_korapay_helpers_and_admin_command(self):
-        # 1. Initially not configured
-        with patch.dict(os.environ, {"KORAPAY_SECRET_KEY": ""}):
-            bot.set_setting("korapay_secret_key", "")
-            self.assertFalse(bot.is_korapay_configured())
-            self.assertEqual(bot.get_korapay_key(), "")
-
-            admin_id = 111222333
-            m = AsyncMock()
-            m.from_user.id = admin_id
-            cmd = AsyncMock()
-            cmd.args = ""
-
-            # Check status when not configured
-            await bot.admin_setkorapay(m, cmd)
-            self.assertIn("Not Configured", m.answer.call_args[0][0])
-
-            # Try invalid key format (must start with sk_)
-            cmd.args = "invalid_key_123"
-            await bot.admin_setkorapay(m, cmd)
-            self.assertIn("sk_live_", m.answer.call_args[0][0])
-
-            # Set valid test key
-            cmd.args = "sk_test_korapay999888"
-            await bot.admin_setkorapay(m, cmd)
-            self.assertIn("saved (Test Mode)", m.answer.call_args[0][0])
-            self.assertTrue(bot.is_korapay_configured())
-            self.assertEqual(bot.get_korapay_key(), "sk_test_korapay999888")
-
-            # Set valid live key
-            cmd.args = "sk_live_korapay111222"
-            await bot.admin_setkorapay(m, cmd)
-            self.assertIn("saved (Live Mode)", m.answer.call_args[0][0])
-            self.assertEqual(bot.get_korapay_key(), "sk_live_korapay111222")
-
-    async def test_render_payment_methods_with_korapay(self):
-        p = {
-            "id": 99,
-            "name": "Korapay Test Prod",
-            "price": 1000,
-        }
-        with patch("bot.is_paystack_configured", return_value=False), \
-             patch("bot.is_korapay_configured", return_value=True), \
-             patch("bot.get_usd_ngn_rate", return_value=1500):
-            text, kb = bot.render_payment_methods(999, p, qty=1, ctx="shop")
-            self.assertTrue(any("Don't have crypto?" in b.text for row in kb.inline_keyboard for b in row))
-
-            text_fiat, kb_fiat = bot.render_fiat_payment_methods(999, p, qty=1, ctx="shop")
-            korapay_btn = None
-            for row in kb_fiat.inline_keyboard:
-                for b in row:
-                    if "Korapay" in b.text:
-                        korapay_btn = b
-            self.assertIsNotNone(korapay_btn)
-            self.assertEqual(korapay_btn.callback_data, "pay_opt:korapay:99:1:shop")
-            self.assertIn("₦15,000", korapay_btn.text)
-
-        with patch("bot.is_paystack_configured", return_value=False), \
-             patch("bot.is_korapay_configured", return_value=False):
-            text_fiat, kb_fiat = bot.render_fiat_payment_methods(999, p, qty=1, ctx="shop")
-            korapay_btn = None
-            for row in kb_fiat.inline_keyboard:
-                for b in row:
-                    if "Korapay" in b.text:
-                        korapay_btn = b
-            self.assertIsNone(korapay_btn)
-
-    async def test_initialize_and_verify_korapay_transaction(self):
-        mock_init_resp = {
-            "status": True,
-            "message": "Charges initialized",
-            "data": {
-                "checkout_url": "https://checkout.korapay.com/pay/abc123xyz",
-                "reference": "KP_ORDER_123"
-            }
-        }
-        with patch("bot.get_korapay_key", return_value="sk_test_12345"), \
-             patch("aiohttp.ClientSession.post") as mock_post:
-            mock_cm = AsyncMock()
-            mock_cm.__aenter__.return_value.status = 200
-            mock_cm.__aenter__.return_value.json = AsyncMock(return_value=mock_init_resp)
-            mock_post.return_value = mock_cm
-
-            res = await bot.initialize_korapay_transaction(1, 999, "Prod x1", 15000, "user@test.com", "Test User")
-            self.assertEqual(res["checkout_url"], "https://checkout.korapay.com/pay/abc123xyz")
-            self.assertEqual(res["reference"], "KP_ORDER_123")
-
-        mock_verif_resp = {
-            "status": True,
-            "data": {
-                "status": "success",
-                "amount": 15000,
-                "currency": "NGN",
-                "reference": "KP_ORDER_123"
-            }
-        }
-        with patch("bot.get_korapay_key", return_value="sk_test_12345"), \
-             patch("aiohttp.ClientSession.get") as mock_get:
-            mock_cm = AsyncMock()
-            mock_cm.__aenter__.return_value.status = 200
-            mock_cm.__aenter__.return_value.json = AsyncMock(return_value=mock_verif_resp)
-            mock_get.return_value = mock_cm
-
-            paid, data = await bot.verify_korapay_transaction("KP_ORDER_123")
-            self.assertTrue(paid)
-            self.assertEqual(data["amount"], 15000)
-
-        mock_verif_failed = {
-            "status": True,
-            "data": {
-                "status": "failed",
-                "reference": "KP_ORDER_123"
-            }
-        }
-        with patch("bot.get_korapay_key", return_value="sk_test_12345"), \
-             patch("aiohttp.ClientSession.get") as mock_get:
-            mock_cm = AsyncMock()
-            mock_cm.__aenter__.return_value.status = 200
-            mock_cm.__aenter__.return_value.json = AsyncMock(return_value=mock_verif_failed)
-            mock_get.return_value = mock_cm
-
-            paid, data = await bot.verify_korapay_transaction("KP_ORDER_123")
-            self.assertFalse(paid)
-
-    async def test_korapay_checkout_selection(self):
-        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Kora Item', 'Desc', 1000, 1)").lastrowid
-        c = AsyncMock()
-        c.from_user.id = 555666
-        c.from_user.full_name = "Kora Buyer"
-        c.from_user.username = "korabuyer"
-        c.data = f"pay_opt:korapay:{pid}:1:shop"
-        c.message.edit_text = AsyncMock()
-
-        mock_init = {
-            "checkout_url": "https://checkout.korapay.com/pay/kora_test_link",
-            "reference": "KP_REF_555"
-        }
-        with patch("bot.initialize_korapay_transaction", new=AsyncMock(return_value=mock_init)):
-            await bot.on_pay_option_selected(c)
-            o = bot.db.execute("SELECT * FROM orders WHERE txid='KP_REF_555'").fetchone()
-            self.assertIsNotNone(o)
-            self.assertEqual(o["payment_method"], "korapay")
-            self.assertEqual(o["user_id"], 555666)
-
-            args, kwargs = c.message.edit_text.call_args
-            text = args[0]
-            markup = kwargs.get("reply_markup")
-            self.assertIn("Pay with Korapay", text)
-            btn_urls = [b.url for row in markup.inline_keyboard for b in row if b.url]
-            self.assertIn("https://checkout.korapay.com/pay/kora_test_link", btn_urls)
-
-    async def test_korapay_callback_verification_and_fulfillment(self):
-        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Kora Callback Prod', 'Desc', 1000, 1)").lastrowid
-        oid = bot.db.execute(
-            "INSERT INTO orders(user_id, product_id, product_name, price, status, payment_method, txid) VALUES(555666, ?, 'Kora Callback Prod', 1000, 'pending', 'korapay', 'KP_REF_CALLBACK_1')",
-            (pid,)
-        ).lastrowid
-
-        c = AsyncMock()
-        c.from_user.id = 555666
-        c.data = f"chk_korapay:{oid}:KP_REF_CALLBACK_1"
-        c.bot = AsyncMock()
-        c.message.answer = AsyncMock()
-
-        # 1. Amount mismatch (< 95% of expected)
-        mock_tx_low = {"status": "success", "amount": 100}
-        with patch("bot.verify_korapay_transaction", new=AsyncMock(return_value=(True, mock_tx_low))):
-            await bot.check_korapay_payment_callback(c)
-            c.answer.assert_called_with("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
-
-        # 2. Payment still pending
-        c.reset_mock()
-        with patch("bot.verify_korapay_transaction", new=AsyncMock(return_value=(False, {}))):
-            await bot.check_korapay_payment_callback(c)
-            self.assertIn("Payment is still pending", c.answer.call_args[0][0])
-
-        # 3. Successful payment & auto-fulfillment
-        c.reset_mock()
-        mock_tx_ok = {"status": "success", "amount": 14500}
-        with patch("bot.verify_korapay_transaction", new=AsyncMock(return_value=(True, mock_tx_ok))), \
-             patch("bot.fulfill_order", new=AsyncMock(return_value=("KORAPAY_SECRET_KEY_999", None))):
-            await bot.check_korapay_payment_callback(c)
-            c.answer.assert_called_with("✅ Payment confirmed and delivered!", show_alert=False)
-            o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
-            self.assertEqual(o["status"], "paid")
-
-        # 4. Replay-attack prevention: another order reusing KP_REF_CALLBACK_1
-        oid_second = bot.db.execute(
-            "INSERT INTO orders(user_id, product_id, product_name, price, status, payment_method) VALUES(555666, ?, 'Kora Callback Prod 2', 1000, 'pending', 'korapay')",
-            (pid,)
-        ).lastrowid
-        bot.db.execute("UPDATE orders SET status='completed' WHERE id=?", (oid,))
-        c.reset_mock()
-        c.data = f"chk_korapay:{oid_second}:KP_REF_CALLBACK_1"
-        await bot.check_korapay_payment_callback(c)
-        c.answer.assert_called_with(f"⚠️ This Korapay reference was already claimed for Order #{oid}.", show_alert=True)
-
     async def test_cancel_order_status_guards(self):
         pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Cancel Test Prod', 'Desc', 500, 1)").lastrowid
         
@@ -3270,59 +3045,6 @@ class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
                 except Exception:
                     pass
 
-    async def test_payment_zero_or_missing_amount_rejected(self):
-        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Amount Test Prod', 'Desc', 1000, 1)").lastrowid
-        oid = bot.db.execute(
-            "INSERT INTO orders(user_id, product_id, product_name, price, status, payment_method, txid) VALUES(999, ?, 'Amount Test Prod', 1000, 'pending', 'korapay', 'KP_ZERO_1')",
-            (pid,)
-        ).lastrowid
-        c = AsyncMock()
-        c.from_user.id = 999
-        c.data = f"chk_korapay:{oid}:KP_ZERO_1"
-
-        # 1. Korapay with amount = 0
-        with patch("bot.verify_korapay_transaction", new=AsyncMock(return_value=(True, {"status": "success", "amount": 0}))):
-            await bot.check_korapay_payment_callback(c)
-            c.answer.assert_called_with("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
-
-        # 2. Korapay with missing amount key
-        c.reset_mock()
-        with patch("bot.verify_korapay_transaction", new=AsyncMock(return_value=(True, {"status": "success"}))):
-            await bot.check_korapay_payment_callback(c)
-            c.answer.assert_called_with("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
-
-        # 3. Paystack with amount = 0
-        oid_ps = bot.db.execute(
-            "INSERT INTO orders(user_id, product_id, product_name, price, status, payment_method, txid) VALUES(999, ?, 'Amount Test Prod', 1000, 'pending', 'paystack', 'PS_ZERO_1')",
-            (pid,)
-        ).lastrowid
-        c.reset_mock()
-        c.data = f"chk_paystack:{oid_ps}:PS_ZERO_1"
-        with patch("bot.verify_paystack_transaction", new=AsyncMock(return_value=(True, {"status": "success", "amount": 0}))):
-            await bot.check_paystack_payment_callback(c)
-            c.answer.assert_called_with("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
-
-    async def test_replay_attack_prevents_refunded_order_reference_reuse(self):
-        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Replay Prod', 'Desc', 1000, 1)").lastrowid
-        
-        # Order 1 was previously refunded
-        bot.db.execute(
-            "INSERT INTO orders(user_id, product_id, product_name, price, status, refunded, payment_method, txid) VALUES(111, ?, 'Replay Prod', 1000, 'refunded', 1, 'korapay', 'KP_REFUNDED_REF_1')",
-            (pid,)
-        )
-        
-        # Order 2 tries to reuse the refunded txid
-        oid_new = bot.db.execute(
-            "INSERT INTO orders(user_id, product_id, product_name, price, status, payment_method) VALUES(222, ?, 'Replay Prod', 1000, 'pending', 'korapay')",
-            (pid,)
-        ).lastrowid
-
-        c = AsyncMock()
-        c.from_user.id = 222
-        c.data = f"chk_korapay:{oid_new}:KP_REFUNDED_REF_1"
-        await bot.check_korapay_payment_callback(c)
-        self.assertIn("already claimed", c.answer.call_args[0][0])
-
     async def test_on_submit_tx_status_guards(self):
         pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('SubmitTx Prod', 'Desc', 500, 1)").lastrowid
         
@@ -3382,15 +3104,9 @@ class TestBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
         c = AsyncMock()
         c.from_user.id = 555
 
-        # Paystack callback on rejected order
-        c.data = f"chk_paystack:{oid_rej}:REF1"
-        await bot.check_paystack_payment_callback(c)
-        c.answer.assert_called_with("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
-
-        # Korapay callback on rejected order
-        c.reset_mock()
-        c.data = f"chk_korapay:{oid_rej}:REF2"
-        await bot.check_korapay_payment_callback(c)
+        # Manual status check on rejected order
+        c.data = f"chk_manual:{oid_rej}"
+        await bot.on_check_manual_status(c)
         c.answer.assert_called_with("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
         # Manual status check on cancelled order
@@ -3601,10 +3317,10 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
 
         # Case 1: unconfigured -> alert
         bot.set_setting("bank_name", "")
-        with patch.object(bot, "is_paystack_configured", return_value=False), \
-             patch.object(bot, "is_korapay_configured", return_value=False):
-            await bot.on_pay_fiat(c)
-            c.answer.assert_called_with("⚠️ Bank transfer / local payment is currently being set up. Please select CryptoPay, Binance Pay, or USDT.", show_alert=True)
+        bot.set_setting("bank_account_number", "")
+        bot.set_setting("bank_account_name", "")
+        await bot.on_pay_fiat(c)
+        c.answer.assert_called_with("⚠️ Bank transfer / local payment is currently being set up. Please select CryptoPay, Binance Pay, or USDT.", show_alert=True)
 
         # Case 2: configured -> opens submenu
         bot.set_setting("bank_name", "Kuda")
