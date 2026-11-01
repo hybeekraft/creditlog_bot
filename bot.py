@@ -1041,7 +1041,6 @@ def get_custom_emoji_id(key: str) -> Optional[str]:
     return None
 
 dp = Dispatcher()
-bot_instance: Optional[Bot] = None
 
 # In-memory tracking for interactive text inputs (custom quantity, search keyword)
 pending_inputs: dict[int, dict] = {}
@@ -2054,16 +2053,11 @@ async def initialize_bachs_transaction(
         amount_str = f"{amount_val:.2f}"
 
     callback_url = (get_setting("bachs_callback_url", "") or os.environ.get("BACHS_CALLBACK_URL", "")).strip()
-    bot_username = (os.environ.get("BOT_USERNAME", "") or "").strip().lstrip("@")
-    if not bot_username and bot_instance is not None:
-        try:
-            bot_info = await bot_instance.get_me()
-            if bot_info and bot_info.username:
-                bot_username = bot_info.username
-        except Exception:
-            pass
-    if not bot_username:
-        bot_username = "creditlog_bot"
+    bot_username = (
+        get_setting("bot_username", "")
+        or os.environ.get("BOT_USERNAME", "")
+        or "creditlog_bot"
+    ).strip().lstrip("@")
 
     tg_url = f"https://t.me/{bot_username}?start=order_{order_id}"
     success_url = callback_url or tg_url
@@ -2218,6 +2212,7 @@ def render_order_summary(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[
 
 def render_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
     """Payment method selection screen matching the reference layout."""
+    _ = uid
     pid = p["id"]
     cb_emoji = get_custom_emoji_id("cryptopay") or get_custom_emoji_id("cryptobot")
     binance_emoji = get_custom_emoji_id("binance") or get_custom_emoji_id("binance_pay")
@@ -2243,6 +2238,7 @@ def render_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tupl
 
 def render_fiat_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
     """Fiat / Local payment method selection (Don't have crypto?)."""
+    _ = uid
     pid = p["id"]
     rate = get_usd_ngn_rate()
     total_ngn = round((p["price"] * qty / 100.0) * rate)
@@ -4871,9 +4867,13 @@ async def periodic_supplier_sync(interval_sec: int = 600):
 # Entrypoint
 # --------------------------------------------------------------------------
 async def main():
-    global bot_instance
     bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    bot_instance = bot
+    try:
+        bot_info = await bot.get_me()
+        if bot_info and bot_info.username:
+            set_setting("bot_username", bot_info.username)
+    except Exception:
+        pass
     app = web.Application()
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
     runner = web.AppRunner(app)
