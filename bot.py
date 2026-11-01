@@ -1,11 +1,7 @@
 """
-Telegram Reseller Store Bot.
-Simplified guest checkout model:
-  - No user accounts or wallet balance deposits.
-  - Direct guest checkout for digital goods.
-  - View recent purchases anytime.
-  - Automated fulfillment from supplier catalog or local stock.
-  - 4 languages: English, Español, Русский, العربية.
+Telegram store bot for digital products.
+Supports guest checkout, automated delivery via supplier APIs or local stock,
+crypto, card, and bank transfers, with multi-language support.
 """
 import asyncio
 import html
@@ -35,9 +31,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("store")
 
-# --------------------------------------------------------------------------
-# Config
-# --------------------------------------------------------------------------
+# Bot settings and environment
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_IDS = set()
 for raw_id in os.environ.get("ADMIN_IDS", "").split(","):
@@ -85,12 +79,12 @@ def parse_profit_margin(val: Optional[str], default: int = 45) -> int:
     cleaned = "".join(c for c in str(val) if c.isdigit())
     return int(cleaned) if cleaned else default
 
-# Profit Margin (default 45%)
+# Profit margin
 raw_margin = os.environ.get("PROFIT_MARGIN") or os.environ.get("RESELLER_MARKUP_PERCENT") or "45%"
 PROFIT_MARGIN = parse_profit_margin(raw_margin, default=45)
 RESELLER_MARKUP_PERCENT = PROFIT_MARGIN
 
-# Reseller / Supplier Catalog API (Multi-Supplier Registry)
+# Supplier API setup
 RESELLER_BASE_URL = (os.environ.get("RESELLER_BASE_URL") or "https://api-geminipro.ignorelist.com/api/reseller/v1").rstrip("/")
 RESELLER_API_KEY = os.environ.get("RESELLER_API_KEY", "")
 supplier_registry = SupplierRegistry.from_env()
@@ -98,14 +92,14 @@ reseller = supplier_registry.get("default") or ResellerClient(base_url=RESELLER_
 if "default" not in supplier_registry.list_suppliers():
     supplier_registry.register("default", reseller, is_default=True)
 
-# Crypto Payments
+# Crypto payment settings
 CRYPTOBOT_TOKEN = os.environ.get("CRYPTOBOT_TOKEN", "")
 BINANCE_PAY_ID = (os.environ.get("BINANCE_PAY_ID", "") or "").strip()
 if not BINANCE_PAY_ID or BINANCE_PAY_ID.startswith("your_"):
-    BINANCE_PAY_ID = "76177351"  # Default from store design
+    BINANCE_PAY_ID = "76177351"  # Default backup ID
 
 
-# USDT Addresses
+# Default USDT wallet addresses
 CRYPTO_USDT_BEP20 = (os.environ.get("CRYPTO_USDT_BEP20", "") or "").strip()
 if not CRYPTO_USDT_BEP20 or CRYPTO_USDT_BEP20.startswith("0xYour") or CRYPTO_USDT_BEP20.startswith("0x4B20"):
     CRYPTO_USDT_BEP20 = "0xe37301d1cb7E1d479a1F1A78d6A2EAed317412Db"
@@ -114,17 +108,15 @@ CRYPTO_USDT_TRC20 = (os.environ.get("CRYPTO_USDT_TRC20", "") or "").strip()
 if not CRYPTO_USDT_TRC20 or CRYPTO_USDT_TRC20.startswith("TYour") or CRYPTO_USDT_TRC20.startswith("TR7NH"):
     CRYPTO_USDT_TRC20 = "TUaDYfZ2fBRXSRDm9d6kN9j2J7bi7ZsBLW"
 
-# Naira Payments (Direct Bank Transfer)
+# Default exchange rate
 DEFAULT_USD_NGN_RATE = safe_int_env("USD_NGN_RATE", 1450)
 
-# Bachs Payments Gateway (Global & African Cards, Bank Transfers, Mobile Money, Crypto)
+# Bachs payment gateway settings
 BACHS_API_KEY = os.environ.get("BACHS_API_KEY", "").strip()
 BACHS_CURRENCY = (os.environ.get("BACHS_CURRENCY", "USD") or "USD").strip().upper()
 BACHS_CALLBACK_URL = os.environ.get("BACHS_CALLBACK_URL", "").strip()
 
-# --------------------------------------------------------------------------
-# Database
-# --------------------------------------------------------------------------
+# Database connection and schema
 db = sqlite3.connect(DB_PATH, isolation_level=None, check_same_thread=False)
 db.row_factory = sqlite3.Row
 db.executescript("""
@@ -211,12 +203,12 @@ def set_setting(key: str, value: str):
 
 
 def get_default_margin() -> int:
-    """Returns the persistent default profit margin (defaults to PROFIT_MARGIN / 45%)."""
+    """Default profit margin percentage."""
     return parse_profit_margin(get_setting("profit_margin", str(PROFIT_MARGIN)), default=45)
 
 
 def get_usd_ngn_rate() -> int:
-    """Returns the exchange rate from USD to NGN."""
+    """Current USD to NGN exchange rate."""
     raw = get_setting("usd_ngn_rate", str(DEFAULT_USD_NGN_RATE))
     try:
         val = int(raw)
@@ -230,7 +222,7 @@ def set_usd_ngn_rate(rate: int):
 
 
 def get_bank_accounts() -> list[dict[str, str]]:
-    """Returns list of configured direct bank transfer accounts."""
+    """Configured bank accounts for transfer."""
     raw = get_setting("bank_accounts", "")
     if raw:
         try:
@@ -252,7 +244,7 @@ def get_bank_accounts() -> list[dict[str, str]]:
         except Exception:
             pass
 
-    # Fallback to single account from settings or environment
+    # Fallback to single account if list is empty
     bank_name = (get_setting("bank_name", "") or os.environ.get("BANK_NAME", "")).strip()
     account_number = "".join(c for c in (get_setting("bank_account_number", "") or os.environ.get("BANK_ACCOUNT_NUMBER", "")) if c.isdigit())
     account_name = (get_setting("bank_account_name", "") or os.environ.get("BANK_ACCOUNT_NAME", "")).strip()
@@ -266,7 +258,7 @@ def get_bank_accounts() -> list[dict[str, str]]:
 
 
 def save_bank_accounts(accounts: list[dict[str, str]]):
-    """Saves bank accounts to settings and updates legacy single-account settings."""
+    """Save bank accounts to settings."""
     set_setting("bank_accounts", json.dumps(accounts))
     if accounts:
         set_setting("bank_name", accounts[0]["bank_name"])
@@ -279,7 +271,7 @@ def save_bank_accounts(accounts: list[dict[str, str]]):
 
 
 def get_bank_details() -> dict[str, str]:
-    """Returns primary direct bank transfer details."""
+    """Primary bank account details."""
     accounts = get_bank_accounts()
     if accounts:
         return accounts[0]
@@ -291,23 +283,23 @@ def get_bank_details() -> dict[str, str]:
 
 
 def is_bank_configured() -> bool:
-    """Returns True if at least one valid Bank Account is configured."""
+    """Check if bank transfer is set up."""
     return len(get_bank_accounts()) > 0
 
 
 def get_bachs_key() -> str:
-    """Returns the configured Bachs API key from database settings or environment."""
+    """Bachs API key."""
     return (get_setting("bachs_api_key", "") or os.environ.get("BACHS_API_KEY", "")).strip()
 
 
 def is_bachs_configured() -> bool:
-    """Returns True if a valid Bachs API key is configured."""
+    """Check if Bachs is set up."""
     key = get_bachs_key()
     return bool(key and not key.startswith("your_") and len(key) >= 10)
 
 
 def get_bachs_base_url(api_key: Optional[str] = None) -> str:
-    """Returns the sandbox or production Bachs API base URL."""
+    """Bachs API base URL."""
     custom_url = (get_setting("bachs_base_url", "") or os.environ.get("BACHS_BASE_URL", "")).strip()
     if custom_url:
         return custom_url.rstrip("/")
@@ -318,14 +310,12 @@ def get_bachs_base_url(api_key: Optional[str] = None) -> str:
 
 
 def get_bachs_currency() -> str:
-    """Returns the configured Bachs currency (default USD)."""
+    """Bachs billing currency (USD or NGN)."""
     curr = (get_setting("bachs_currency", "") or os.environ.get("BACHS_CURRENCY", "USD")).strip().upper()
     return curr if curr in ("USD", "NGN", "GHS", "KES", "ZAR", "EUR", "GBP") else "USD"
 
 
-# --------------------------------------------------------------------------
-# Force Subscribe (Mandatory Channel/Group Join Gate)
-# --------------------------------------------------------------------------
+# Channel join check (force subscribe)
 NUM_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
 
@@ -352,7 +342,7 @@ def set_fsub_enabled(enabled: bool):
 
 
 def render_fsub_gate(channels: List[str]) -> Tuple[str, InlineKeyboardMarkup]:
-    """Renders mandatory join message and action buttons matching Telegram FSUB design."""
+    """Build join message and channel buttons."""
     lines = ["🔒 <b>Free join required for use bot, please join.</b>\n"]
     rows = []
     for i, ch in enumerate(channels):
@@ -376,11 +366,7 @@ def render_fsub_gate(channels: List[str]) -> Tuple[str, InlineKeyboardMarkup]:
 
 
 async def check_user_fsub(bot_inst: Bot, uid: int) -> Tuple[bool, List[str]]:
-    """
-    Checks if user has joined all required channels/groups.
-    Admins are exempt by default unless fsub_check_admin is enabled for testing.
-    Returns (passed: bool, missing_channels: List[str]).
-    """
+    """Check if user joined all required channels."""
     check_admin = get_setting("fsub_check_admin", "0") == "1"
     if uid in ADMIN_IDS and not check_admin:
         return True, []
@@ -416,10 +402,7 @@ async def check_user_fsub(bot_inst: Bot, uid: int) -> Tuple[bool, List[str]]:
 
 
 async def check_supplier_balance_sufficient(sup_client: ResellerClient, cost_usd: float) -> Tuple[bool, float]:
-    """
-    Checks if the supplier account has enough balance to cover the wholesale purchase.
-    Returns (has_sufficient_balance: bool, current_balance: float).
-    """
+    """Check if supplier account balance covers order cost."""
     mode = get_setting("fulfillment_mode", "auto").lower()
     if mode in ("manual", "model_b", "b"):
         return False, 0.0
@@ -434,9 +417,7 @@ async def check_supplier_balance_sufficient(sup_client: ResellerClient, cost_usd
         log.warning("Could not check supplier balance: %s", e)
         return False, 0.0
 
-# --------------------------------------------------------------------------
-# Categories & Icons Definition (24 Categories from Reference Design)
-# --------------------------------------------------------------------------
+# Store categories and icons
 CATEGORIES = [
     ("chatgpt", "ChatGPT", "✳️"),
     ("gemini", "Gemini", "✨"),
@@ -671,14 +652,14 @@ def migrate_db():
     if "currency" not in cols_u:
         db.execute("ALTER TABLE users ADD COLUMN currency TEXT DEFAULT 'USD'")
 
-    # Update categories for existing products if not assigned
+    # Set categories for older products if missing
     for row in db.execute("SELECT id, name, category FROM products").fetchall():
         if not row["category"] or row["category"] == "AI Tools":
             detected = detect_category(row["name"])
             if detected != "AI Tools":
                 db.execute("UPDATE products SET category=? WHERE id=?", (detected, row["id"]))
 
-    # Ensure default showcase products (Gemini 18 Months and Duolingo Super 12 Months)
+    # Default showcase products
     g = db.execute("SELECT id FROM products WHERE name LIKE '%Gemini%'").fetchone()
     if not g:
         db.execute("""
@@ -692,9 +673,8 @@ def migrate_db():
             VALUES('Duolingo Super 12M', 'Duolingo Super 12 Months Plan', 90, 'Education', 1, 1, 'auto')
         """)
 
-    # Seed known manual / assisted services from reseller master catalog
+    # Initial product catalog
     MANUAL_CATALOG_SEEDS = [
-        # Screenshot Page 1
         ("ChatGPT Plus 1M Apple Pay", "Ready-made ChatGPT Plus account (Apple Pay). Format: Email | Password | 2FA.", 880, "ChatGPT"),
         ("ChatGPT K12 EDU 24M", "ChatGPT K12 EDU 24 Months student/educational account access.", 420, "ChatGPT"),
         ("ChatGPT Business Team 1M", "ChatGPT Team Workspace 1 Month access.", 1600, "ChatGPT"),
@@ -711,7 +691,6 @@ def migrate_db():
         ("Codex API 10M Tokens 1 Day", "Codex API 10M tokens 1 Day standard access.", 360, "Codex API"),
         ("Codex API 50M Tokens 2D", "Codex API 50M tokens 2-day access.", 400, "Codex API"),
 
-        # Screenshot Page 2
         ("Grok API $10 1M", "Grok API $10 credit balance valid 1 month.", 250, "Grok"),
         ("Grok API $30 1M", "Grok API $30 credit balance valid 1 month.", 320, "Grok"),
         ("Grok API $50 1M", "Grok API $50 credit balance valid 1 month.", 500, "Grok"),
@@ -728,7 +707,6 @@ def migrate_db():
         ("API Codex Astra $50 1M", "Codex Astra API $50 credits valid 1 month.", 550, "Codex API"),
         ("API Codex Astra $100 1M", "Codex Astra API $100 credits valid 1 month.", 900, "Codex API"),
 
-        # Screenshot Page 3
         ("API Codex Astra $200 1M", "Codex Astra API $200 credits valid 1 month.", 1290, "Codex API"),
         ("API Codex Astra $300 1M", "Codex Astra API $300 credits valid 1 month.", 1800, "Codex API"),
         ("API Codex Astra $500 1M", "Codex Astra API $500 credits valid 1 month.", 3000, "Codex API"),
@@ -745,7 +723,6 @@ def migrate_db():
         ("Gemini Pro 3M", "Google Gemini Pro 3 Months subscription.", 100, "Gemini"),
         ("Discord Nitro 3M Token", "Discord Nitro 3 Months direct token.", 600, "Discord"),
 
-        # Screenshot Page 4
         ("HMA VPN 20-30 Days", "HideMyAss VPN 20-30 days private account.", 250, "VPN"),
         ("O365 Ready Account Random 6-12M", "Office 365 ready-made account random 6-12 months.", 400, "Office"),
         ("Gemini API $10 1M", "Gemini API $10 credits valid 1 month.", 250, "Gemini"),
@@ -762,7 +739,6 @@ def migrate_db():
         ("Discord Decor 79K Profile Effect", "Discord Profile Decor 79K points effect.", 650, "Discord"),
         ("Discord Decor 92K Profile Effect", "Discord Profile Decor 92K points effect.", 750, "Discord"),
 
-        # Screenshot Page 5
         ("Lovable Pro Lite 1 Year Link", "Lovable Pro Lite 1 Year activation invite link.", 800, "AI Tools"),
         ("Netflix Premium 4K Slot 1M", "Netflix Premium 4K UHD private profile 1 month.", 650, "Streaming"),
         ("CapCut Pro Team 1M", "CapCut Pro Team membership 1 month.", 270, "Video AI"),
@@ -779,7 +755,6 @@ def migrate_db():
         ("Notion Plus 12 Months", "Notion Plus 12 Months subscription.", 250, "Office"),
         ("Canva Pro Add to Team 12 Months", "Canva Pro Add to Team 12 Months membership.", 450, "Design"),
 
-        # Screenshot Page 6
         ("Adobe Express 4M", "Adobe Express 4 Months subscription.", 881, "Design"),
         ("Scribd Premium 1M", "Scribd Premium 1 Month subscription.", 220, "Education"),
         ("Adobe Express 12M", "Adobe Express 12 Months workspace plan.", 350, "Design"),
@@ -796,7 +771,6 @@ def migrate_db():
         ("YouTube Premium 3M Abroad", "YouTube Premium 3 Months Abroad region.", 1250, "Streaming"),
         ("YouTube Premium 3 Months", "YouTube Premium 3 Months individual plan.", 350, "Streaming"),
 
-        # Screenshot Page 7
         ("Codex API 500M Tokens 6 Days", "Codex API 500M tokens valid 6 days.", 2980, "Codex API"),
         ("Wordwall Pro 1 Month", "Wordwall Pro 1 Month educational license.", 380, "Education"),
         ("GitHub Student Developer Pack", "GitHub Student Developer Pack activation.", 1500, "Office"),
@@ -813,7 +787,6 @@ def migrate_db():
         ("Claude API 100M Tokens 1 Day", "Claude API 100M tokens valid 1 day.", 600, "Claude"),
         ("Claude API 100M Tokens 3 Days", "Claude API 100M tokens valid 3 days.", 1000, "Claude"),
 
-        # Screenshot Page 8
         ("Prime Video 6 Months", "Amazon Prime Video 6 Months private subscription.", 300, "Streaming"),
         ("Apple TV+ 1M Canada", "Apple TV+ 1 Month Canada region access.", 50, "Streaming"),
         ("Claude API 500M Tokens 1 Day", "Claude API 500M tokens 1 Day high volume access.", 3300, "Claude"),
@@ -830,7 +803,6 @@ def migrate_db():
         ("Gamma Pro 1M", "Gamma Pro AI presentation maker 1 Month subscription.", 1400, "AI Tools"),
         ("Gamma Pro 12 Months", "Gamma Pro AI presentation maker 12 Months subscription.", 2700, "AI Tools"),
 
-        # Screenshot Page 9
         ("Gamma Pro 12M Coupon Code", "Gamma Pro 12 Months coupon redeem code.", 4600, "AI Tools"),
         ("Framer Pro 12 Months", "Framer Pro 12 Months workspace plan.", 1700, "Design"),
         ("Prime Video Ultra 6M 6 Profiles", "Prime Video Ultra 6 Months 6 Profiles private slot.", 260, "Streaming"),
@@ -847,7 +819,6 @@ def migrate_db():
         ("Customer.io Essentials 1Y", "Customer.io Essentials 1 Year account access.", 350, "Office"),
         ("Fin AI + Advanced", "Fin AI Copilot + Advanced 1 Month access.", 350, "AI Tools"),
 
-        # Screenshot Page 10
         ("Warp Build 1 Year", "Warp Terminal Build 1 Year membership.", 1100, "Office"),
         ("Wink Smile+ 7 Days", "Wink Smile+ Video AI 7 Days access.", 230, "Design"),
         ("Readwise 1 Year", "Readwise Reader 1 Year subscription.", 550, "Office"),
@@ -864,7 +835,6 @@ def migrate_db():
         ("Wordwall Pro 12M", "Wordwall Pro Teaching Resources 12 Months.", 1950, "Education"),
         ("Wordwall Pro 1M", "Wordwall Pro Teaching Resources 1 Month.", 400, "Education"),
 
-        # Screenshot Page 11
         ("KREA Basic", "KREA AI Basic 1 Month subscription.", 750, "AI Tools"),
         ("KREA Max", "KREA AI Max 1 Month subscription.", 3650, "AI Tools"),
         ("Notion Business 6M", "Notion Business Workspace 6 Months access.", 1750, "Office"),
@@ -881,7 +851,6 @@ def migrate_db():
         ("API Qwen $50 1 Month", "Qwen API $50 balance credits 1 Month.", 400, "Qwen API"),
         ("API Qwen $100 1 Month", "Qwen API $100 balance credits 1 Month.", 650, "Qwen API"),
 
-        # Screenshot Page 12
         ("DeepSeek API $10 1 Month", "DeepSeek API $10 credit balance valid 1 Month.", 220, "DeepSeek AI"),
         ("DeepSeek API $30 1 Month", "DeepSeek API $30 credit balance valid 1 Month.", 290, "DeepSeek AI"),
         ("DeepSeek API $50 1 Month", "DeepSeek API $50 credit balance valid 1 Month.", 410, "DeepSeek AI"),
@@ -899,7 +868,6 @@ def migrate_db():
         ("Notion Business Admin 1M", "Notion Business Workspace Admin 1 month.", 770, "Office"),
 
         ("iCloud 2TB 3M", "Apple iCloud+ 2TB Family storage access 3 months.", 1150, "Office"),
-        # Screenshot Page 13
         ("MiniMax Redeem 131K", "MiniMax 131,000 character credits instant redeem code.", 260, "AI Tools"),
         ("Flux 03 1M", "Flux 03 AI 1 Month generator access.", 150, "AI Tools"),
         ("ExpressVPN 12M", "ExpressVPN 12 Months full access.", 700, "VPN"),
@@ -915,7 +883,6 @@ def migrate_db():
         ("ChatGPT Plus 1M Pix", "ChatGPT Plus 1 Month Pix payment access.", 590, "ChatGPT"),
         ("ChatGPT Plus Your Mail 1M", "ChatGPT Plus 1 Month upgraded on your email.", 1800, "ChatGPT"),
 
-        # Screenshot Page 14
         ("ChatGPT Business 1M", "ChatGPT Business Workspace 1 Month.", 650, "ChatGPT"),
         ("ChatGPT Plus 4M Ready Account", "ChatGPT Plus 4 Months ready-made account.", 5750, "ChatGPT"),
         ("Admin Netflix 4K Premium 1M 5 Profiles", "Netflix 4K Premium 1 Month 5 Profiles Admin.", 250, "Streaming"),
@@ -932,7 +899,6 @@ def migrate_db():
         ("ChatGPT Plus 1M UPI", "ChatGPT Plus 1 Month UPI account.", 600, "ChatGPT"),
         ("Kling 66 Credits", "Kling AI 66 Credits pack.", 55, "Video AI"),
 
-        # Screenshot Page 15
         ("Gmail account new", "Gmail freshly created PVA account.", 62, "Office"),
         ("HBO Max Standard 3 Months", "HBO Max Standard 3 Months private slot.", 200, "Streaming"),
         ("HBO Max Standard 5 Months", "HBO Max Standard 5 Months private slot.", 250, "Streaming"),
@@ -949,7 +915,6 @@ def migrate_db():
         ("Higgsfield Starter 1M", "Higgsfield AI Video Starter 1 Month.", 1000, "Video AI"),
         ("OpenArt Starter 4K Credits 1M", "OpenArt Starter 4K Credits 1 Month.", 450, "AI Tools"),
 
-        # Screenshot Page 16
         ("Coursera Premium 12 Months", "Coursera Plus/Premium 12 Months learning.", 350, "Education"),
         ("Spotify Premium 3M", "Spotify Premium 3 Months private account.", 150, "Music"),
         ("Kiro Pro Edu Official Owner 1Y", "Kiro Pro EDU Official Owner 1 Year.", 7300, "Education"),
@@ -966,7 +931,6 @@ def migrate_db():
         ("KlingAI 750-1100 Credits 1M", "KlingAI 750-1100 Credits 1 Month video plan.", 1138, "Video AI"),
         ("Kling Random 700-1000 Credits 1M", "Kling Random 700-1000 Credits 1 Month video plan.", 850, "Video AI"),
 
-        # Out-of-stock products shown in catalog (Page 17)
         ("Snapchat Plus+ 6 Months", "Snapchat Plus 6 Months subscription access.", 800, "Social", 0),
         ("Cursor Pro + Grok Bot 1M", "Cursor Pro + Grok Bot 1 Month bundle access.", 4500, "AI Tools", 0),
         ("Veo Ultra X20 0 Credits 1M", "Veo Ultra X20 0 Credits 1 Month video generation access.", 1750, "Video AI", 0),
@@ -993,7 +957,7 @@ def migrate_db():
                 VALUES(?,?,?,?,?,0,1,?,'manual')
             """, (m_name, m_desc, retail, m_price, m_cat, m_stock))
         else:
-            # If product has no supplier_price or was stored with raw wholesale price, update to retail with PROFIT_MARGIN
+            # Update retail price if missing or set at cost
             if exists["supplier_price"] is None or exists["price"] == m_price:
                 db.execute("""
                     UPDATE products SET price=?, supplier_price=? WHERE id=?
@@ -1002,17 +966,17 @@ def migrate_db():
                 UPDATE products SET category=?, description=COALESCE(description, ?), supplier_stock=? WHERE id=?
             """, (m_cat, m_desc, m_stock, exists["id"]))
 
-    # Backfill legacy products: if price equals raw supplier cost, restore retail price with 45% profit margin
+    # Add markup to any products saved at cost price
     db.execute("""
         UPDATE products
         SET price = max(100, round(supplier_price * (1 + ? / 100.0)))
         WHERE supplier_price IS NOT NULL AND price = supplier_price
     """, (PROFIT_MARGIN,))
 
-    # Clean up manual delivery products so dummy supplier_stock does not block them
+    # Keep manual items available even if stock is 0
     db.execute("UPDATE products SET supplier_stock=NULL WHERE delivery_type='manual' AND supplier_stock=0")
 
-    # Custom emojis table for original brand logos (Telegram custom emoji IDs)
+    # Brand custom emoji table
     db.execute("""
         CREATE TABLE IF NOT EXISTS custom_emojis(
           key TEXT PRIMARY KEY,
@@ -1025,7 +989,7 @@ migrate_db()
 
 
 def get_custom_emoji_id(key: str) -> Optional[str]:
-    """Retrieve Telegram custom_emoji_id for a brand or UI key from DB or ENV."""
+    """Get custom emoji ID for a brand or button from DB or environment."""
     k = (key or "").strip().lower()
     if not k:
         return None
@@ -1042,12 +1006,10 @@ def get_custom_emoji_id(key: str) -> Optional[str]:
 
 dp = Dispatcher()
 
-# In-memory tracking for interactive text inputs (custom quantity, search keyword)
+# Active user input sessions (quantity, search, txid)
 pending_inputs: dict[int, dict] = {}
 
-# --------------------------------------------------------------------------
 # Translations
-# --------------------------------------------------------------------------
 TR = {
     "en": {
         "welcome": "🛍 <b>Welcome to Gemini Pro Store</b>\n\n💵 Best prices\n⚡ Fast delivery after payment\n📦 New products and restocks\n💬 Can't find what you need? Contact support\n\nChoose a section below:",
@@ -1208,9 +1170,7 @@ CURRENCY_NAMES = {
     "NGN": "NGN (₦)",
 }
 
-# --------------------------------------------------------------------------
-# Helpers & UI Components
-# --------------------------------------------------------------------------
+# Helpers & UI
 def get_user(uid: int, lang_code: str | None = None):
     try:
         row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
@@ -1278,7 +1238,7 @@ def parse_currency_amount(raw_amount: str, default_curr: str = "USD") -> Tuple[i
         raise ValueError("Price amount cannot be empty.")
     s = str(raw_amount).strip()
 
-    # Detect currency indicator
+    # Detect currency
     upper = s.upper()
     if "₦" in upper or "NGN" in upper or "NAIRA" in upper:
         curr = "NGN"
@@ -1291,7 +1251,7 @@ def parse_currency_amount(raw_amount: str, default_curr: str = "USD") -> Tuple[i
         if curr not in ("USD", "NGN"):
             curr = "USD"
 
-    # Clean string to numeric characters
+    # Strip non-numbers
     cleaned = (
         upper.replace("USD", "")
         .replace("NGN", "")
@@ -1348,7 +1308,7 @@ def stock_count(pid: int) -> int:
 
 
 def is_product_available(p: sqlite3.Row) -> bool:
-    """Returns True if the product is active and has available stock."""
+    """Check if product is active and in stock."""
     if not p["active"]:
         return False
     is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
@@ -1400,10 +1360,10 @@ async def notify_admins(bot: Bot, text_or_fn):
 
 
 def home_kb(uid: int):
-    """Home screen keyboard matching Screenshot 2."""
+    """Home screen buttons."""
     rows = []
 
-    # Priority 1: Gemini 18 Months ($0.72)
+    # Featured product slot 1
     gemini_p = db.execute(
         "SELECT * FROM products WHERE name LIKE '%Gemini 18 Months%' AND active=1 ORDER BY id LIMIT 1"
     ).fetchone()
@@ -1412,7 +1372,7 @@ def home_kb(uid: int):
             "SELECT * FROM products WHERE category='Gemini' AND active=1 ORDER BY id LIMIT 1"
         ).fetchone() or db.execute("SELECT * FROM products WHERE active=1 ORDER BY id LIMIT 1").fetchone()
 
-    # Priority 2: Duolingo Super 12 Months ($0.90)
+    # Featured product slot 2
     duo_p = db.execute(
         "SELECT * FROM products WHERE name LIKE '%Duolingo%' AND active=1 ORDER BY id LIMIT 1"
     ).fetchone()
@@ -1452,7 +1412,7 @@ def home_kb(uid: int):
 
 
 def categories_kb(uid: int):
-    """3-column category grid matching Screenshot 3."""
+    """Category grid buttons."""
     rows = []
     current_row = []
     for key, name, icon in CATEGORIES:
@@ -1539,7 +1499,7 @@ def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_pr
         pag_row.append(btn("▶️", f"{cb_prefix}:{page + 1}:{avail_only}" if page < total_pages else "noop", style="primary"))
         rows.append(pag_row)
 
-    # Filter toggle button
+    # Toggle available items filter
     if avail_only:
         rows.append([btn(t(uid, "btn_show_all"), f"{cb_prefix}:1:0", style="primary")])
     else:
@@ -1553,7 +1513,7 @@ def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_pr
 
 
 def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
-    """Detailed product card and quantity selector matching Screenshot 1."""
+    """Product card with quantity buttons."""
     is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
     count = stock_count(p["id"]) if not is_auto else None
     deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
@@ -1620,7 +1580,7 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
         rows.append(qty_row)
         rows.append([btn(t(uid, "btn_custom_qty"), f"cqty:{p['id']}:{ctx}", style="primary")])
 
-    # Resolve back navigation
+    # Back button target
     if ctx == "home":
         back_cb = "home"
     elif ctx.startswith("c_"):
@@ -1665,9 +1625,7 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
     return text, kb(rows)
 
 
-# --------------------------------------------------------------------------
-# Order Fulfillment Logic (with Quantity Support)
-# --------------------------------------------------------------------------
+# Order fulfillment
 async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tuple[Optional[str], Optional[str]]:
     """
     Fulfills an order:
@@ -1691,7 +1649,7 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
 
     qty = o["quantity"] if ("quantity" in o.keys() and o["quantity"] and o["quantity"] > 0) else 1
 
-    # Option A: Supplier Catalog Auto-fulfillment
+    # 1. Auto-fulfill from supplier
     if p["auto_fulfill"] and p["supplier_product_id"]:
         sup_name = p["supplier"] if ("supplier" in p.keys() and p["supplier"]) else "default"
         sup_client = supplier_registry.get(sup_name) or reseller
@@ -1699,11 +1657,11 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
         unit_cost = (p["supplier_price"] / 100.0) if ("supplier_price" in p.keys() and p["supplier_price"]) else (p["price"] * 0.65 / 100.0)
         total_cost = unit_cost * qty
 
-        # If not manually approved by admin via /approve, verify top-up account has sufficient float (Model A)
+        # Check if supplier balance covers wholesale cost
         if not force_supplier:
             has_bal, cur_bal = await check_supplier_balance_sufficient(sup_client, total_cost)
             if not has_bal:
-                # Top-up account is empty/insufficient: Pause automated fulfillment & fallback to Model B!
+                # Supplier balance is low - hold for admin approval
                 db.execute("UPDATE orders SET status='manual_pending' WHERE id=?", (oid,))
                 deficit = max(0.0, total_cost - cur_bal)
                 bal_status = f"${cur_bal:.2f} USDT (Short by ${deficit:.2f} USDT)" if cur_bal > 0 else f"${cur_bal:.2f} USDT (Empty)"
@@ -1723,7 +1681,7 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
                 )
                 return "MANUAL_PENDING", None
 
-        # Either has sufficient balance (Model A) or admin explicitly triggered /approve_{oid} after topping up:
+        # Place order with supplier
         try:
             order_res = await sup_client.create_order(product_id=p["supplier_product_id"], quantity=qty)
             payload = order_res.get("value")
@@ -1747,7 +1705,7 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
         )
         return payload, None
 
-    # Option B: Local Stock Items
+    # 2. Deliver from local stock
     try:
         db.execute("BEGIN IMMEDIATE")
         s_items = db.execute(
@@ -1770,7 +1728,7 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
             pass
         raise
 
-    # Option C: Manual / Assisted Fulfillment
+    # 3. Manual delivery
     deliv = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else "auto"
     if deliv == "manual" or not p["auto_fulfill"]:
         db.execute("UPDATE orders SET status='manual_pending' WHERE id=?", (oid,))
@@ -1790,9 +1748,7 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
     return None, "out_of_stock"
 
 
-# --------------------------------------------------------------------------
-# User Handlers & Navigation
-# --------------------------------------------------------------------------
+# User handlers
 @dp.message(CommandStart())
 @dp.message(Command("start"))
 @dp.message(Command("menu"))
@@ -1977,7 +1933,7 @@ def has_manual_crypto() -> bool:
 
 
 async def create_cryptobot_invoice(order_id: int, item_name: str, cents: int) -> dict:
-    """Create a @CryptoBot invoice for this specific product order."""
+    """Create a CryptoBot invoice for an order."""
     if not CRYPTOBOT_TOKEN:
         raise RuntimeError("CryptoBot token is not configured.")
     payload = {
@@ -2168,7 +2124,7 @@ async def verify_bachs_transaction(checkout_id: str) -> Tuple[bool, dict]:
 
 
 def render_order_summary(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
-    """Order Summary matching Screenshot 2."""
+    """Order summary before payment."""
     total_cents = p["price"] * qty
     icon = get_product_icon(p["name"], p["category"] if "category" in p.keys() else None)
     unit_usd = f"{p['price'] / 100:.2f}"
@@ -2211,7 +2167,7 @@ def render_order_summary(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[
 
 
 def render_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
-    """Payment method selection screen matching the reference layout."""
+    """Payment method options screen."""
     _ = uid
     pid = p["id"]
     cb_emoji = get_custom_emoji_id("cryptopay") or get_custom_emoji_id("cryptobot")
@@ -2237,7 +2193,7 @@ def render_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tupl
 
 
 def render_fiat_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
-    """Fiat / Local payment method selection (Don't have crypto?)."""
+    """Card and bank transfer options."""
     _ = uid
     pid = p["id"]
     rate = get_usd_ngn_rate()
@@ -2275,7 +2231,7 @@ def render_fiat_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) ->
 
 
 async def start_checkout(event: Message | CallbackQuery, uid: int, p: sqlite3.Row, qty: int, ctx: str):
-    """Entrypoint to order summary screen."""
+    """Start checkout summary."""
     if not (1 <= qty <= 1000):
         qty = 1
     pid = p["id"]
@@ -2414,14 +2370,14 @@ async def on_pay_option_selected(c: CallbackQuery):
     total_usdt = f"{total_cents / 100:.2f}"
     icon = get_product_icon(p["name"], p["category"] if "category" in p.keys() else None)
 
-    # Create pending order in DB
+    # Save pending order
     cur = db.execute(
         "INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status) VALUES(?,?,?,?,?,?,'pending')",
         (uid, pid, p["name"], total_cents, qty, method)
     )
     oid = cur.lastrowid
 
-    # 0. Bachs Payments Gateway (Cards, Bank Transfer, Mobile Money, Crypto)
+    # Bachs payment gateway
     if method == "bachs":
         if not is_bachs_configured():
             db.execute("DELETE FROM orders WHERE id=?", (oid,))
@@ -2476,7 +2432,7 @@ async def on_pay_option_selected(c: CallbackQuery):
         ]
         return await edit(c, text, kb(rows))
 
-    # 1. Direct Nigerian Bank Transfer (OPay / PalmPay / Kuda / Traditional Bank)
+    # Bank transfer
     if method == "bank":
         rate = get_usd_ngn_rate()
         amount_ngn = round((total_cents / 100.0) * rate)
@@ -2535,7 +2491,7 @@ async def on_pay_option_selected(c: CallbackQuery):
         ]
         return await edit(c, text, kb(rows))
 
-    # 2. CryptoBot Gateway (CryptoPay +3%)
+    # CryptoBot (+3% fee)
     if method == "cryptobot":
         pay_url = None
         inv_id = None
@@ -2578,7 +2534,7 @@ async def on_pay_option_selected(c: CallbackQuery):
         ]
         return await edit(c, text, kb(rows))
 
-    # 2. Binance Pay
+    # Binance Pay
     if method == "binance":
         user_curr = get_user_currency(c.from_user.id)
         ngn_approx = f" (≈ {format_price(total_cents, 'NGN')})" if user_curr == "NGN" else ""
@@ -2610,14 +2566,14 @@ async def on_pay_option_selected(c: CallbackQuery):
         ]
         return await edit(c, text, kb(rows))
 
-    # Calculate unique decimal amount for on-chain USDT payments (extra decimals = unique order ID)
+    # Add cents to crypto amount so we can identify this order on-chain
     extra_suffix = f"{(oid % 90) + 10:02d}"
     exact_crypto_amount = f"{total_cents / 100:.2f}{extra_suffix}"
     db.execute("UPDATE orders SET expected_amount=? WHERE id=?", (f"{exact_crypto_amount} USDT", oid))
     user_curr = get_user_currency(c.from_user.id)
     ngn_approx = f" (≈ {format_price(total_cents, 'NGN')})" if user_curr == "NGN" else ""
 
-    # 3. USDT BEP20 (Screenshot 2)
+    # USDT on BSC (BEP20)
     if method == "bep20":
         text = (
             "<u>🟠 <b>USDT BEP20 (BEP20)</b></u>\n"
@@ -2649,7 +2605,7 @@ async def on_pay_option_selected(c: CallbackQuery):
         ]
         return await edit(c, text, kb(rows))
 
-    # 4. USDT TRC20 (Screenshot 3)
+    # USDT on Tron (TRC20)
     if method == "trc20":
         text = (
             "<u>🔴 <b>USDT TRC20 (TRC20)</b></u>\n"
@@ -2731,7 +2687,7 @@ async def check_and_fulfill_onchain(oid: int, txid: str, uid: int, bot_instance:
     if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
         return False, "⚠️ This order was cancelled or refunded."
 
-    # Prevent replay attack: check if this txid was already used for a completed or in-flight order
+    # Make sure this txid hasn't already been used
     dup = db.execute(
         "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending', 'refunded') AND id != ?",
         (txid.strip(), oid)
@@ -2889,7 +2845,7 @@ async def on_buy_qty(c: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("buy:"))
 async def buy(c: CallbackQuery):
-    """Backward compatibility for single quantity checkout."""
+    """Quick checkout with quantity 1."""
     pending_inputs.pop(c.from_user.id, None)
     if not c.data.startswith("buy:") or not c.data[4:].isdigit():
         return await c.answer("⚠️ Invalid callback data.", show_alert=True)
@@ -3016,7 +2972,7 @@ async def handle_user_text_input(m: Message):
         if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
             return await m.answer(f"⚠️ Order #{oid} was cancelled or refunded. Please contact support.")
 
-        # Check for replay attack before accepting txid
+        # Make sure this txid hasn't already been used
         dup = db.execute(
             "SELECT id FROM orders WHERE LOWER(txid)=LOWER(?) AND status IN ('completed', 'paid', 'manual_pending', 'refunded') AND id != ?",
             (txid, oid)
@@ -3028,7 +2984,7 @@ async def handle_user_text_input(m: Message):
         db.execute("UPDATE orders SET txid=? WHERE id=?", (txid, oid))
         method = (o["payment_method"] or "").lower()
 
-        # Attempt instant on-chain verification for USDT BEP20 or TRC20
+        # Try verifying on the blockchain
         if "bep20" in method or "trc20" in method:
             verif_msg = await m.answer("🔍 <i>Verifying transaction on the blockchain...</i>")
             verified, result = await check_and_fulfill_onchain(oid, txid, uid, m.bot)
@@ -3054,7 +3010,7 @@ async def handle_user_text_input(m: Message):
                     return await m.answer(f"✅ {result}")
 
 
-        # Fallback to admin review (e.g. for Direct Bank Transfer, Binance Pay or if block confirmation is pending)
+        # Forward to admin for review
         if method == "bank":
             await m.answer(
                 f"✅ <b>Transfer Reference Received!</b>\n\n"
@@ -3254,7 +3210,7 @@ async def check_bachs_payment_callback(c: CallbackQuery):
     if not o["invoice_id"] or str(o["invoice_id"]) != str(checkout_id):
         return await c.answer("⚠️ Invoice ID does not match this order.", show_alert=True)
 
-    # Replay attack prevention: Ensure this checkout_id wasn't already claimed by another order
+    # Make sure this payment hasn't already been claimed
     dup = db.execute(
         "SELECT id FROM orders WHERE (txid=? OR invoice_id=?) AND status IN ('completed', 'paid', 'manual_pending', 'refunded') AND id != ?",
         (checkout_id, checkout_id, oid)
@@ -3280,7 +3236,7 @@ async def check_bachs_payment_callback(c: CallbackQuery):
                     expected_amount = o["price"] / 100.0
                     curr_symbol = "$"
 
-                # Allow 2% tolerance for minor FX rounding
+                # 2% tolerance for exchange rate changes
                 if paid_amount < (expected_amount * 0.98):
                     log.warning(
                         "Bachs payment underpaid for order #%s: received %s %s, expected %s %s",
@@ -3347,7 +3303,7 @@ async def manual_pay_info(c: CallbackQuery):
 @dp.message(Command("orders"))
 @dp.message(Command("purchases"))
 async def recent_purchases(event: Message | CallbackQuery):
-    """View recent purchases for the current user."""
+    """Show user order history."""
     uid = event.from_user.id
     bot_obj = event.bot
     passed, missing = await check_user_fsub(bot_obj, uid)
@@ -3483,9 +3439,7 @@ async def cmd_currency(m: Message):
     await m.answer(t(uid, "currency_choose"), reply_markup=kb(rows))
 
 
-# --------------------------------------------------------------------------
 # Admin commands
-# --------------------------------------------------------------------------
 @dp.message(Command("admin"), is_admin)
 async def admin_help(m: Message):
     await m.answer(
@@ -3623,7 +3577,7 @@ async def admin_setemoji(m: Message, command: CommandObject = None):
     parts = args.split(None, 1)
     key = parts[0].strip().lower()
 
-    # Look for custom_emoji in message entities
+    # Check for custom emoji in message
     emoji_id = None
     if m.entities:
         for ent in m.entities:
@@ -3631,7 +3585,7 @@ async def admin_setemoji(m: Message, command: CommandObject = None):
                 emoji_id = str(ent.custom_emoji_id)
                 break
 
-    # If not found in entities, check if numeric string passed in text
+    # Check if numeric ID was provided
     if not emoji_id and len(parts) > 1:
         arg_val = "".join(c for c in parts[1].strip() if c.isdigit())
         if arg_val:
@@ -3663,7 +3617,7 @@ async def admin_setemoji(m: Message, command: CommandObject = None):
 
 @dp.message(Command("getemoji"), is_admin)
 async def admin_get_emoji(m: Message):
-    """Inspect and extract Telegram custom emoji ID from any message or emoji."""
+    """Extract custom emoji ID from a message."""
     found = []
     if m.entities:
         for ent in m.entities:
@@ -3695,7 +3649,7 @@ async def admin_get_emoji(m: Message):
 
 @dp.message(Command("emojis"), is_admin)
 async def admin_list_emojis(m: Message):
-    """List all configured brand custom emojis."""
+    """List configured brand emojis."""
     rows = db.execute("SELECT key, emoji_id FROM custom_emojis ORDER BY key").fetchall()
     if not rows:
         return await m.answer(
@@ -3720,7 +3674,7 @@ async def admin_del_emoji(m: Message, command: CommandObject = None):
 
 
 def chunk_lines(lines: List[str], max_chars: int = 3500) -> List[str]:
-    """Chunks HTML lines without splitting across tags."""
+    """Split long messages into smaller chunks."""
     chunks = []
     current_chunk = []
     current_len = 0
@@ -3808,7 +3762,7 @@ async def admin_addproduct(m: Message, command: CommandObject = None):
             raise ValueError("No arguments")
         admin_curr = get_user_currency(m.from_user.id)
 
-        # Check if first or second token is currency code (USD, NGN, NAIRA, $, ₦)
+        # Check if currency code comes before or after price
         if len(parts) >= 2 and parts[0].upper() in ("USD", "NGN", "NAIRA", "$", "₦"):
             price_raw = f"{parts[1]} {parts[0]}"
             rest = command.args.split(None, 2)[2] if len(parts) > 2 else ""
@@ -3879,7 +3833,7 @@ async def admin_setprice(m: Message, command: CommandObject = None):
             return await m.answer(f"Product #{pid} not found.")
 
         disp_price = f"<b>{format_price(new_price_cents, admin_curr)}</b>"
-        # If item has a supplier cost, calculate implied margin and lock in the fixed price!
+        # Lock in fixed price and calculate margin if supplier cost is known
         if p["supplier_price"] and p["supplier_price"] > 0:
             cost = p["supplier_price"]
             calc_margin = round(((new_price_cents - cost) / cost) * 100)
@@ -4187,7 +4141,7 @@ async def admin_setrate(m: Message, command: CommandObject = None):
 async def admin_setbank(m: Message, command: CommandObject = None):
     args = (command.args or "").strip() if command else ""
 
-    # 1. Removal / Disable command: /setbank off, /setbank clear, /setbank del
+    # Disable bank transfers
     if args.lower() in ("off", "disable", "clear", "del", "delete", "none", "0"):
         save_bank_accounts([])
         return await m.answer(
@@ -4196,7 +4150,7 @@ async def admin_setbank(m: Message, command: CommandObject = None):
             "<i>To re-enable at any time, run <code>/setbank &lt;Bank&gt; | &lt;Account Number&gt; | &lt;Account Name&gt;</code></i>"
         )
 
-    # 2. View configuration & instructions if no args or invalid syntax without pipes
+    # Show current bank accounts if no details provided
     if not args or "|" not in args:
         banks = get_bank_accounts()
         details = get_bank_details()
@@ -4245,7 +4199,7 @@ async def admin_setbank(m: Message, command: CommandObject = None):
         )
         return await m.answer("\n".join(lines))
 
-    # 3. Parsing configuration: <Bank> | <Account> | <Name> or <Index> | <Bank> | <Account> | <Name>
+    # Parse bank account details
     parts = [p.strip() for p in args.split("|")]
     if len(parts) < 3:
         return await m.answer(
@@ -4378,7 +4332,7 @@ async def admin_delbank(m: Message, command: CommandObject = None):
         else:
             return await m.answer(f"⚠️ Invalid account number. Please choose between 1 and {len(banks)} (or send <code>/delbank all</code>).")
 
-    # Try matching by account number substring
+    # Try matching by account number
     clean_arg = "".join(c for c in args if c.isdigit())
     if clean_arg:
         matching = [i for i, b in enumerate(banks) if clean_arg in b["account_number"]]
@@ -4452,9 +4406,7 @@ async def admin_bachs_currency(m: Message, command: CommandObject = None):
 
 
 
-# --------------------------------------------------------------------------
-# Supplier Admin Commands (Multi-Supplier Registry)
-# --------------------------------------------------------------------------
+# Supplier commands
 @dp.message(Command("supplier", "suppliers"), is_admin)
 async def admin_supplier_info(m: Message, command: CommandObject = None):
     registered = supplier_registry.list_suppliers()
@@ -4515,7 +4467,7 @@ async def admin_supplier_info(m: Message, command: CommandObject = None):
 
 @dp.message(Command("mode"), is_admin)
 async def admin_mode(m: Message, command: CommandObject = None):
-    """View or change fulfillment mode (Model A vs Model B)."""
+    """View or change fulfillment mode (instant vs manual approval)."""
     arg = command.args.strip().lower() if command and command.args else None
     if arg:
         if arg in ("auto", "automatic"):
@@ -4644,7 +4596,7 @@ async def perform_supplier_sync(
                 (sp_id, sup_name)
             ).fetchone()
 
-            # If not matched by supplier_product_id, check if unlinked product exists with identical or similar name
+            # Try matching by name if ID didn't match
             if not existing:
                 existing = db.execute(
                     "SELECT id, price, margin, fixed_price FROM products WHERE supplier_product_id IS NULL AND LOWER(name)=LOWER(?)",
@@ -4662,8 +4614,7 @@ async def perform_supplier_sync(
             is_active = 0 if (stock is not None and stock == 0) else 1
 
             if is_fixed:
-                # FIXED PRICE: The selling price remains fixed as set by the admin!
-                # The margin adjusts to that fixed price based on the new supplier cost.
+                # Keep retail price fixed and adjust margin
                 retail_cents = existing["price"]
                 if cost_cents and cost_cents > 0:
                     item_margin = round(((retail_cents - cost_cents) / cost_cents) * 100)
@@ -4672,7 +4623,7 @@ async def perform_supplier_sync(
                 db_margin = item_margin
                 db_fixed_price = 1
             else:
-                # MARGIN-BASED: The retail price follows the custom or default margin.
+                # Update retail price using margin
                 saved_margin = existing["margin"] if existing else None
                 item_margin = saved_margin if (saved_margin is not None) else markup
                 retail_cents = max(100, round(cost_cents * (1 + item_margin / 100)))
@@ -4694,7 +4645,7 @@ async def perform_supplier_sync(
                 """, (sp["name"], sp["description"], retail_cents, sp_id, cost_cents, is_active, cat, sup_name, stock, None))
                 total_added += 1
 
-        # Mark products linked to this supplier that are no longer in feed as out of stock / inactive
+        # Deactivate supplier products no longer in feed
         if seen_supplier_ids:
             placeholders = ",".join(["?"] * len(seen_supplier_ids))
             db.execute(
@@ -4736,7 +4687,7 @@ async def admin_supplier_sync(m: Message, command: CommandObject = None):
 
     total_added, total_updated, total_items, errors = await perform_supplier_sync(target_suppliers, markup)
 
-    # Gather color-coded status of all products in DB
+    # Group products by status
     all_prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
     in_stock_auto = []
     manual_items = []
@@ -4872,7 +4823,7 @@ async def admin_supplier_orders(m: Message, command: CommandObject = None):
 
 
 async def periodic_supplier_sync(interval_sec: int = 600):
-    """Background task to periodically synchronize supplier products and inventory."""
+    """Background task to sync catalog every 10 minutes."""
     while True:
         try:
             await asyncio.sleep(interval_sec)
@@ -4889,9 +4840,7 @@ async def periodic_supplier_sync(interval_sec: int = 600):
             log.warning("Periodic supplier sync encountered error: %s", e)
 
 
-# --------------------------------------------------------------------------
-# Entrypoint
-# --------------------------------------------------------------------------
+# Main entrypoint
 async def main():
     bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
@@ -4907,7 +4856,7 @@ async def main():
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
     log.info("Health check server listening on :%s", PORT)
 
-    # Initial sync with reseller API on startup
+    # Sync catalog on startup
     try:
         init_added, init_updated, init_total, init_errs = await perform_supplier_sync()
         log.info("Initial supplier sync: %d updated, %d added of %d total (errors: %d)", init_updated, init_added, init_total, len(init_errs))
