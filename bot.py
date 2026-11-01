@@ -230,23 +230,70 @@ def set_usd_ngn_rate(rate: int):
     set_setting("usd_ngn_rate", str(max(1, rate)))
 
 
+def get_bank_accounts() -> list[dict[str, str]]:
+    """Returns list of configured direct bank transfer accounts."""
+    raw = get_setting("bank_accounts", "")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                res = []
+                for item in parsed:
+                    if isinstance(item, dict):
+                        b_name = str(item.get("bank_name", "")).strip()
+                        acc_num = "".join(c for c in str(item.get("account_number", "")) if c.isdigit())
+                        acc_name = str(item.get("account_name", "")).strip()
+                        if b_name and len(acc_num) >= 8:
+                            res.append({
+                                "bank_name": b_name,
+                                "account_number": acc_num,
+                                "account_name": acc_name or "CreditLog Store"
+                            })
+                return res
+        except Exception:
+            pass
+
+    # Fallback to single account from settings or environment
+    bank_name = (get_setting("bank_name", "") or os.environ.get("BANK_NAME", "")).strip()
+    account_number = "".join(c for c in (get_setting("bank_account_number", "") or os.environ.get("BANK_ACCOUNT_NUMBER", "")) if c.isdigit())
+    account_name = (get_setting("bank_account_name", "") or os.environ.get("BANK_ACCOUNT_NAME", "")).strip()
+    if bank_name and len(account_number) >= 8:
+        return [{
+            "bank_name": bank_name,
+            "account_number": account_number,
+            "account_name": account_name or "CreditLog Store"
+        }]
+    return []
+
+
+def save_bank_accounts(accounts: list[dict[str, str]]):
+    """Saves bank accounts to settings and updates legacy single-account settings."""
+    set_setting("bank_accounts", json.dumps(accounts))
+    if accounts:
+        set_setting("bank_name", accounts[0]["bank_name"])
+        set_setting("bank_account_number", accounts[0]["account_number"])
+        set_setting("bank_account_name", accounts[0]["account_name"])
+    else:
+        set_setting("bank_name", "")
+        set_setting("bank_account_number", "")
+        set_setting("bank_account_name", "")
+
+
 def get_bank_details() -> dict[str, str]:
-    """Returns configured direct bank transfer details."""
-    bank_name = (os.environ.get("BANK_NAME") or get_setting("bank_name", "OPay")).strip()
-    account_number = (os.environ.get("BANK_ACCOUNT_NUMBER") or get_setting("bank_account_number", "")).strip()
-    account_name = (os.environ.get("BANK_ACCOUNT_NAME") or get_setting("bank_account_name", "CreditLog Store")).strip()
+    """Returns primary direct bank transfer details."""
+    accounts = get_bank_accounts()
+    if accounts:
+        return accounts[0]
     return {
-        "bank_name": bank_name,
-        "account_number": account_number,
-        "account_name": account_name,
+        "bank_name": (get_setting("bank_name", "") or os.environ.get("BANK_NAME", "OPay")).strip() or "OPay",
+        "account_number": (get_setting("bank_account_number", "") or os.environ.get("BANK_ACCOUNT_NUMBER", "")).strip(),
+        "account_name": (get_setting("bank_account_name", "") or os.environ.get("BANK_ACCOUNT_NAME", "CreditLog Store")).strip() or "CreditLog Store"
     }
 
 
 def is_bank_configured() -> bool:
-    """Returns True if Bank Account details are configured with at least 8 digits."""
-    details = get_bank_details()
-    acc_num = "".join(c for c in details["account_number"] if c.isdigit())
-    return len(acc_num) >= 8
+    """Returns True if at least one valid Bank Account is configured."""
+    return len(get_bank_accounts()) > 0
 
 
 def get_bachs_key() -> str:
@@ -2202,8 +2249,15 @@ def render_fiat_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) ->
         amount_disp = f"₦{total_ngn:,} NGN" if curr == "NGN" else f"${total_usd} USD"
         rows.append([btn(f"💳 Pay with Card / Bank / Transfer (Bachs) — {amount_disp}", f"pay_opt:bachs:{pid}:{qty}:{ctx}", style="success")])
     if is_bank_configured():
-        bank = get_bank_details()
-        rows.append([btn(f"🇳🇬 Direct Bank Transfer ({bank['bank_name']}) — ₦{total_ngn:,}", f"pay_opt:bank:{pid}:{qty}:{ctx}", style="success")])
+        banks = get_bank_accounts()
+        if len(banks) == 1:
+            bank_label = f"🇳🇬 Direct Bank Transfer ({banks[0]['bank_name']}) — ₦{total_ngn:,}"
+        else:
+            names = ", ".join(b["bank_name"] for b in banks[:3])
+            if len(banks) > 3:
+                names += f" +{len(banks)-3} more"
+            bank_label = f"🇳🇬 Direct Bank Transfer ({names}) — ₦{total_ngn:,}"
+        rows.append([btn(bank_label, f"pay_opt:bank:{pid}:{qty}:{ctx}", style="success")])
 
     back_emoji = get_custom_emoji_id("back")
     back_label = "Back" if back_emoji else "↩️ Back"
@@ -2425,8 +2479,33 @@ async def on_pay_option_selected(c: CallbackQuery):
     if method == "bank":
         rate = get_usd_ngn_rate()
         amount_ngn = round((total_cents / 100.0) * rate)
-        bank = get_bank_details()
+        banks = get_bank_accounts()
+        if not banks:
+            db.execute("DELETE FROM orders WHERE id=?", (oid,))
+            return await c.answer("⚠️ Bank transfer is currently unavailable.", show_alert=True)
+
         db.execute("UPDATE orders SET expected_amount=?, invoice_id=? WHERE id=?", (f"₦{amount_ngn:,} NGN", f"BANK-{oid}", oid))
+
+        bank_lines = []
+        if len(banks) == 1:
+            bank = banks[0]
+            bank_lines.append(
+                f"🏦 <b>Bank Name:</b> <b>{esc(bank['bank_name'])}</b>\n"
+                f"🔢 <b>Account Number:</b> <code>{esc(bank['account_number'])}</code>\n"
+                "👆 <i>Tap to copy account number.</i>\n"
+                f"👤 <b>Account Name:</b> <b>{esc(bank['account_name'])}</b>"
+            )
+            pay_step_text = "to the account above"
+        else:
+            for idx, bank in enumerate(banks, 1):
+                bank_lines.append(
+                    f"🏦 <b>Account #{idx} ({esc(bank['bank_name'])}):</b>\n"
+                    f"🔢 <b>Account Number:</b> <code>{esc(bank['account_number'])}</code> <i>(tap to copy)</i>\n"
+                    f"👤 <b>Account Name:</b> <b>{esc(bank['account_name'])}</b>"
+                )
+            pay_step_text = "to ANY of the accounts above"
+
+        banks_display = "\n\n".join(bank_lines)
 
         text = (
             "<u>🇳🇬 <b>Direct Bank Transfer (Naira)</b></u>\n"
@@ -2439,13 +2518,10 @@ async def on_pay_option_selected(c: CallbackQuery):
             f"<code>₦{amount_ngn:,}</code>\n"
             "👆 <i>Tap to copy amount.</i>\n"
             "────────────────────────\n"
-            f"🏦 <b>Bank Name:</b> <b>{esc(bank['bank_name'])}</b>\n"
-            f"🔢 <b>Account Number:</b> <code>{esc(bank['account_number'])}</code>\n"
-            "👆 <i>Tap to copy account number.</i>\n"
-            f"👤 <b>Account Name:</b> <b>{esc(bank['account_name'])}</b>\n"
+            f"{banks_display}\n"
             f"📝 <b>Narration / Remark:</b> <code>CL-{oid}</code>\n"
             "────────────────────────\n\n"
-            f"💸 <b>Step 1:</b> Transfer <b>₦{amount_ngn:,}</b> to the account above via your banking app (OPay, PalmPay, Kuda, GTB, etc.).\n"
+            f"💸 <b>Step 1:</b> Transfer <b>₦{amount_ngn:,}</b> {pay_step_text} via your banking app (OPay, PalmPay, Kuda, GTB, etc.).\n"
             "🔗 <b>Step 2:</b> Tap <b>Submit Transfer Reference / Name</b> below and paste your transaction reference or sender name.\n"
             "✅ <b>Step 3:</b> Our admin verifies the transfer and your order is instantly delivered!\n\n"
             "⌛ <b>Please pay within 60 minutes.</b>"
@@ -3403,7 +3479,9 @@ async def admin_help(m: Message):
         "/setbachs [api_key] - Configure Bachs Payments Gateway\n"
         "/bachs - View Bachs Gateway configuration & status\n"
         "/bachscurrency [USD|NGN] - Set Bachs checkout currency\n"
-        "/setbank [Bank | AccNum | Name] - Configure Direct Nigerian Bank Transfer\n"
+        "/setbank [Bank | AccNum | Name] - Configure or update Direct Bank Transfer\n"
+        "/addbank &lt;Bank | AccNum | Name&gt; - Add another bank account (multi-bank)\n"
+        "/delbank [number|all] - Remove a bank account or disable bank transfer\n"
         "/bank - View current Bank Transfer configuration\n\n"
         "🎨 <b>Brand Custom Emojis</b>\n"
         "/setemoji &lt;key&gt; [emoji] - Set official brand custom emoji ID\n"
@@ -4080,25 +4158,66 @@ async def admin_setrate(m: Message, command: CommandObject = None):
 @dp.message(Command("setbank"), is_admin)
 async def admin_setbank(m: Message, command: CommandObject = None):
     args = (command.args or "").strip() if command else ""
-    if not args or "|" not in args:
-        details = get_bank_details()
-        configured = is_bank_configured()
-        status_text = "🟢 <b>Configured & Active</b>" if configured else "🔴 <b>Not Configured</b>"
+
+    # 1. Removal / Disable command: /setbank off, /setbank clear, /setbank del
+    if args.lower() in ("off", "disable", "clear", "del", "delete", "none", "0"):
+        save_bank_accounts([])
         return await m.answer(
-            f"🏦 <b>Direct Bank Transfer Status:</b> {status_text}\n\n"
-            f"• <b>Bank:</b> {esc(details['bank_name'])}\n"
-            f"• <b>Account Number:</b> <code>{esc(details['account_number']) or 'None'}</code>\n"
-            f"• <b>Account Name:</b> {esc(details['account_name'])}\n\n"
-            f"<b>To configure or update your Nigerian bank account:</b>\n"
-            f"<code>/setbank &lt;Bank Name&gt; | &lt;Account Number&gt; | &lt;Account Name&gt;</code>\n\n"
-            f"<b>Examples (OPay / PalmPay / Kuda / Moniepoint / Traditional Banks):</b>\n"
-            f"• <code>/setbank OPay | 8123456789 | Adebayo Olawale</code>\n"
-            f"• <code>/setbank PalmPay | 9012345678 | Adebayo Olawale</code>\n"
-            f"• <code>/setbank Kuda | 2012345678 | Adebayo Olawale</code>\n"
-            f"• <code>/setbank Moniepoint | 6012345678 | Adebayo Olawale</code>\n\n"
-            f"<i>Customers will see Direct Bank Transfer in checkout, transfer Naira directly, and submit their sender name/reference for you to approve with /approve_&lt;order_id&gt;!</i>"
+            "✅ <b>Direct Bank Transfer Disabled!</b>\n\n"
+            "All bank transfer details have been removed. Direct Bank Transfer will no longer appear in the checkout menu.\n\n"
+            "<i>To re-enable at any time, run <code>/setbank &lt;Bank&gt; | &lt;Account Number&gt; | &lt;Account Name&gt;</code></i>"
         )
 
+    # 2. View configuration & instructions if no args or invalid syntax without pipes
+    if not args or "|" not in args:
+        banks = get_bank_accounts()
+        details = get_bank_details()
+        configured = is_bank_configured()
+        if len(banks) > 1:
+            status_text = f"🟢 <b>Configured & Active ({len(banks)} Accounts)</b>"
+        elif configured:
+            status_text = "🟢 <b>Configured & Active</b>"
+        else:
+            status_text = "🔴 <b>Not Configured</b>"
+
+        lines = [f"🏦 <b>Direct Bank Transfer Status:</b> {status_text}\n"]
+        if banks:
+            for idx, b in enumerate(banks, 1):
+                num_label = f"Account #{idx}" if len(banks) > 1 else "Primary Account"
+                lines.append(
+                    f"<b>{num_label}:</b>\n"
+                    f"• <b>Bank:</b> {esc(b['bank_name'])}\n"
+                    f"• <b>Account Number:</b> <code>{esc(b['account_number'])}</code>\n"
+                    f"• <b>Account Name:</b> {esc(b['account_name'])}\n"
+                )
+        else:
+            lines.append(
+                f"• <b>Bank:</b> {esc(details['bank_name'])}\n"
+                f"• <b>Account Number:</b> <code>{esc(details['account_number']) or 'None'}</code>\n"
+                f"• <b>Account Name:</b> {esc(details['account_name'])}\n"
+            )
+
+        lines.append(
+            "<b>To configure or update your Nigerian bank account:</b>\n"
+            "<code>/setbank &lt;Bank Name&gt; | &lt;Account Number&gt; | &lt;Account Name&gt;</code>\n\n"
+            "<b>Examples (OPay / PalmPay / Kuda / Moniepoint / Traditional Banks):</b>\n"
+            "• <code>/setbank OPay | 8123456789 | Adebayo Olawale</code>\n"
+            "• <code>/setbank PalmPay | 9012345678 | Adebayo Olawale</code>\n"
+            "• <code>/setbank Kuda | 2012345678 | Adebayo Olawale</code>\n"
+            "• <code>/setbank Moniepoint | 6012345678 | Adebayo Olawale</code>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<b>Multi-Bank & Removal Management:</b>\n"
+            "• <b>Add an additional bank account:</b>\n"
+            "  <code>/addbank &lt;Bank Name&gt; | &lt;Account Number&gt; | &lt;Account Name&gt;</code>\n"
+            "• <b>Remove a specific bank account:</b>\n"
+            "  <code>/delbank &lt;account_number_or_id&gt;</code> (e.g. <code>/delbank 2</code>)\n"
+            "• <b>Remove ALL bank accounts (disable bank transfer):</b>\n"
+            "  <code>/delbank all</code> or <code>/setbank off</code>\n\n"
+            "<i>Customers will see Direct Bank Transfer in checkout, transfer Naira directly, and submit their sender name/reference for you to approve with /approve_&lt;order_id&gt;!</i>"
+        )
+        return await m.answer("\n".join(lines))
+
+    # 3. Parsing configuration: <Bank> | <Account> | <Name> or <Index> | <Bank> | <Account> | <Name>
     parts = [p.strip() for p in args.split("|")]
     if len(parts) < 3:
         return await m.answer(
@@ -4107,14 +4226,32 @@ async def admin_setbank(m: Message, command: CommandObject = None):
             "Example: <code>/setbank OPay | 8123456789 | Adebayo Olawale</code>"
         )
 
-    bank_name, acc_num, acc_name = parts[0], parts[1], parts[2]
+    target_idx = None
+    if len(parts) >= 4 and parts[0].isdigit():
+        target_idx = int(parts[0]) - 1
+        bank_name, acc_num, acc_name = parts[1], parts[2], parts[3]
+    else:
+        bank_name, acc_num, acc_name = parts[0], parts[1], parts[2]
+
     clean_num = "".join(c for c in acc_num if c.isdigit())
     if len(clean_num) < 8:
         return await m.answer("⚠️ Account number must contain at least 8 digits.")
 
-    set_setting("bank_name", bank_name)
-    set_setting("bank_account_number", clean_num)
-    set_setting("bank_account_name", acc_name)
+    banks = get_bank_accounts()
+    new_account = {
+        "bank_name": bank_name,
+        "account_number": clean_num,
+        "account_name": acc_name
+    }
+
+    if target_idx is not None and 0 <= target_idx < len(banks):
+        banks[target_idx] = new_account
+    elif len(banks) > 0 and target_idx is None:
+        banks[0] = new_account
+    else:
+        banks = [new_account]
+
+    save_bank_accounts(banks)
 
     await m.answer(
         f"✅ <b>Direct Bank Transfer Configured Successfully!</b>\n\n"
@@ -4125,7 +4262,112 @@ async def admin_setbank(m: Message, command: CommandObject = None):
     )
 
 
-@dp.message(Command("bank"), is_admin)
+@dp.message(Command("addbank"), is_admin)
+async def admin_addbank(m: Message, command: CommandObject = None):
+    args = (command.args or "").strip() if command else ""
+    if not args or "|" not in args:
+        return await m.answer(
+            "<b>Add Another Bank Account:</b>\n"
+            "Use this command to add an additional bank account so buyers can choose which bank to pay into.\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/addbank &lt;Bank Name&gt; | &lt;Account Number&gt; | &lt;Account Name&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/addbank PalmPay | 9012345678 | Adebayo Olawale</code>"
+        )
+
+    parts = [p.strip() for p in args.split("|")]
+    if len(parts) < 3:
+        return await m.answer(
+            "⚠️ Please provide all 3 parts separated by vertical bars (|):\n"
+            "<code>/addbank &lt;Bank Name&gt; | &lt;Account Number&gt; | &lt;Account Name&gt;</code>\n\n"
+            "Example: <code>/addbank PalmPay | 9012345678 | Adebayo Olawale</code>"
+        )
+
+    bank_name, acc_num, acc_name = parts[0], parts[1], parts[2]
+    clean_num = "".join(c for c in acc_num if c.isdigit())
+    if len(clean_num) < 8:
+        return await m.answer("⚠️ Account number must contain at least 8 digits.")
+
+    banks = get_bank_accounts()
+    new_account = {
+        "bank_name": bank_name,
+        "account_number": clean_num,
+        "account_name": acc_name
+    }
+    banks.append(new_account)
+    save_bank_accounts(banks)
+
+    await m.answer(
+        f"✅ <b>Bank Account #{len(banks)} Added Successfully!</b>\n\n"
+        f"• <b>Bank:</b> {esc(bank_name)}\n"
+        f"• <b>Account Number:</b> <code>{clean_num}</code>\n"
+        f"• <b>Account Name:</b> {esc(acc_name)}\n\n"
+        f"Total active bank accounts: <b>{len(banks)}</b>. Buyers will see all available accounts during checkout!"
+    )
+
+
+@dp.message(Command("delbank", "clearbank"), is_admin)
+async def admin_delbank(m: Message, command: CommandObject = None):
+    args = (command.args or "").strip().lower() if command else ""
+    banks = get_bank_accounts()
+
+    if not banks:
+        return await m.answer("⚠️ No bank accounts are currently configured.")
+
+    if not args:
+        lines = [
+            "<b>Remove Bank Account:</b>\n",
+            "<b>Configured Accounts:</b>"
+        ]
+        for idx, b in enumerate(banks, 1):
+            lines.append(f"  <b>#{idx}</b>: {esc(b['bank_name'])} — <code>{esc(b['account_number'])}</code> ({esc(b['account_name'])})")
+        lines.append(
+            "\n<b>Usage:</b>\n"
+            "• Remove specific account: <code>/delbank &lt;number&gt;</code> (e.g. <code>/delbank 2</code>)\n"
+            "• Remove all accounts (disable bank transfer): <code>/delbank all</code>"
+        )
+        return await m.answer("\n".join(lines))
+
+    if args in ("all", "clear", "*", "everything"):
+        save_bank_accounts([])
+        return await m.answer(
+            "✅ <b>All Direct Bank Transfer Accounts Removed!</b>\n\n"
+            "Direct Bank Transfer has been disabled and will no longer appear in the checkout menu."
+        )
+
+    if args.isdigit():
+        idx = int(args)
+        if 1 <= idx <= len(banks):
+            removed = banks.pop(idx - 1)
+            save_bank_accounts(banks)
+            rem_text = f"Total remaining active bank accounts: <b>{len(banks)}</b>" if banks else "No accounts left. Direct Bank Transfer is now disabled."
+            return await m.answer(
+                f"✅ <b>Removed Bank Account #{idx}:</b>\n"
+                f"• <b>Bank:</b> {esc(removed['bank_name'])}\n"
+                f"• <b>Account Number:</b> <code>{esc(removed['account_number'])}</code>\n\n"
+                f"{rem_text}"
+            )
+        else:
+            return await m.answer(f"⚠️ Invalid account number. Please choose between 1 and {len(banks)} (or send <code>/delbank all</code>).")
+
+    # Try matching by account number substring
+    clean_arg = "".join(c for c in args if c.isdigit())
+    if clean_arg:
+        matching = [i for i, b in enumerate(banks) if clean_arg in b["account_number"]]
+        if len(matching) == 1:
+            removed = banks.pop(matching[0])
+            save_bank_accounts(banks)
+            return await m.answer(
+                f"✅ <b>Removed Bank Account:</b>\n"
+                f"• <b>Bank:</b> {esc(removed['bank_name'])}\n"
+                f"• <b>Account Number:</b> <code>{esc(removed['account_number'])}</code>\n\n"
+                f"Remaining active accounts: {len(banks)}"
+            )
+
+    await m.answer("Usage: <code>/delbank &lt;number&gt;</code> (e.g. <code>/delbank 2</code>) or <code>/delbank all</code>")
+
+
+@dp.message(Command("bank", "banks"), is_admin)
 async def admin_view_bank(m: Message, command: CommandObject = None):
     return await admin_setbank(m, command)
 
@@ -4671,6 +4913,8 @@ async def main():
             BotCommand(command="setbachs", description="Configure Bachs API Key"),
             BotCommand(command="bachs", description="View Bachs Gateway details"),
             BotCommand(command="setbank", description="Configure Direct Bank Transfer"),
+            BotCommand(command="addbank", description="Add additional bank account"),
+            BotCommand(command="delbank", description="Remove a bank account"),
             BotCommand(command="bank", description="View Bank Transfer details"),
             BotCommand(command="fsub", description="Manage Force-Subscribe"),
             BotCommand(command="broadcast", description="Broadcast message to buyers"),

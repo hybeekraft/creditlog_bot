@@ -3299,6 +3299,121 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
         o_updated = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         self.assertEqual(o_updated["txid"], "Tunde Bakare / OPay Session 123456789")
 
+    async def test_admin_setbank_disable_and_clear(self):
+        m = AsyncMock()
+        admin_id = next(iter(bot.ADMIN_IDS)) if bot.ADMIN_IDS else 999999
+        m.from_user.id = admin_id
+        cmd = MagicMock()
+
+        # Set up an account
+        cmd.args = "OPay | 8123456789 | Adebayo Olawale"
+        await bot.admin_setbank(m, cmd)
+        self.assertTrue(bot.is_bank_configured())
+
+        # 1. /setbank off disables bank transfer
+        m.reset_mock()
+        cmd.args = "off"
+        await bot.admin_setbank(m, cmd)
+        self.assertIn("Direct Bank Transfer Disabled", m.answer.call_args[0][0])
+        self.assertFalse(bot.is_bank_configured())
+
+        # Re-enable
+        cmd.args = "Kuda | 2012345678 | Adebayo Olawale"
+        await bot.admin_setbank(m, cmd)
+        self.assertTrue(bot.is_bank_configured())
+
+        # 2. /delbank all disables bank transfer
+        m.reset_mock()
+        cmd.args = "all"
+        await bot.admin_delbank(m, cmd)
+        self.assertIn("All Direct Bank Transfer Accounts Removed", m.answer.call_args[0][0])
+        self.assertFalse(bot.is_bank_configured())
+
+    async def test_admin_multi_bank_management(self):
+        m = AsyncMock()
+        admin_id = next(iter(bot.ADMIN_IDS)) if bot.ADMIN_IDS else 999999
+        m.from_user.id = admin_id
+        cmd = MagicMock()
+
+        # 1. Set primary account
+        cmd.args = "OPay | 8123456789 | Adebayo Olawale"
+        await bot.admin_setbank(m, cmd)
+        self.assertEqual(len(bot.get_bank_accounts()), 1)
+
+        # 2. Add second account via /addbank
+        m.reset_mock()
+        cmd.args = "PalmPay | 9012345678 | Adebayo PalmPay"
+        await bot.admin_addbank(m, cmd)
+        self.assertIn("Bank Account #2 Added Successfully", m.answer.call_args[0][0])
+        self.assertEqual(len(bot.get_bank_accounts()), 2)
+
+        # 3. Add third account via /addbank
+        m.reset_mock()
+        cmd.args = "Kuda Bank | 2012345678 | Adebayo Kuda"
+        await bot.admin_addbank(m, cmd)
+        self.assertIn("Bank Account #3 Added Successfully", m.answer.call_args[0][0])
+        accounts = bot.get_bank_accounts()
+        self.assertEqual(len(accounts), 3)
+
+        # 4. View all accounts via /bank
+        m.reset_mock()
+        cmd.args = ""
+        await bot.admin_view_bank(m, cmd)
+        view_text = m.answer.call_args[0][0]
+        self.assertIn("Active (3 Accounts)", view_text)
+        self.assertIn("OPay", view_text)
+        self.assertIn("PalmPay", view_text)
+        self.assertIn("Kuda Bank", view_text)
+
+        # 5. Remove account #2 via /delbank 2
+        m.reset_mock()
+        cmd.args = "2"
+        await bot.admin_delbank(m, cmd)
+        self.assertIn("Removed Bank Account #2", m.answer.call_args[0][0])
+        accounts = bot.get_bank_accounts()
+        self.assertEqual(len(accounts), 2)
+        self.assertEqual(accounts[0]["bank_name"], "OPay")
+        self.assertEqual(accounts[1]["bank_name"], "Kuda Bank")
+
+        # 6. Update account #2 via /setbank 2 | ...
+        m.reset_mock()
+        cmd.args = "2 | Moniepoint | 6012345678 | Adebayo Moniepoint"
+        await bot.admin_setbank(m, cmd)
+        self.assertIn("Direct Bank Transfer Configured Successfully", m.answer.call_args[0][0])
+        accounts = bot.get_bank_accounts()
+        self.assertEqual(accounts[1]["bank_name"], "Moniepoint")
+        self.assertEqual(accounts[1]["account_number"], "6012345678")
+
+    async def test_multi_bank_checkout_instructions(self):
+        # Configure 2 bank accounts
+        bot.save_bank_accounts([
+            {"bank_name": "OPay", "account_number": "8123456789", "account_name": "CreditLog OPay"},
+            {"bank_name": "PalmPay", "account_number": "9012345678", "account_name": "CreditLog PalmPay"},
+        ])
+
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('MultiBank Prod', 'Desc', 500, 1)").lastrowid
+
+        # 1. Fiat menu displays both bank names
+        p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        _, kb_fiat = bot.render_fiat_payment_methods(123, p, 1, "shop")
+        btns = [b for row in kb_fiat.inline_keyboard for b in row]
+        bank_btn = next(b for b in btns if b.callback_data and b.callback_data.startswith("pay_opt:bank:"))
+        self.assertIn("OPay, PalmPay", bank_btn.text)
+
+        # 2. Checkout selection shows all accounts with individual copy tags
+        c = AsyncMock()
+        c.from_user.id = 445566
+        c.data = f"pay_opt:bank:{pid}:1:shop"
+        with patch("bot.edit", new=AsyncMock()) as mock_edit:
+            await bot.on_pay_option_selected(c)
+            mock_edit.assert_called_once()
+            text_arg = mock_edit.call_args[0][1]
+            self.assertIn("Account #1 (OPay):", text_arg)
+            self.assertIn("8123456789", text_arg)
+            self.assertIn("Account #2 (PalmPay):", text_arg)
+            self.assertIn("9012345678", text_arg)
+            self.assertIn("to ANY of the accounts above", text_arg)
+
     async def test_on_pay_usdt_network_submenu(self):
         pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Network Item', 'Desc', 500, 1)").lastrowid
         c = AsyncMock()
