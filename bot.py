@@ -118,6 +118,11 @@ if not CRYPTO_USDT_TRC20 or CRYPTO_USDT_TRC20.startswith("TYour") or CRYPTO_USDT
 # Naira Payments (Direct Bank Transfer)
 DEFAULT_USD_NGN_RATE = safe_int_env("USD_NGN_RATE", 1450)
 
+# Bachs Payments Gateway (Global & African Cards, Bank Transfers, Mobile Money, Crypto)
+BACHS_API_KEY = os.environ.get("BACHS_API_KEY", "").strip()
+BACHS_CURRENCY = (os.environ.get("BACHS_CURRENCY", "USD") or "USD").strip().upper()
+BACHS_CALLBACK_URL = os.environ.get("BACHS_CALLBACK_URL", "").strip()
+
 # --------------------------------------------------------------------------
 # Database
 # --------------------------------------------------------------------------
@@ -242,6 +247,34 @@ def is_bank_configured() -> bool:
     details = get_bank_details()
     acc_num = "".join(c for c in details["account_number"] if c.isdigit())
     return len(acc_num) >= 8
+
+
+def get_bachs_key() -> str:
+    """Returns the configured Bachs API key from database settings or environment."""
+    return (get_setting("bachs_api_key", "") or os.environ.get("BACHS_API_KEY", "")).strip()
+
+
+def is_bachs_configured() -> bool:
+    """Returns True if a valid Bachs API key is configured."""
+    key = get_bachs_key()
+    return bool(key and not key.startswith("your_") and len(key) >= 10)
+
+
+def get_bachs_base_url(api_key: Optional[str] = None) -> str:
+    """Returns the sandbox or production Bachs API base URL."""
+    custom_url = (get_setting("bachs_base_url", "") or os.environ.get("BACHS_BASE_URL", "")).strip()
+    if custom_url:
+        return custom_url.rstrip("/")
+    key = (api_key or get_bachs_key()).lower()
+    if "sandbox" in key or key.startswith("sk_test"):
+        return "https://sandbox-api.bachs.io"
+    return "https://api.bachs.io"
+
+
+def get_bachs_currency() -> str:
+    """Returns the configured Bachs currency (default USD)."""
+    curr = (get_setting("bachs_currency", "") or os.environ.get("BACHS_CURRENCY", "USD")).strip().upper()
+    return curr if curr in ("USD", "NGN", "GHS", "KES", "ZAR", "EUR", "GBP") else "USD"
 
 
 # --------------------------------------------------------------------------
@@ -1949,6 +1982,144 @@ async def check_cryptobot_invoice(invoice_id: int) -> bool:
         return False
 
 
+async def initialize_bachs_transaction(
+    order_id: int,
+    amount_cents: int,
+    product_name: str,
+    customer_email: Optional[str] = None,
+    uid: Optional[int] = None,
+    qty: int = 1
+) -> Tuple[bool, dict]:
+    """Initialize a Bachs checkout session for an order."""
+    key = get_bachs_key()
+    if not key:
+        return False, {"error": "Bachs API key is not configured."}
+
+    base_url = get_bachs_base_url(key)
+    currency = get_bachs_currency()
+
+    if currency == "NGN":
+        rate = get_usd_ngn_rate()
+        amount_val = round((amount_cents / 100.0) * rate)
+        amount_str = f"{amount_val:.2f}"
+    else:
+        amount_val = amount_cents / 100.0
+        amount_str = f"{amount_val:.2f}"
+
+    callback_url = (get_setting("bachs_callback_url", "") or os.environ.get("BACHS_CALLBACK_URL", "")).strip()
+    try:
+        bot_info = await bot.get_me() if bot else None
+        bot_username = bot_info.username if bot_info else "creditlog_bot"
+    except Exception:
+        bot_username = "creditlog_bot"
+
+    tg_url = f"https://t.me/{bot_username}?start=order_{order_id}"
+    success_url = callback_url or tg_url
+    cancel_url = callback_url or tg_url
+
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    payload = {
+        "pricing": {
+            "amount": amount_str,
+            "currency": currency
+        },
+        "metadata": {
+            "order_id": str(order_id),
+            "user_id": str(uid or ""),
+            "product_name": str(product_name)[:100],
+            "quantity": str(qty)
+        },
+        "success_url": success_url,
+        "cancel_url": cancel_url
+    }
+    if customer_email:
+        payload["customer"] = {"email": customer_email}
+
+    timeout = aiohttp.ClientTimeout(total=20)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.post(f"{base_url}/v1/checkout-sessions", json=payload, headers=headers) as r:
+                try:
+                    data = await r.json()
+                except Exception:
+                    raw_text = await r.text()
+                    return False, {"error": f"Bachs returned non-JSON response (HTTP {r.status}): {raw_text[:200]}"}
+
+                if r.status in (200, 201):
+                    sess_data = data.get("data") if isinstance(data.get("data"), dict) else data
+                    checkout_id = sess_data.get("checkout_id") or sess_data.get("id")
+                    checkout_url = sess_data.get("checkout_url") or sess_data.get("url")
+                    if checkout_id and checkout_url:
+                        return True, {
+                            "checkout_id": checkout_id,
+                            "checkout_url": checkout_url,
+                            "status": sess_data.get("status", "open"),
+                            "amount": sess_data.get("amount") or amount_str,
+                            "currency": currency,
+                            "raw": data
+                        }
+                    return False, {"error": "Missing checkout_id or checkout_url in Bachs response", "raw": data}
+                else:
+                    err_msg = data.get("message") or data.get("error") or str(data)
+                    return False, {"error": err_msg, "status_code": r.status, "raw": data}
+    except Exception as e:
+        log.exception("Bachs initialize transaction failed: %s", e)
+        return False, {"error": str(e)}
+
+
+async def verify_bachs_transaction(checkout_id: str) -> Tuple[bool, dict]:
+    """Retrieve and verify a Bachs checkout session."""
+    key = get_bachs_key()
+    if not key:
+        return False, {"error": "Bachs API key is not configured."}
+
+    base_url = get_bachs_base_url(key)
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Accept": "application/json"
+    }
+    timeout = aiohttp.ClientTimeout(total=15)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.get(f"{base_url}/v1/checkout-sessions/{checkout_id}", headers=headers) as r:
+                try:
+                    data = await r.json()
+                except Exception:
+                    raw_text = await r.text()
+                    return False, {"error": f"Bachs returned non-JSON response (HTTP {r.status}): {raw_text[:200]}"}
+
+                if r.status == 200:
+                    sess_data = data.get("data") if isinstance(data.get("data"), dict) else data
+                    status = str(sess_data.get("status") or "").lower()
+                    is_completed = status in ("completed", "paid", "success", "succeeded")
+
+                    amount = sess_data.get("amount")
+                    if amount is None and isinstance(sess_data.get("pricing"), dict):
+                        amount = sess_data["pricing"].get("amount")
+
+                    currency = sess_data.get("currency")
+                    if currency is None and isinstance(sess_data.get("pricing"), dict):
+                        currency = sess_data["pricing"].get("currency")
+
+                    return is_completed, {
+                        "checkout_id": checkout_id,
+                        "status": status,
+                        "amount": amount,
+                        "currency": currency,
+                        "raw": data
+                    }
+                else:
+                    err_msg = data.get("message") or data.get("error") or str(data)
+                    return False, {"error": err_msg, "status_code": r.status, "raw": data}
+    except Exception as e:
+        log.exception("Bachs verification failed for %s: %s", checkout_id, e)
+        return False, {"error": str(e)}
+
+
 
 def render_order_summary(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
     """Order Summary matching Screenshot 2."""
@@ -2019,12 +2190,17 @@ def render_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tupl
 
 
 def render_fiat_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
-    """Fiat / Local Naira payment method selection (Don't have crypto?)."""
+    """Fiat / Local payment method selection (Don't have crypto?)."""
     pid = p["id"]
     rate = get_usd_ngn_rate()
     total_ngn = round((p["price"] * qty / 100.0) * rate)
+    total_usd = f"{(p['price'] * qty / 100.0):.2f}"
 
     rows = []
+    if is_bachs_configured():
+        curr = get_bachs_currency()
+        amount_disp = f"₦{total_ngn:,} NGN" if curr == "NGN" else f"${total_usd} USD"
+        rows.append([btn(f"💳 Pay with Card / Bank / Transfer (Bachs) — {amount_disp}", f"pay_opt:bachs:{pid}:{qty}:{ctx}", style="success")])
     if is_bank_configured():
         bank = get_bank_details()
         rows.append([btn(f"🇳🇬 Direct Bank Transfer ({bank['bank_name']}) — ₦{total_ngn:,}", f"pay_opt:bank:{pid}:{qty}:{ctx}", style="success")])
@@ -2034,9 +2210,9 @@ def render_fiat_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) ->
     rows.append([btn(back_label, f"pay_dir:{pid}:{qty}:{ctx}", style="danger", emoji_id=back_emoji)])
 
     text = (
-        "<b>Don't have crypto? Pay with Naira / Bank Transfer:</b>\n\n"
+        "<b>Don't have crypto? Pay with Card or Bank Transfer:</b>\n\n"
         f"💵 <b>Exchange Rate:</b> ₦{rate:,} / USD\n"
-        f"➡️ <b>Total Amount:</b> <b>₦{total_ngn:,} NGN</b>\n\n"
+        f"➡️ <b>Total Amount:</b> <b>${total_usd} USD</b> (≈ ₦{total_ngn:,} NGN)\n\n"
         "Select your preferred payment method below:"
     )
     return text, kb(rows)
@@ -2148,8 +2324,8 @@ async def on_pay_fiat(c: CallbackQuery):
     if not p:
         return await c.answer(t(c.from_user.id, "out_of_stock"), show_alert=True)
 
-    if not is_bank_configured():
-        return await c.answer("⚠️ Bank transfer / local payment is currently being set up. Please select CryptoPay, Binance Pay, or USDT.", show_alert=True)
+    if not is_bank_configured() and not is_bachs_configured():
+        return await c.answer("⚠️ Local / fiat payment methods are currently being set up. Please select CryptoPay, Binance Pay, or USDT.", show_alert=True)
 
     text, markup = render_fiat_payment_methods(c.from_user.id, p, qty, ctx)
     await edit(c, text, markup)
@@ -2190,7 +2366,62 @@ async def on_pay_option_selected(c: CallbackQuery):
     )
     oid = cur.lastrowid
 
-    # 0. Direct Nigerian Bank Transfer (OPay / PalmPay / Kuda / Traditional Bank)
+    # 0. Bachs Payments Gateway (Cards, Bank Transfer, Mobile Money, Crypto)
+    if method == "bachs":
+        if not is_bachs_configured():
+            db.execute("DELETE FROM orders WHERE id=?", (oid,))
+            return await c.answer("⚠️ Bachs payment gateway is not configured yet. Please select another payment method.", show_alert=True)
+
+        currency = get_bachs_currency()
+        if currency == "NGN":
+            rate = get_usd_ngn_rate()
+            amount_disp = f"₦{round((total_cents / 100.0) * rate):,} NGN"
+        else:
+            amount_disp = f"${total_usdt} USD"
+
+        ok, res = await initialize_bachs_transaction(
+            order_id=oid,
+            amount_cents=total_cents,
+            product_name=p["name"],
+            customer_email=None,
+            uid=uid,
+            qty=qty
+        )
+        if not ok or not res.get("checkout_url") or not res.get("checkout_id"):
+            db.execute("DELETE FROM orders WHERE id=?", (oid,))
+            err_msg = res.get("error") or "Unknown error"
+            log.error("Bachs checkout creation error for order #%s: %s", oid, err_msg)
+            return await c.answer("⚠️ Failed to initialize Bachs checkout. Please try again or select another payment method.", show_alert=True)
+
+        checkout_id = res["checkout_id"]
+        checkout_url = res["checkout_url"]
+        db.execute("UPDATE orders SET invoice_id=?, txid=?, expected_amount=? WHERE id=?", (checkout_id, checkout_id, amount_disp, oid))
+
+        text = (
+            "<u>💳 <b>Online Payment via Bachs</b></u>\n"
+            "────────────────────────\n\n"
+            f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
+            f"🔢 <b>Quantity:</b> {qty}\n"
+            f"💵 <b>Total Price:</b> <b>{amount_disp}</b>\n"
+            "────────────────────────\n"
+            "💳 <b>Accepted Payment Methods:</b>\n"
+            "• Debit / Credit Cards (Mastercard, Visa, Verve)\n"
+            "• Direct Bank Transfer / Virtual Account\n"
+            "• Mobile Money & Stablecoins (USDT / USDC)\n\n"
+            "👉 <b>Step 1:</b> Tap <b>💳 Pay with Bachs</b> below to open the secure payment page.\n"
+            "👉 <b>Step 2:</b> Complete payment on the page.\n"
+            "👉 <b>Step 3:</b> Return here and tap <b>✅ I've Paid — Check Status</b>.\n\n"
+            "⌛ <i>Your product is delivered instantly upon payment confirmation!</i>"
+        )
+        rows = [
+            [btn("💳 Pay with Bachs", url=checkout_url)],
+            [btn("✅ I've Paid — Check Status", f"chk_bachs:{oid}:{checkout_id}", style="success")],
+            [btn("↩️ Back", f"pay_fiat:{pid}:{qty}:{ctx}", style="danger")],
+            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
+        ]
+        return await edit(c, text, kb(rows))
+
+    # 1. Direct Nigerian Bank Transfer (OPay / PalmPay / Kuda / Traditional Bank)
     if method == "bank":
         rate = get_usd_ngn_rate()
         amount_ngn = round((total_cents / 100.0) * rate)
@@ -2913,6 +3144,81 @@ async def check_cryptobot_payment(c: CallbackQuery):
         await c.answer(t(uid, "pay_pending"), show_alert=True)
 
 
+@dp.callback_query(F.data.startswith("chk_bachs:"))
+async def check_bachs_payment_callback(c: CallbackQuery):
+    parts = c.data.split(":", 2)
+    if len(parts) < 3 or not parts[1].isdigit():
+        return await c.answer("⚠️ Invalid payment callback data.", show_alert=True)
+    oid = int(parts[1])
+    checkout_id = parts[2].strip()
+    uid = c.from_user.id
+
+    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o:
+        return await c.answer("Order not found.", show_alert=True)
+    if o["user_id"] != uid and uid not in ADMIN_IDS:
+        return await c.answer("⚠️ Unauthorized access to this order.", show_alert=True)
+    if o["status"] == "completed":
+        if o["payload"]:
+            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
+        return await c.answer("✅ Order already completed!", show_alert=False)
+    if o["status"] == "manual_pending":
+        return await c.answer("⏳ Payment confirmed! Your order is currently pending fulfillment by support.", show_alert=True)
+    if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
+        return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
+
+    if o["invoice_id"] and str(o["invoice_id"]) != str(checkout_id):
+        return await c.answer("⚠️ Invoice ID does not match this order.", show_alert=True)
+
+    # Replay attack prevention: Ensure this checkout_id wasn't already claimed by another order
+    dup = db.execute(
+        "SELECT id FROM orders WHERE (txid=? OR invoice_id=?) AND status IN ('completed', 'paid', 'manual_pending', 'refunded') AND id != ?",
+        (checkout_id, checkout_id, oid)
+    ).fetchone()
+    if dup:
+        return await c.answer(f"⚠️ This payment was already claimed for Order #{dup['id']}.", show_alert=True)
+
+    is_paid, res = await verify_bachs_transaction(checkout_id)
+    if is_paid:
+        paid_amount_str = res.get("amount")
+        if paid_amount_str is not None:
+            try:
+                paid_amount = float(paid_amount_str)
+                if paid_amount <= 0:
+                    return await c.answer("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
+            except (ValueError, TypeError):
+                pass
+
+        db.execute(
+            "UPDATE orders SET txid=?, invoice_id=?, payment_method='bachs', status='paid' WHERE id=?",
+            (checkout_id, checkout_id, oid)
+        )
+        payload, err = await fulfill_order(c.bot, oid)
+        if payload == "MANUAL_PENDING":
+            await c.message.answer(
+                f"🎉 <b>Payment Confirmed for Order #{oid}!</b>\n\n"
+                f"Item: <b>{esc(o['product_name'])}</b>\n\n"
+                f"🟡 <i>Your order has been queued and is being processed by our support team. Your credentials/items will be delivered directly to you here shortly!</i>\n\n"
+                f"If you have any questions, contact Support: {SUPPORT_URL}"
+            )
+            await c.answer()
+        elif payload:
+            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
+            await notify_admins(
+                c.bot,
+                lambda aid: f"✅ Order #{oid} paid via Bachs & delivered: {esc(o['product_name'])} ({format_user_price(o['price'], aid)}) to user {uid} (Bachs ID: <code>{esc(checkout_id)}</code>)"
+            )
+            await c.answer()
+        else:
+            await c.answer(t(uid, err or "supplier_error")[:200], show_alert=True)
+            await notify_admins(
+                c.bot,
+                f"⚠️ Order #{oid} paid via Bachs by user {uid} but delivery failed: {esc(str(err))}\nBachs ID: <code>{esc(checkout_id)}</code>"
+            )
+    else:
+        await c.answer("⏳ Payment is still pending on Bachs. Please complete payment on the checkout page, then tap again.", show_alert=True)
+
+
 @dp.callback_query(F.data.startswith("manual_pay:"))
 async def manual_pay_info(c: CallbackQuery):
     parts = c.data.split(":")
@@ -3094,6 +3400,9 @@ async def admin_help(m: Message):
         "/export - Download updated products Excel (.xlsx)\n"
         "/setrate [rate_ngn] - View or update USD to NGN exchange rate\n"
         "/currency - Switch your active display currency (USD / NGN)\n"
+        "/setbachs [api_key] - Configure Bachs Payments Gateway\n"
+        "/bachs - View Bachs Gateway configuration & status\n"
+        "/bachscurrency [USD|NGN] - Set Bachs checkout currency\n"
         "/setbank [Bank | AccNum | Name] - Configure Direct Nigerian Bank Transfer\n"
         "/bank - View current Bank Transfer configuration\n\n"
         "🎨 <b>Brand Custom Emojis</b>\n"
@@ -3821,6 +4130,56 @@ async def admin_view_bank(m: Message, command: CommandObject = None):
     return await admin_setbank(m, command)
 
 
+@dp.message(Command("setbachs"), is_admin)
+async def admin_setbachs(m: Message, command: CommandObject = None):
+    args = (command.args or "").strip() if command else ""
+    if not args:
+        configured = is_bachs_configured()
+        status_text = "🟢 <b>Configured & Active</b>" if configured else "🔴 <b>Not Configured</b>"
+        key = get_bachs_key()
+        masked = f"{key[:8]}...{key[-4:]}" if len(key) > 12 else ("(not set)" if not key else "***")
+        curr = get_bachs_currency()
+        env_type = "Sandbox" if "sandbox" in key.lower() or key.startswith("sk_test") else "Live"
+        return await m.answer(
+            f"💳 <b>Bachs Payment Gateway Status:</b> {status_text}\n\n"
+            f"• <b>API Key:</b> <code>{masked}</code>\n"
+            f"• <b>Environment:</b> <code>{env_type}</code>\n"
+            f"• <b>Currency:</b> <code>{curr}</code>\n"
+            f"• <b>Base URL:</b> <code>{get_bachs_base_url()}</code>\n\n"
+            f"<b>To configure or update your Bachs API key:</b>\n"
+            f"<code>/setbachs &lt;api_key&gt;</code>\n\n"
+            f"<i>Get your API key (sk_live_... or sk_sandbox_...) from your dashboard at https://app.bachs.io</i>"
+        )
+    set_setting("bachs_api_key", args)
+    env_type = "Sandbox" if "sandbox" in args.lower() or args.startswith("sk_test") else "Live"
+    await m.answer(
+        f"✅ <b>Bachs API Key Updated!</b>\n\n"
+        f"• <b>Environment:</b> <code>{env_type}</code>\n"
+        f"• <b>Base URL:</b> <code>{get_bachs_base_url(args)}</code>\n\n"
+        f"💳 Customers can now pay using Cards, Bank Transfer, Mobile Money, and Crypto via Bachs in checkout!"
+    )
+
+
+@dp.message(Command("bachs"), is_admin)
+async def admin_view_bachs(m: Message, command: CommandObject = None):
+    return await admin_setbachs(m, command)
+
+
+@dp.message(Command("bachscurrency"), is_admin)
+async def admin_bachs_currency(m: Message, command: CommandObject = None):
+    args = (command.args or "").strip().upper() if command else ""
+    if args not in ("USD", "NGN", "GHS", "KES", "ZAR", "EUR", "GBP"):
+        curr = get_bachs_currency()
+        return await m.answer(
+            f"💱 <b>Bachs Currency Setting:</b> <code>{curr}</code>\n\n"
+            f"To change the currency billed through Bachs checkout sessions, send:\n"
+            f"<code>/bachscurrency USD</code> or <code>/bachscurrency NGN</code>\n\n"
+            f"<i>Note: In USD mode, Bachs adaptive checkout still presents local currency options to African buyers automatically.</i>"
+        )
+    set_setting("bachs_currency", args)
+    await m.answer(f"✅ Bachs checkout currency updated to <b>{args}</b>.")
+
+
 
 
 # --------------------------------------------------------------------------
@@ -4309,6 +4668,8 @@ async def main():
             BotCommand(command="s_orders", description="Recent supplier orders"),
             BotCommand(command="supplier", description="Supplier balance & info"),
             BotCommand(command="setrate", description="Update USD/NGN exchange rate"),
+            BotCommand(command="setbachs", description="Configure Bachs API Key"),
+            BotCommand(command="bachs", description="View Bachs Gateway details"),
             BotCommand(command="setbank", description="Configure Direct Bank Transfer"),
             BotCommand(command="bank", description="View Bank Transfer details"),
             BotCommand(command="fsub", description="Manage Force-Subscribe"),

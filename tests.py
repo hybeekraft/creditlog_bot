@@ -2504,7 +2504,14 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         await bot.check_cryptobot_payment(c)
         c.answer.assert_called_with("⚠️ Unauthorized access to this order.", show_alert=True)
 
-        # 5. manual_pay_info
+        # 5. check_bachs_payment_callback
+        c.reset_mock()
+        c.from_user.id = attacker_id
+        c.data = f"chk_bachs:{oid}:chk_test123"
+        await bot.check_bachs_payment_callback(c)
+        c.answer.assert_called_with("⚠️ Unauthorized access to this order.", show_alert=True)
+
+        # 6. manual_pay_info
         c.reset_mock()
         c.from_user.id = attacker_id
         c.data = f"manual_pay:{oid}"
@@ -2536,6 +2543,8 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         for bad_cb, handler in [
             ("chk_cb:abc", bot.check_cryptobot_payment),
             ("chk_cb:1", bot.check_cryptobot_payment),
+            ("chk_bachs:abc", bot.check_bachs_payment_callback),
+            ("chk_bachs:1", bot.check_bachs_payment_callback),
             ("cancel_order:abc", bot.on_cancel_order),
             ("submit_tx:abc", bot.on_submit_tx),
             ("chk_manual:abc", bot.on_check_manual_status),
@@ -3319,8 +3328,9 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
         bot.set_setting("bank_name", "")
         bot.set_setting("bank_account_number", "")
         bot.set_setting("bank_account_name", "")
+        bot.set_setting("bachs_api_key", "")
         await bot.on_pay_fiat(c)
-        c.answer.assert_called_with("⚠️ Bank transfer / local payment is currently being set up. Please select CryptoPay, Binance Pay, or USDT.", show_alert=True)
+        c.answer.assert_called_with("⚠️ Local / fiat payment methods are currently being set up. Please select CryptoPay, Binance Pay, or USDT.", show_alert=True)
 
         # Case 2: configured -> opens submenu
         bot.set_setting("bank_name", "Kuda")
@@ -3331,7 +3341,7 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
             await bot.on_pay_fiat(c)
             mock_edit.assert_called_once()
             text_arg, markup_arg = mock_edit.call_args[0][1], mock_edit.call_args[0][2]
-            self.assertIn("Don't have crypto? Pay with Naira", text_arg)
+            self.assertIn("Don't have crypto? Pay with Card or Bank Transfer:", text_arg)
             btns = [b for row in markup_arg.inline_keyboard for b in row]
             self.assertTrue(any("Direct Bank Transfer" in b.text for b in btns))
 
@@ -3385,6 +3395,236 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
         m.answer.assert_called_once()
         self.assertIn("Brand emoji for <b>trc20</b> updated!", m.answer.call_args[0][0])
         self.assertEqual(bot.get_custom_emoji_id("trc20"), "5368324170671232287")
+
+
+class TestBachsPaymentGateway(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        bot.db.execute("DELETE FROM settings WHERE key LIKE 'bachs_%'")
+
+    def tearDown(self):
+        bot.db.execute("DELETE FROM settings WHERE key LIKE 'bachs_%'")
+
+    async def test_bachs_configuration_helpers_and_admin_commands(self):
+        # 1. Initially unconfigured
+        self.assertFalse(bot.is_bachs_configured())
+        self.assertEqual(bot.get_bachs_key(), "")
+        self.assertEqual(bot.get_bachs_currency(), "USD")
+
+        # 2. View without args shows status
+        m = AsyncMock()
+        admin_id = next(iter(bot.ADMIN_IDS)) if bot.ADMIN_IDS else 999999
+        m.from_user.id = admin_id
+        cmd = MagicMock()
+        cmd.args = ""
+        await bot.admin_setbachs(m, cmd)
+        m.answer.assert_called_once()
+        self.assertIn("Bachs Payment Gateway Status:</b> 🔴", m.answer.call_args[0][0])
+
+        # 3. Configure live key
+        m.reset_mock()
+        cmd.args = "sk_live_1234567890abcdef"
+        await bot.admin_setbachs(m, cmd)
+        self.assertIn("Bachs API Key Updated!", m.answer.call_args[0][0])
+        self.assertTrue(bot.is_bachs_configured())
+        self.assertEqual(bot.get_bachs_key(), "sk_live_1234567890abcdef")
+        self.assertEqual(bot.get_bachs_base_url(), "https://api.bachs.io")
+
+        # 4. Configure sandbox key
+        m.reset_mock()
+        cmd.args = "sk_sandbox_testkey123456"
+        await bot.admin_setbachs(m, cmd)
+        self.assertTrue(bot.is_bachs_configured())
+        self.assertEqual(bot.get_bachs_base_url(), "https://sandbox-api.bachs.io")
+
+        # 5. /bachs alias calls admin_setbachs
+        m.reset_mock()
+        cmd.args = ""
+        await bot.admin_view_bachs(m, cmd)
+        self.assertIn("Bachs Payment Gateway Status:</b> 🟢", m.answer.call_args[0][0])
+        self.assertIn("Sandbox", m.answer.call_args[0][0])
+
+        # 6. Currency switcher /bachscurrency
+        m.reset_mock()
+        cmd.args = "NGN"
+        await bot.admin_bachs_currency(m, cmd)
+        self.assertIn("Bachs checkout currency updated to <b>NGN</b>", m.answer.call_args[0][0])
+        self.assertEqual(bot.get_bachs_currency(), "NGN")
+
+        m.reset_mock()
+        cmd.args = "INVALID_CURR"
+        await bot.admin_bachs_currency(m, cmd)
+        self.assertIn("Bachs Currency Setting:", m.answer.call_args[0][0])
+        self.assertEqual(bot.get_bachs_currency(), "NGN")
+
+    def test_render_fiat_payment_methods_with_bachs(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Bachs Item', 'Desc', 1000, 1)").lastrowid
+        p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+
+        # Unconfigured -> no bachs button
+        bot.set_setting("bachs_api_key", "")
+        _, kb_unconf = bot.render_fiat_payment_methods(123, p, 1, "shop")
+        btns_unconf = [b.callback_data for row in kb_unconf.inline_keyboard for b in row if b.callback_data]
+        self.assertFalse(any(b.startswith("pay_opt:bachs:") for b in btns_unconf))
+
+        # Configured with USD
+        bot.set_setting("bachs_api_key", "sk_live_1234567890")
+        bot.set_setting("bachs_currency", "USD")
+        _, kb_usd = bot.render_fiat_payment_methods(123, p, 1, "shop")
+        btns_usd = [b for row in kb_usd.inline_keyboard for b in row]
+        bachs_btn_usd = next(b for b in btns_usd if b.callback_data and b.callback_data.startswith("pay_opt:bachs:"))
+        self.assertIn("$10.00 USD", bachs_btn_usd.text)
+
+        # Configured with NGN
+        bot.set_setting("bachs_currency", "NGN")
+        _, kb_ngn = bot.render_fiat_payment_methods(123, p, 1, "shop")
+        btns_ngn = [b for row in kb_ngn.inline_keyboard for b in row]
+        bachs_btn_ngn = next(b for b in btns_ngn if b.callback_data and b.callback_data.startswith("pay_opt:bachs:"))
+        self.assertIn("NGN", bachs_btn_ngn.text)
+
+    async def test_initialize_and_verify_bachs_transaction(self):
+        # 1. Unconfigured fails cleanly
+        bot.set_setting("bachs_api_key", "")
+        ok, res = await bot.initialize_bachs_transaction(1, 1000, "Prod")
+        self.assertFalse(ok)
+        self.assertIn("not configured", res["error"])
+
+        ok_v, res_v = await bot.verify_bachs_transaction("chk_123")
+        self.assertFalse(ok_v)
+        self.assertIn("not configured", res_v["error"])
+
+        # 2. Configured successful creation
+        bot.set_setting("bachs_api_key", "sk_sandbox_testkey123")
+        bot.set_setting("bachs_currency", "USD")
+
+        mock_post_resp = MagicMock()
+        mock_post_resp.status = 201
+        mock_post_resp.json = AsyncMock(return_value={
+            "checkout_id": "chk_bachs_sess_1",
+            "checkout_url": "https://sandbox-checkout.bachs.io/c/sess_1",
+            "status": "open",
+            "amount": "10.00"
+        })
+
+        mock_session_post = MagicMock()
+        mock_session_post.__aenter__ = AsyncMock(return_value=mock_post_resp)
+        mock_session_post.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession.post", return_value=mock_session_post):
+            ok, res = await bot.initialize_bachs_transaction(42, 1000, "Test Item", uid=999, qty=1)
+            self.assertTrue(ok)
+            self.assertEqual(res["checkout_id"], "chk_bachs_sess_1")
+            self.assertEqual(res["checkout_url"], "https://sandbox-checkout.bachs.io/c/sess_1")
+
+        # 3. Successful verification
+        mock_get_resp = MagicMock()
+        mock_get_resp.status = 200
+        mock_get_resp.json = AsyncMock(return_value={
+            "checkout_id": "chk_bachs_sess_1",
+            "status": "completed",
+            "amount": "10.00",
+            "currency": "USD"
+        })
+
+        mock_session_get = MagicMock()
+        mock_session_get.__aenter__ = AsyncMock(return_value=mock_get_resp)
+        mock_session_get.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession.get", return_value=mock_session_get):
+            is_paid, data = await bot.verify_bachs_transaction("chk_bachs_sess_1")
+            self.assertTrue(is_paid)
+            self.assertEqual(data["status"], "completed")
+
+    async def test_bachs_checkout_selection(self):
+        bot.set_setting("bachs_api_key", "sk_sandbox_1234567890")
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Bachs Flow Item', 'Desc', 500, 1)").lastrowid
+
+        c = AsyncMock()
+        c.from_user.id = 556677
+        c.from_user.username = "bachsbuyer"
+        c.data = f"pay_opt:bachs:{pid}:1:shop"
+
+        mock_init = (True, {
+            "checkout_id": "chk_flw_123",
+            "checkout_url": "https://sandbox-checkout.bachs.io/c/flw_123",
+            "status": "open",
+            "amount": "5.00"
+        })
+
+        with patch("bot.initialize_bachs_transaction", new=AsyncMock(return_value=mock_init)), \
+             patch("bot.edit", new=AsyncMock()) as mock_edit:
+            await bot.on_pay_option_selected(c)
+            mock_edit.assert_called_once()
+            text_arg, markup_arg = mock_edit.call_args[0][1], mock_edit.call_args[0][2]
+            self.assertIn("Online Payment via Bachs", text_arg)
+            btns = [b for row in markup_arg.inline_keyboard for b in row]
+            pay_url_btn = next(b for b in btns if b.url)
+            self.assertEqual(pay_url_btn.url, "https://sandbox-checkout.bachs.io/c/flw_123")
+            check_status_btn = next(b for b in btns if b.callback_data and b.callback_data.startswith("chk_bachs:"))
+            self.assertIn("chk_flw_123", check_status_btn.callback_data)
+
+        # Verify DB order
+        o = bot.db.execute("SELECT * FROM orders WHERE user_id=556677 AND product_id=? ORDER BY id DESC", (pid,)).fetchone()
+        self.assertIsNotNone(o)
+        self.assertEqual(o["payment_method"], "bachs")
+        self.assertEqual(o["status"], "pending")
+        self.assertEqual(o["invoice_id"], "chk_flw_123")
+        self.assertEqual(o["txid"], "chk_flw_123")
+
+    async def test_bachs_callback_verification_and_fulfillment(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Bachs Fulfill Item', 'Desc', 500, 1)").lastrowid
+        oid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, payment_method, status, invoice_id, txid) VALUES(667788, ?, 'Bachs Fulfill Item', 500, 'bachs', 'pending', 'chk_cb_test', 'chk_cb_test')",
+            (pid,)
+        ).lastrowid
+
+        c = AsyncMock()
+        c.from_user.id = 667788
+        c.from_user.username = "bachscbuser"
+        c.data = f"chk_bachs:{oid}:chk_cb_test"
+        c.message = AsyncMock()
+        c.bot = AsyncMock()
+
+        # 1. Still pending on Bachs
+        with patch("bot.verify_bachs_transaction", new=AsyncMock(return_value=(False, {"status": "open"}))):
+            await bot.check_bachs_payment_callback(c)
+            c.answer.assert_called_with("⏳ Payment is still pending on Bachs. Please complete payment on the checkout page, then tap again.", show_alert=True)
+
+        # 2. Completed on Bachs -> triggers fulfillment
+        c.reset_mock()
+        with patch("bot.verify_bachs_transaction", new=AsyncMock(return_value=(True, {"status": "completed", "amount": 5.0}))), \
+             patch("bot.fulfill_order", new=AsyncMock(return_value=("SECRET_KEY_123", None))) as mock_fulfill, \
+             patch("bot.notify_admins", new=AsyncMock()) as mock_notify:
+            await bot.check_bachs_payment_callback(c)
+            mock_fulfill.assert_called_once()
+            mock_notify.assert_called_once()
+            c.message.answer.assert_called_once()
+            self.assertIn("SECRET_KEY_123", c.message.answer.call_args[0][0])
+
+        # Verify DB order is paid
+        o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(o["status"], "paid")
+
+        # 3. Replay attack: new order tries to claim the same checkout_id
+        oid_new = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, payment_method, status) VALUES(667788, ?, 'Bachs Fulfill Item', 500, 'bachs', 'pending')",
+            (pid,)
+        ).lastrowid
+
+        c.reset_mock()
+        c.data = f"chk_bachs:{oid_new}:chk_cb_test"
+        await bot.check_bachs_payment_callback(c)
+        c.answer.assert_called_with(f"⚠️ This payment was already claimed for Order #{oid}.", show_alert=True)
+
+        # 4. Terminal status guard: rejected or cancelled order is blocked
+        oid_canc = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, payment_method, status) VALUES(667788, ?, 'Bachs Fulfill Item', 500, 'bachs', 'cancelled')",
+            (pid,)
+        ).lastrowid
+
+        c.reset_mock()
+        c.data = f"chk_bachs:{oid_canc}:chk_new_ref"
+        await bot.check_bachs_payment_callback(c)
+        c.answer.assert_called_with("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
 
 if __name__ == "__main__":
