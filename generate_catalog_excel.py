@@ -1,4 +1,6 @@
-"""Export supplier and store products to an Excel catalog."""
+"""
+Script to generate executive Excel spreadsheet of all products from Supplier API and Bot catalog.
+"""
 import asyncio
 import csv
 import os
