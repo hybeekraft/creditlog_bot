@@ -1,7 +1,4 @@
-"""
-On-Chain Payment Verifier for USDT BEP-20 (BNB Smart Chain) and TRC-20 (Tron Network).
-Automatically confirms blockchain transactions and validates recipient, token contract, and transfer amount.
-"""
+"""Verifies USDT BEP-20 and TRC-20 transactions on-chain."""
 
 import logging
 from typing import List, Optional, Tuple
@@ -9,11 +6,11 @@ import aiohttp
 
 log = logging.getLogger("onchain")
 
-# Official USDT Token Contracts
+# Official USDT contracts
 USDT_BEP20_CONTRACT = "0x55d398326f99059fF775485246999027B3197955".lower()
 USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 
-# Public BSC RPC nodes (with fallbacks)
+# Public BSC RPC nodes
 BSC_RPC_ENDPOINTS = [
     "https://bsc-dataseed1.defibit.io",
     "https://bsc-dataseed1.ninicoin.io",
@@ -21,7 +18,7 @@ BSC_RPC_ENDPOINTS = [
     "https://bsc-dataseed.binance.org",
 ]
 
-# TronGrid API
+# TronGrid endpoints
 TRONGRID_EVENTS_URL = "https://api.trongrid.io/v1/transactions/{hash}/events"
 TRONGRID_TX_URL = "https://api.trongrid.io/wallet/gettransactioninfobyid"
 
@@ -106,13 +103,12 @@ async def verify_bep20_usdt(
         if not receipt:
             return False, "Transaction not found on BNB Smart Chain yet. Please ensure the transaction has confirmed.", None
 
-        # Verify receipt status (0x1 = success)
+        # 0x1 means success
         status = str(receipt.get("status", "")).lower()
         if status not in ("0x1", "1", "0x01"):
             return False, f"Transaction failed or reverted on-chain (status: {status}).", None
 
-        # Check logs for ERC-20 Transfer event:
-        # Transfer(address indexed from, address indexed to, uint256 value)
+        # Look for ERC-20 Transfer event
         transfer_topic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
         detected_amount = None
         matched_recipient = False
@@ -123,7 +119,7 @@ async def verify_bep20_usdt(
 
             if contract_addr == USDT_BEP20_CONTRACT and len(topics) >= 3:
                 if str(topics[0]).lower() == transfer_topic:
-                    # topics[2] is 32-byte zero-padded recipient address
+                    # topics[2] holds recipient address (padded to 32 bytes)
                     recipient_in_log = "0x" + topics[2][-40:].lower()
                     if recipient_in_log == expected_recipient:
                         matched_recipient = True
@@ -141,7 +137,7 @@ async def verify_bep20_usdt(
         if detected_amount is None:
             return False, "Could not determine USDT transfer amount from transaction logs.", None
 
-        # Allow 0.01 tolerance for minor exchange precision
+        # Allow 1 cent tolerance for rounding
         if detected_amount < (expected_usd - 0.01):
             return False, f"Transfer amount (${detected_amount:.2f} USDT) is less than required (${expected_usd:.2f} USDT).", detected_amount
 
@@ -198,7 +194,7 @@ async def verify_trc20_usdt(
         expected_variants = set(tron_base58_to_hex_variants(expected_recipient))
 
         if not events:
-            # Fallback to direct node transaction info if event indexer has not indexed yet
+            # Fall back to direct tx lookup if event indexer hasn't indexed yet
             try:
                 async with session.post(
                     TRONGRID_TX_URL,
@@ -244,7 +240,7 @@ async def verify_trc20_usdt(
                     try:
                         raw_val = res_dict.get("value") or res_dict.get("2") or 0
                         raw_units = int(raw_val)
-                        amt = raw_units / 1_000_000.0  # USDT TRC20 has 6 decimals
+                        amt = raw_units / 1_000_000.0  # TRC-20 USDT uses 6 decimals
                         detected_amount = (detected_amount or 0.0) + amt
                     except (ValueError, TypeError):
                         pass

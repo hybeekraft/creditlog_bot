@@ -1,6 +1,4 @@
-"""
-Script to generate executive Excel spreadsheet of all products from Supplier API and Bot catalog.
-"""
+"""Export supplier and store products to an Excel catalog."""
 import asyncio
 import csv
 import os
@@ -117,7 +115,7 @@ def parse_product_desc(name: str, desc: str):
     desc = desc or ""
     lines = [l.strip() for l in desc.splitlines() if l.strip()]
 
-    # 1. Delivery Format
+    # Delivery format
     m_deliv = re.search(r"Delivery format:?\s*([^\n\r]+)", desc, re.IGNORECASE)
     if m_deliv:
         deliv_fmt = m_deliv.group(1).strip()
@@ -132,7 +130,7 @@ def parse_product_desc(name: str, desc: str):
     else:
         deliv_fmt = "Account Credentials (Email | Password)"
 
-    # 2. Warranty & Policy
+    # Warranty policy
     m_war = re.search(r"((?:No warranty|Warranty:?|Replacement:?)[^\n\r]+)", desc, re.IGNORECASE)
     if m_war:
         warranty = m_war.group(1).strip()
@@ -145,7 +143,7 @@ def parse_product_desc(name: str, desc: str):
     else:
         warranty = "24-hour verification & replacement warranty upon delivery."
 
-    # 3. Critical Handling Notes & Precautions
+    # Important notes and precautions
     m_prec = re.search(r"((?:IMPORTANT|Important information|Notice|CAUTION|Note):?[\s\S]*?)(?=(?:\n[A-Z\s]{4,}:|\Z))", desc, re.IGNORECASE)
     if m_prec:
         precautions = m_prec.group(1).strip()
@@ -171,7 +169,7 @@ def parse_product_desc(name: str, desc: str):
             "3. Avoid simultaneous logins from multiple geographic locations."
         )
 
-    # 4. Instructions
+    # Setup instructions
     m_inst = re.search(r"((?:LOGIN INSTRUCTION|HOW TO LOG IN|HOW TO USE|INSTRUCTION|SETUP GUIDE)[\s\S]*?)(?=(?:\nIMPORTANT|\nNOTE|\nWAR|\Z))", desc, re.IGNORECASE)
     if m_inst:
         instructions = m_inst.group(1).strip()
@@ -199,7 +197,7 @@ def parse_product_desc(name: str, desc: str):
             "3. Confirm premium status activation in your account billing overview."
         )
 
-    # 5. Product Overview & Features
+    # Overview and features
     m_desc = re.search(r"Description:?\s*([^\n\r]+(?:\n[^\n\r]+)?)", desc, re.IGNORECASE)
     if m_desc:
         overview = m_desc.group(1).strip()
@@ -256,13 +254,13 @@ CATALOG_COLUMNS = [
 
 async def build_catalog_excel(target_db_path: Optional[str] = None):
     columns = CATALOG_COLUMNS
-    # 1. Connect to DB using active resolved path
+    # Connect to SQLite
     active_db = get_db_path(target_db_path)
     conn = sqlite3.connect(active_db)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    # Verify table existence; fallback to base directory store.db if needed
+    # Fall back to store.db in current dir if table not found
     table_exists = c.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='products'").fetchone()[0]
     if not table_exists:
         base_store = os.path.join(os.path.dirname(os.path.abspath(__file__)), "store.db")
@@ -287,7 +285,7 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
 
     conn.close()
 
-    # 2. Fetch live supplier catalog (with fallback to local catalog if API is unavailable)
+    # Fetch supplier products, fall back to db products if API offline
     supplier_prods = []
     try:
         registry = SupplierRegistry.from_env()
@@ -341,23 +339,21 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
 
     wb = openpyxl.Workbook()
     
-    # ----------------------------------------------------
-    # Styles
-    # ----------------------------------------------------
-    header_fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")  # Dark slate
+    # Excel styles
+    header_fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     zebra_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
     white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
-    in_stock_fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")  # Light green
+    in_stock_fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
     in_stock_font = Font(name="Calibri", size=10, bold=True, color="166534")
 
-    out_stock_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")  # Light red
+    out_stock_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
     out_stock_font = Font(name="Calibri", size=10, bold=True, color="991B1B")
 
-    avail_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")  # Amber
+    avail_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
     avail_font = Font(name="Calibri", size=10, bold=True, color="92400E")
 
     currency_font = Font(name="Calibri", size=10, bold=True, color="047857")
@@ -374,14 +370,12 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
 
     columns = CATALOG_COLUMNS
 
-    # ----------------------------------------------------
-    # Sheet 1: Supplier API Catalog
-    # ----------------------------------------------------
+    # Sheet 1: Supplier API catalog
     ws1 = wb.active
     ws1.title = "Supplier Products Catalog"
     ws1.views.sheetView[0].showGridLines = True
 
-    # Write Headers
+    # Write headers
     for col_idx, (col_name, col_width, col_align) in enumerate(columns, 1):
         cell = ws1.cell(row=1, column=col_idx, value=col_name)
         cell.fill = header_fill
@@ -393,19 +387,19 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
 
     ws1.row_dimensions[1].height = 28
 
-    # Process and write supplier products
+    # Write supplier rows
     for row_idx, sp in enumerate(supplier_prods, 2):
         sid = str(sp["id"])
         sname = sp["name"]
         raw = sp.get("raw", {})
         
-        # Match with DB record
+        # Match with store db record
         db_match = db_by_sup_id.get(sid) or db_by_name.get(sname.lower().strip())
         bot_id = db_match["id"] if db_match else f"Auto-{sid}"
         cat_name = determine_category(sname, db_match["category"] if db_match else "")
         brand_svc = determine_brand_service(sname)
 
-        # Price calculations
+        # Calculate store price and margin
         cost_usd = sp["price_usd"]
         if db_match and db_match.get("price"):
             store_price = db_match["price"] / 100.0
@@ -414,7 +408,7 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
 
         margin_usd = round(store_price - cost_usd, 2)
 
-        # Stock status
+        # Stock status badge
         stock_val = sp.get("stock")
         if stock_val is not None and stock_val > 0:
             stock_str = f"In Stock ({stock_val})"
@@ -458,7 +452,7 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
             wrap = col_idx in [11, 12, 13, 14, 15]
             cell.alignment = Alignment(horizontal=align_mode, vertical="top", wrap_text=wrap)
 
-            # Currency Formatting
+            # Currency formatting
             if col_idx in [5, 6]:
                 cell.number_format = "$#,##0.00"
                 cell.font = bold_font
@@ -466,7 +460,7 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
                 cell.number_format = "$#,##0.00"
                 cell.font = currency_font
                 cell.fill = margin_fill
-            elif col_idx == 10:  # Stock status badge
+            elif col_idx == 10:
                 cell.fill = stock_style[0]
                 cell.font = stock_style[1]
 
@@ -475,9 +469,7 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
     ws1.freeze_panes = "A2"
     ws1.auto_filter.ref = f"A1:O{len(supplier_prods)+1}"
 
-    # ----------------------------------------------------
-    # Sheet 2: All Bot Products (Complete Store Catalog)
-    # ----------------------------------------------------
+    # Sheet 2: All store products
     ws2 = wb.create_sheet(title="All Store Products (DB)")
     ws2.views.sheetView[0].showGridLines = True
 
@@ -503,7 +495,7 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
         sup_id = str(rd["supplier_product_id"]) if rd.get("supplier_product_id") else "Manual/Local"
         deliv_type = "Auto-Fulfillment (API)" if (rd.get("auto_fulfill") and rd.get("supplier_product_id")) else ("Local Stock" if rd.get("delivery_type") == "auto" else "Manual Delivery")
 
-        # Stock check
+        # Check stock
         if rd.get("supplier_stock") is not None:
             s_val = rd["supplier_stock"]
             stock_str = f"In Stock ({s_val})" if s_val > 0 else "Out of Stock"

@@ -631,7 +631,7 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(back_btn.style, "danger")
 
     def test_render_product_card_quantity_buttons(self):
-        # Product with 7 in stock (Screenshot 1: [1], [5], [All 7], [✏️ Custom Qty])
+        # Stock of 7: buttons for 1, 5, All 7, and Custom Qty
         pid = bot.db.execute("INSERT INTO products(name, description, price, active, auto_fulfill) VALUES('Codex API 10M Tokens 1 Day', 'Codex API key.', 360, 1, 0)").lastrowid
         for i in range(7):
             bot.db.execute("INSERT INTO stock(product_id, payload) VALUES(?, ?)", (pid, f"KEY-{i}"))

@@ -101,9 +101,7 @@ class ResellerClient:
         except aiohttp.ClientError as e:
             raise ResellerAPIError(f"Network error communicating with supplier: {e}") from e
 
-    # -------------------------------------------------------------------------
-    # API Methods
-    # -------------------------------------------------------------------------
+    # API methods
 
     async def get_products(self) -> List[Dict[str, Any]]:
         """
@@ -237,9 +235,7 @@ class ResellerClient:
         }
         data = await self._request("POST", "/orders", json_body=body)
 
-        # Provider response structure:
-        # Typical: {"ok": true, "order": {"orderCode": "...", "value": "...", ...}}
-        # or {"value": "...", "orderCode": "..."}
+        # Order data might be under "order", "data", or at root
         order_obj = data
         if isinstance(data, dict):
             if isinstance(data.get("order"), dict):
@@ -269,7 +265,7 @@ class ResellerClient:
                 or order_obj.get("order_id")
             )
 
-        # Fallback to top-level if not inside order object
+        # Fall back to root object if missing in nested dict
         if value is None and isinstance(data, dict):
             value = (
                 data.get("value")
