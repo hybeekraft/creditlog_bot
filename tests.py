@@ -1822,6 +1822,17 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(c.answer.called)
         self.assertIn("already claimed", c.answer.call_args[0][0])
 
+    async def test_check_cryptobot_payment_null_invoice_id_blocked(self):
+        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status) VALUES(8883, 1, 'Test', 100, 1, 'cryptobot', 'pending')")
+        oid = cur.lastrowid
+
+        c = AsyncMock()
+        c.data = f"chk_cb:{oid}:998877"
+        c.from_user.id = 8883
+        await bot.check_cryptobot_payment(c)
+        self.assertTrue(c.answer.called)
+        c.answer.assert_called_with("⚠️ Invoice ID does not match this order.", show_alert=True)
+
 
 class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
     def test_tron_base58_to_hex_variants(self):
@@ -3719,9 +3730,19 @@ class TestBachsPaymentGateway(unittest.IsolatedAsyncioTestCase):
         o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
         self.assertEqual(o["status"], "paid")
 
-        # 3. Replay attack: new order tries to claim the same checkout_id
-        oid_new = bot.db.execute(
+        # 3. Mismatched or Null Invoice ID guard
+        oid_no_inv = bot.db.execute(
             "INSERT INTO orders(user_id, product_id, product_name, price, payment_method, status) VALUES(667788, ?, 'Bachs Fulfill Item', 500, 'bachs', 'pending')",
+            (pid,)
+        ).lastrowid
+        c.reset_mock()
+        c.data = f"chk_bachs:{oid_no_inv}:chk_cb_test"
+        await bot.check_bachs_payment_callback(c)
+        c.answer.assert_called_with("⚠️ Invoice ID does not match this order.", show_alert=True)
+
+        # 4. Replay attack: new order with same checkout_id tries to claim already used payment
+        oid_new = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, payment_method, status, invoice_id) VALUES(667788, ?, 'Bachs Fulfill Item', 500, 'bachs', 'pending', 'chk_cb_test')",
             (pid,)
         ).lastrowid
 
@@ -3730,7 +3751,7 @@ class TestBachsPaymentGateway(unittest.IsolatedAsyncioTestCase):
         await bot.check_bachs_payment_callback(c)
         c.answer.assert_called_with(f"⚠️ This payment was already claimed for Order #{oid}.", show_alert=True)
 
-        # 4. Terminal status guard: rejected or cancelled order is blocked
+        # 5. Terminal status guard: rejected or cancelled order is blocked
         oid_canc = bot.db.execute(
             "INSERT INTO orders(user_id, product_id, product_name, price, payment_method, status) VALUES(667788, ?, 'Bachs Fulfill Item', 500, 'bachs', 'cancelled')",
             (pid,)
@@ -3740,6 +3761,45 @@ class TestBachsPaymentGateway(unittest.IsolatedAsyncioTestCase):
         c.data = f"chk_bachs:{oid_canc}:chk_new_ref"
         await bot.check_bachs_payment_callback(c)
         c.answer.assert_called_with("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
+
+    async def test_bachs_callback_underpaid_rejected(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Bachs Underpay Item', 'Desc', 1000, 1)").lastrowid
+        oid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, payment_method, status, invoice_id, txid) VALUES(667788, ?, 'Bachs Underpay Item', 1000, 'bachs', 'pending', 'chk_underpay', 'chk_underpay')",
+            (pid,)
+        ).lastrowid
+
+        c = AsyncMock()
+        c.from_user.id = 667788
+        c.data = f"chk_bachs:{oid}:chk_underpay"
+        c.message = AsyncMock()
+
+        # Buyer pays $2.00 on a $10.00 order
+        with patch("bot.verify_bachs_transaction", new=AsyncMock(return_value=(True, {"status": "completed", "amount": 2.0, "currency": "USD"}))):
+            await bot.check_bachs_payment_callback(c)
+            self.assertTrue(c.answer.called)
+            self.assertIn("does not match expected total", c.answer.call_args[0][0])
+
+        # Verify order remains pending
+        o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(o["status"], "pending")
+
+    async def test_admin_reject_order_reports_user_messaging_failure(self):
+        pid = bot.db.execute("INSERT INTO products(name, price, active) VALUES('Reject Test Item', 500, 1)").lastrowid
+        oid = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(999888, ?, 'Reject Test Item', 500, 'pending')", (pid,)).lastrowid
+
+        m = AsyncMock()
+        m.from_user.id = 111222333
+        m.text = f"/reject_{oid}"
+        m.bot = AsyncMock()
+        m.bot.send_message.side_effect = Exception("Forbidden: bot was blocked by the user")
+
+        await bot.admin_reject_order(m)
+        self.assertTrue(m.answer.called)
+        ans = m.answer.call_args[0][0]
+        self.assertIn(f"Order #{oid} marked as rejected", ans)
+        self.assertIn("Could not notify user", ans)
+        self.assertIn("bot was blocked", ans)
 
 
 if __name__ == "__main__":

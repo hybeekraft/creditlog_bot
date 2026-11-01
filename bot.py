@@ -3160,11 +3160,17 @@ async def admin_reject_order(m: Message, command: CommandObject = None):
         return await m.answer(f"⚠️ Order #{oid} is already completed and cannot be rejected.")
 
     db.execute("UPDATE orders SET status='rejected' WHERE id=?", (oid,))
+    user_notified = True
+    err_detail = None
     try:
         await m.bot.send_message(o["user_id"], f"❌ Order #{oid} payment verification could not be confirmed. If you believe this is an error, please contact support.")
-    except Exception:
-        pass
-    await m.answer(f"Order #{oid} marked as rejected.")
+    except Exception as e:
+        user_notified = False
+        err_detail = str(e)
+    if user_notified:
+        await m.answer(f"Order #{oid} marked as rejected.")
+    else:
+        await m.answer(f"Order #{oid} marked as rejected (⚠️ Could not notify user {o['user_id']}: {esc(err_detail or 'bot blocked or user not reachable')}).")
 
 
 @dp.callback_query(F.data.startswith("chk_cb:"))
@@ -3189,7 +3195,7 @@ async def check_cryptobot_payment(c: CallbackQuery):
     if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
         return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
-    if o["invoice_id"] and str(o["invoice_id"]) != str(inv_id):
+    if not o["invoice_id"] or str(o["invoice_id"]) != str(inv_id):
         return await c.answer("⚠️ Invoice ID does not match this order.", show_alert=True)
 
     dup = db.execute(
@@ -3245,7 +3251,7 @@ async def check_bachs_payment_callback(c: CallbackQuery):
     if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
         return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
 
-    if o["invoice_id"] and str(o["invoice_id"]) != str(checkout_id):
+    if not o["invoice_id"] or str(o["invoice_id"]) != str(checkout_id):
         return await c.answer("⚠️ Invoice ID does not match this order.", show_alert=True)
 
     # Replay attack prevention: Ensure this checkout_id wasn't already claimed by another order
@@ -3258,12 +3264,32 @@ async def check_bachs_payment_callback(c: CallbackQuery):
 
     is_paid, res = await verify_bachs_transaction(checkout_id)
     if is_paid:
+        curr = (res.get("currency") or get_bachs_currency() or "USD").strip().upper()
         paid_amount_str = res.get("amount")
         if paid_amount_str is not None:
             try:
                 paid_amount = float(paid_amount_str)
                 if paid_amount <= 0:
                     return await c.answer("⚠️ Amount paid does not match order total. Please contact support.", show_alert=True)
+
+                if curr == "NGN":
+                    rate = get_usd_ngn_rate()
+                    expected_amount = (o["price"] / 100.0) * rate
+                    curr_symbol = "₦"
+                else:
+                    expected_amount = o["price"] / 100.0
+                    curr_symbol = "$"
+
+                # Allow 2% tolerance for minor FX rounding
+                if paid_amount < (expected_amount * 0.98):
+                    log.warning(
+                        "Bachs payment underpaid for order #%s: received %s %s, expected %s %s",
+                        oid, paid_amount, curr, expected_amount, curr
+                    )
+                    return await c.answer(
+                        f"⚠️ Amount paid ({curr_symbol}{paid_amount:,.2f}) does not match expected total ({curr_symbol}{expected_amount:,.2f}). Please contact support.",
+                        show_alert=True
+                    )
             except (ValueError, TypeError):
                 pass
 
