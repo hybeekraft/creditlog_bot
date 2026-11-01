@@ -8,6 +8,7 @@ import html
 import json
 import logging
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -32,7 +33,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("store")
 
 # Bot settings and environment
-TOKEN = os.environ["BOT_TOKEN"]
+TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 ADMIN_IDS = set()
 for raw_id in os.environ.get("ADMIN_IDS", "").split(","):
     clean_id = raw_id.strip()
@@ -295,6 +296,8 @@ def get_bachs_key() -> str:
 def is_bachs_configured() -> bool:
     """Check if Bachs is set up."""
     key = get_bachs_key()
+    if key.lower() in ("off", "disable", "disabled", "none", "0"):
+        return False
     return bool(key and not key.startswith("your_") and len(key) >= 10)
 
 
@@ -1718,6 +1721,12 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
             payload = "\n".join(item["payload"] for item in s_items)
             db.execute("UPDATE orders SET payload=?, status='completed' WHERE id=?", (payload, oid))
             db.execute("COMMIT")
+            rem = stock_count(p["id"])
+            if not force_supplier and rem <= LOW_STOCK:
+                await notify_admins(
+                    bot,
+                    f"⚠️ <b>Low Stock Alert!</b>\nProduct <b>{esc(p['name'])}</b> (#<code>{p['id']}</code>) only has <b>{rem}</b> left in stock!\n👉 Use <code>/addstock {p['id']} &lt;item&gt;</code> to restock."
+                )
             return payload, None
         else:
             db.execute("ROLLBACK")
@@ -1752,7 +1761,7 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
 @dp.message(CommandStart())
 @dp.message(Command("start"))
 @dp.message(Command("menu"))
-async def start(m: Message):
+async def start(m: Message, command: CommandObject = None):
     pending_inputs.pop(m.from_user.id, None)
     uid = m.from_user.id
     get_user(uid, m.from_user.language_code)
@@ -1760,6 +1769,45 @@ async def start(m: Message):
     if not passed:
         text, markup = render_fsub_gate(missing)
         return await m.answer(text, reply_markup=markup)
+
+    args = (command.args or "").strip() if command and command.args else ""
+    if not args and m.text and len(m.text.split()) > 1:
+        args = m.text.split(maxsplit=1)[1].strip()
+
+    if args.startswith("order_"):
+        oid_str = args[6:].strip()
+        if oid_str.isdigit():
+            oid = int(oid_str)
+            o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+            if o and (o["user_id"] == uid or uid in ADMIN_IDS):
+                if o["status"] == "pending" and o["payment_method"] == "bachs" and o["invoice_id"]:
+                    is_paid, _ = await verify_bachs_transaction(o["invoice_id"])
+                    if is_paid:
+                        db.execute("UPDATE orders SET status='paid' WHERE id=?", (oid,))
+                        payload, _ = await fulfill_order(m.bot, oid)
+                        if payload and payload != "MANUAL_PENDING":
+                            return await m.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
+                if o["status"] == "completed" and o["payload"]:
+                    return await m.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
+                p_disp = format_user_price(o["price"], uid)
+                status_icon = "🟢" if o["status"] == "completed" else ("🟡" if o["status"] in ("paid", "manual_pending") else "⏳")
+                return await m.answer(
+                    f"🧾 <b>Order #{oid} Details</b>\n\n"
+                    f"• <b>Item:</b> {esc(o['product_name'])}\n"
+                    f"• <b>Total:</b> {p_disp}\n"
+                    f"• <b>Status:</b> {status_icon} <i>{o['status'].capitalize()}</i>\n\n"
+                    f"<i>You can view all your purchases anytime with /orders</i>",
+                    reply_markup=kb([[btn(t(uid, "btn_back"), "orders", style="primary")]])
+                )
+    elif args.startswith("p_"):
+        pid_str = args[2:].strip()
+        if pid_str.isdigit():
+            pid = int(pid_str)
+            p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
+            if p:
+                text, markup = render_product_card(uid, p, "start")
+                return await m.answer(text, reply_markup=markup)
+
     await m.answer(t(uid, "welcome"), reply_markup=home_kb(uid))
 
 
@@ -2954,7 +3002,10 @@ async def handle_user_text_input(m: Message):
 
     elif action == "txid":
         oid = state["oid"]
-        txid = m.text.strip()
+        txid = m.text.strip().strip('"').strip("'")
+        url_m = re.search(r"(?:tx|transaction)\/(?:0x)?([A-Fa-f0-9]{64})", txid, re.IGNORECASE)
+        if url_m:
+            txid = url_m.group(1)
         if not txid:
             pending_inputs[uid] = state
             return await m.answer("⚠️ Please enter a valid transaction reference or hash (or send /cancel):")
@@ -4354,9 +4405,18 @@ async def admin_view_bank(m: Message, command: CommandObject = None):
     return await admin_setbank(m, command)
 
 
+@dp.message(Command("delbachs", "clearbachs"), is_admin)
 @dp.message(Command("setbachs"), is_admin)
 async def admin_setbachs(m: Message, command: CommandObject = None):
+    cmd_name = command.command.lower() if command and command.command else ""
     args = (command.args or "").strip() if command else ""
+    if cmd_name in ("delbachs", "clearbachs") or args.lower() in ("off", "disable", "clear", "del", "delete", "none", "0"):
+        set_setting("bachs_api_key", "off")
+        return await m.answer(
+            "✅ <b>Bachs Payment Gateway Disabled!</b>\n\n"
+            "Bachs checkout has been deactivated. The Bachs payment button will no longer appear in the checkout menu.\n\n"
+            "<i>To re-enable at any time, run <code>/setbachs &lt;api_key&gt;</code></i>"
+        )
     if not args:
         configured = is_bachs_configured()
         status_text = "🟢 <b>Configured & Active</b>" if configured else "🔴 <b>Not Configured</b>"
@@ -4647,11 +4707,13 @@ async def perform_supplier_sync(
 
         # Deactivate supplier products no longer in feed
         if seen_supplier_ids:
-            placeholders = ",".join(["?"] * len(seen_supplier_ids))
-            db.execute(
-                f"UPDATE products SET supplier_stock=0, active=0 WHERE supplier=? AND delivery_type='auto' AND supplier_product_id NOT IN ({placeholders})",
-                [sup_name] + list(seen_supplier_ids)
-            )
+            cur_prods = db.execute(
+                "SELECT id, supplier_product_id FROM products WHERE supplier=? AND delivery_type='auto' AND supplier_product_id IS NOT NULL",
+                (sup_name,)
+            ).fetchall()
+            for cp in cur_prods:
+                if str(cp["supplier_product_id"]) not in seen_supplier_ids:
+                    db.execute("UPDATE products SET supplier_stock=0, active=0 WHERE id=?", (cp["id"],))
 
         total_items += len(sup_products)
 

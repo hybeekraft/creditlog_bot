@@ -558,7 +558,12 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
     ws2.auto_filter.ref = f"A1:O{len(all_db_rows)+1}"
 
     out_file = "CreditLog_Bot_Supplier_Products_Catalog.xlsx"
-    wb.save(out_file)
+    try:
+        wb.save(out_file)
+    except PermissionError:
+        import time
+        out_file = f"CreditLog_Bot_Supplier_Products_Catalog_{int(time.time())}.xlsx"
+        wb.save(out_file)
     print(f"Excel catalog successfully saved to {out_file} with {len(supplier_prods)} supplier items and {len(all_db_rows)} total store items.")
     return out_file
 

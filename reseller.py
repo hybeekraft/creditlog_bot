@@ -13,6 +13,9 @@ Endpoints:
 """
 import os
 import re
+from dotenv import load_dotenv
+
+load_dotenv()
 import logging
 import aiohttp
 from typing import Any, Dict, List, Optional
@@ -122,7 +125,13 @@ class ResellerClient:
         if isinstance(data, list):
             raw_list = data
         elif isinstance(data, dict):
-            raw_list = data.get("products") or data.get("data") or data.get("items") or []
+            d_val = data.get("data")
+            if isinstance(d_val, list):
+                raw_list = d_val
+            elif isinstance(d_val, dict):
+                raw_list = d_val.get("products") or d_val.get("items") or []
+            else:
+                raw_list = data.get("products") or data.get("items") or []
 
         normalized = []
         for item in raw_list:
@@ -278,6 +287,8 @@ class ResellerClient:
                 or data.get("token")
                 or data.get("items")
             )
+            if value is None and isinstance(data.get("data"), (list, str, dict)):
+                value = data["data"]
         if order_code is None and isinstance(data, dict):
             order_code = data.get("orderCode") or data.get("order_id")
 
@@ -297,6 +308,19 @@ class ResellerClient:
                 else:
                     formatted_items.append(str(v))
             value_str = "\n".join(formatted_items)
+        elif isinstance(value, dict):
+            extracted = (
+                value.get("code")
+                or value.get("key")
+                or value.get("pin")
+                or value.get("value")
+                or value.get("token")
+                or value.get("payload")
+            )
+            if extracted is not None and len(value) == 1:
+                value_str = str(extracted)
+            else:
+                value_str = "\n".join(f"{k.capitalize()}: {v}" for k, v in value.items() if v is not None)
         elif value is not None:
             value_str = str(value)
         else:

@@ -3802,6 +3802,99 @@ class TestBachsPaymentGateway(unittest.IsolatedAsyncioTestCase):
         self.assertIn("bot was blocked", ans)
 
 
+    async def test_bachs_disable_and_delbachs(self):
+        # Configure live key
+        bot.set_setting("bachs_api_key", "sk_live_1234567890abcdef")
+        self.assertTrue(bot.is_bachs_configured())
+
+        # 1. /setbachs off
+        m = AsyncMock()
+        m.from_user.id = 111222333
+        cmd = MagicMock()
+        cmd.command = "setbachs"
+        cmd.args = "off"
+        await bot.admin_setbachs(m, cmd)
+        self.assertFalse(bot.is_bachs_configured())
+        self.assertIn("Disabled", m.answer.call_args[0][0])
+
+        # 2. /delbachs
+        bot.set_setting("bachs_api_key", "sk_live_1234567890abcdef")
+        self.assertTrue(bot.is_bachs_configured())
+        cmd.command = "delbachs"
+        cmd.args = ""
+        await bot.admin_setbachs(m, cmd)
+        self.assertFalse(bot.is_bachs_configured())
+
+        # Cleanup
+        bot.set_setting("bachs_api_key", "")
+
+    async def test_start_deep_linking(self):
+        # Setup product and order
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Start Deep Link Test', 'Desc', 200, 1)").lastrowid
+        oid = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, payload, status) VALUES(555, ?, 'Start Deep Link Test', 200, 'KEY-DEEP-LINK-1', 'completed')", (pid,)).lastrowid
+
+        # 1. /start order_<id> for completed order
+        m = AsyncMock()
+        m.from_user.id = 555
+        m.from_user.language_code = "en"
+        m.text = f"/start order_{oid}"
+        cmd = MagicMock()
+        cmd.args = f"order_{oid}"
+        await bot.start(m, cmd)
+        self.assertTrue(m.answer.called)
+        self.assertIn("KEY-DEEP-LINK-1", m.answer.call_args[0][0])
+
+        # 2. /start p_<pid> for product card
+        m2 = AsyncMock()
+        m2.from_user.id = 555
+        m2.from_user.language_code = "en"
+        m2.text = f"/start p_{pid}"
+        cmd2 = MagicMock()
+        cmd2.args = f"p_{pid}"
+        await bot.start(m2, cmd2)
+        self.assertTrue(m2.answer.called)
+        self.assertIn("Start Deep Link Test", m2.answer.call_args[0][0])
+
+    async def test_txid_url_and_hash_cleaning(self):
+        pid = bot.db.execute("INSERT INTO products(name, price, active) VALUES('Hash Clean Item', 100, 1)").lastrowid
+        oid = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, status, payment_method) VALUES(666, ?, 'Hash Clean Item', 100, 'pending', 'bep20')", (pid,)).lastrowid
+
+        # Set user input state
+        bot.pending_inputs[666] = {"action": "txid", "oid": oid}
+
+        m = AsyncMock()
+        m.from_user.id = 666
+        m.from_user.username = "cleaner"
+        raw_hash = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"
+        m.text = f"https://bscscan.com/tx/0x{raw_hash}"
+
+        with patch("bot.check_and_fulfill_onchain", new_callable=AsyncMock) as mock_check:
+            mock_check.return_value = (False, "Still confirming")
+            await bot.handle_user_text_input(m)
+
+        # Confirm the txid saved to DB was cleaned to raw 64-char hash
+        o = bot.db.execute("SELECT txid FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(o["txid"], raw_hash)
+
+    async def test_reseller_dict_and_data_payload_parsing(self):
+        from reseller import ResellerClient
+        client = ResellerClient(base_url="https://fake-api.com", api_key="test_key")
+
+        # Case 1: single dict with key
+        with patch.object(client, "_request", new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = {"ok": True, "order": {"orderCode": "ORD1", "value": {"code": "PROMO-XYZ-123"}}}
+            res = await client.create_order("pid1", 1)
+            self.assertEqual(res["value"], "PROMO-XYZ-123")
+            self.assertEqual(res["order_code"], "ORD1")
+
+        # Case 2: data field as list of items
+        with patch.object(client, "_request", new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = {"ok": True, "orderCode": "ORD2", "data": ["KEY-A", "KEY-B"]}
+            res = await client.create_order("pid1", 2)
+            self.assertEqual(res["value"], "KEY-A\nKEY-B")
+            self.assertEqual(res["order_code"], "ORD2")
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -1,6 +1,7 @@
 """Verifies USDT BEP-20 and TRC-20 transactions on-chain."""
 
 import logging
+import re
 from typing import List, Optional, Tuple
 import aiohttp
 
@@ -58,7 +59,10 @@ async def verify_bep20_usdt(
     Verifies a BSC (BEP-20) USDT Transfer event via JSON-RPC.
     Returns (is_valid, message, detected_amount).
     """
-    tx_hash = tx_hash.strip()
+    tx_hash = tx_hash.strip().strip('"').strip("'")
+    url_m = re.search(r"(?:tx|transaction)\/(?:0x)?([A-Fa-f0-9]{64})", tx_hash, re.IGNORECASE)
+    if url_m:
+        tx_hash = url_m.group(1)
     if not tx_hash.startswith("0x"):
         tx_hash = "0x" + tx_hash
 
@@ -161,7 +165,10 @@ async def verify_trc20_usdt(
     Verifies a Tron (TRC-20) USDT Transfer event via TronGrid API.
     Returns (is_valid, message, detected_amount).
     """
-    tx_hash = tx_hash.strip()
+    tx_hash = tx_hash.strip().strip('"').strip("'")
+    url_m = re.search(r"(?:tx|transaction)\/(?:0x)?([A-Fa-f0-9]{64})", tx_hash, re.IGNORECASE)
+    if url_m:
+        tx_hash = url_m.group(1)
     if tx_hash.startswith("0x"):
         tx_hash = tx_hash[2:]
 
@@ -209,7 +216,7 @@ async def verify_trc20_usdt(
                             transfer_topic = "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
                             for log_entry in tx_info.get("log", []):
                                 c_addr = str(log_entry.get("address", "")).lower()
-                                topics = [str(t).lower() for t in log_entry.get("topics", [])]
+                                topics = [str(t).lower().lstrip("0x") for t in log_entry.get("topics", [])]
                                 if (c_addr in USDT_TRC20_CONTRACT_VARIANTS or ("41" + c_addr) in USDT_TRC20_CONTRACT_VARIANTS or ("0x" + c_addr) in USDT_TRC20_CONTRACT_VARIANTS) and len(topics) >= 3:
                                     if topics[0] == transfer_topic:
                                         to_hex = "0x" + topics[2][-40:]
