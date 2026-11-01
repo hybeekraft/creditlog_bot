@@ -15,7 +15,6 @@ import os
 import sqlite3
 import sys
 import time
-import urllib.parse
 from typing import List, Optional, Tuple
 
 import aiohttp
@@ -1042,6 +1041,7 @@ def get_custom_emoji_id(key: str) -> Optional[str]:
     return None
 
 dp = Dispatcher()
+bot_instance: Optional[Bot] = None
 
 # In-memory tracking for interactive text inputs (custom quantity, search keyword)
 pending_inputs: dict[int, dict] = {}
@@ -2054,10 +2054,15 @@ async def initialize_bachs_transaction(
         amount_str = f"{amount_val:.2f}"
 
     callback_url = (get_setting("bachs_callback_url", "") or os.environ.get("BACHS_CALLBACK_URL", "")).strip()
-    try:
-        bot_info = await bot.get_me() if bot else None
-        bot_username = bot_info.username if bot_info else "creditlog_bot"
-    except Exception:
+    bot_username = (os.environ.get("BOT_USERNAME", "") or "").strip().lstrip("@")
+    if not bot_username and bot_instance is not None:
+        try:
+            bot_info = await bot_instance.get_me()
+            if bot_info and bot_info.username:
+                bot_username = bot_info.username
+        except Exception:
+            pass
+    if not bot_username:
         bot_username = "creditlog_bot"
 
     tg_url = f"https://t.me/{bot_username}?start=order_{order_id}"
@@ -2797,6 +2802,7 @@ async def check_and_fulfill_onchain(oid: int, txid: str, uid: int, bot_instance:
             bot_instance,
             f"⚡ <b>Auto-Verified & Delivered!</b>\n"
             f"• <b>Order:</b> #{oid}\n"
+            f"• <b>Buyer:</b> {user_mention}\n"
             f"• <b>Product:</b> {esc(o['product_name'])}\n"
             f"• <b>Amount:</b> ${detected_amount:.2f} USDT (Required: {usd(o['price'])})\n"
             f"• <b>Method:</b> {esc(method.upper())}\n"
@@ -4479,7 +4485,7 @@ async def admin_supplier_info(m: Message, command: CommandObject = None):
         f"Base URL: {esc(client.base_url)}",
         f"API Key: {'Set (✓)' if has_key else 'Missing (✗)'}",
         f"Supplier Balance: {esc(bal_str)}\n",
-        f"<b>Account Info:</b>",
+        "<b>Account Info:</b>",
         f'<pre><code class="language-json">{esc(info_text)}</code></pre>',
     ]
     await m.answer("\n".join(lines))
@@ -4865,7 +4871,9 @@ async def periodic_supplier_sync(interval_sec: int = 600):
 # Entrypoint
 # --------------------------------------------------------------------------
 async def main():
+    global bot_instance
     bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot_instance = bot
     app = web.Application()
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
     runner = web.AppRunner(app)
