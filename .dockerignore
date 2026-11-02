@@ -1,0 +1,11 @@
+.git
+.venv
+__pycache__
+*.db
+*.db-wal
+*.db-shm
+data/
+scratch/
+.env
+*.xlsx
+*.csv
