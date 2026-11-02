@@ -1,33 +1,38 @@
-# fly.toml - Fly.io configuration for CreditLog Telegram Bot
+# fly.toml app configuration file generated for creditlog-bot on 2026-11-02T17:47:38+01:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "" # Set during 'fly launch' or choose a unique name
-primary_region = "iad"
+app = 'creditlog-bot'
+primary_region = 'iad'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  DB_PATH = "/data/store.db"
-  PORT = "8080"
+  DB_PATH = '/data/store.db'
+  PORT = '8080'
 
-[mounts]
-  source = "bot_data"
-  destination = "/data"
+[[mounts]]
+  source = 'bot_data'
+  destination = '/data'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = false
+  auto_stop_machines = 'off'
   auto_start_machines = true
   min_machines_running = 1
 
   [[http_service.checks]]
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "10s"
-    method = "get"
-    path = "/health"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'get'
+    path = '/health'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb"
+  size = 'shared-cpu-1x'
+  memory = '512mb'
+  cpus = 1
+  memory_mb = 512
