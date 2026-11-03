@@ -1368,20 +1368,20 @@ def home_kb(uid: int):
 
     # Featured product slot 1
     gemini_p = db.execute(
-        "SELECT * FROM products WHERE name LIKE '%Gemini 18 Months%' AND active=1 ORDER BY id LIMIT 1"
+        "SELECT * FROM products WHERE name LIKE '%Gemini%18 Months%' AND active=1 ORDER BY id LIMIT 1"
     ).fetchone()
     if not gemini_p:
         gemini_p = db.execute(
-            "SELECT * FROM products WHERE category='Gemini' AND active=1 ORDER BY id LIMIT 1"
-        ).fetchone() or db.execute("SELECT * FROM products WHERE active=1 ORDER BY id LIMIT 1").fetchone()
+            "SELECT * FROM products WHERE category='Gemini' AND active=1 ORDER BY price ASC LIMIT 1"
+        ).fetchone() or db.execute("SELECT * FROM products WHERE active=1 ORDER BY price ASC LIMIT 1").fetchone()
 
     # Featured product slot 2
     duo_p = db.execute(
-        "SELECT * FROM products WHERE name LIKE '%Duolingo%' AND active=1 ORDER BY id LIMIT 1"
+        "SELECT * FROM products WHERE name LIKE '%Duolingo%' AND active=1 ORDER BY price ASC LIMIT 1"
     ).fetchone()
     if not duo_p and gemini_p:
         duo_p = db.execute(
-            "SELECT * FROM products WHERE active=1 AND id != ? ORDER BY id LIMIT 1", (gemini_p["id"],)
+            "SELECT * FROM products WHERE active=1 AND id != ? ORDER BY price ASC LIMIT 1", (gemini_p["id"],)
         ).fetchone()
 
     gemini_emoji_id = get_custom_emoji_id("gemini_product") or get_custom_emoji_id("gemini") or get_custom_emoji_id("google")
@@ -3499,6 +3499,7 @@ async def admin_help(m: Message):
         "/products - List all products with margins\n"
         "/addproduct &lt;price&gt; [currency] &lt;name&gt; [| description] (e.g. $12.50 or 15000 NGN)\n"
         "/setprice &lt;product_id&gt; &lt;price&gt; [currency] (e.g. /setprice 1 15000 NGN or $12.50)\n"
+        "/clearprices [product_id] - Clear manual price overrides & reset to dynamic supplier pricing\n"
         "/setmargin &lt;product_id&gt; &lt;margin_%&gt; (e.g. /setmargin 1 60%)\n"
         "/toggle &lt;product_id&gt;  (activate/deactivate)\n"
         "/addstock &lt;product_id&gt; &lt;item&gt;  (manual items, 1 per line)\n"
@@ -3934,6 +3935,72 @@ async def admin_setmargin(m: Message, command: CommandObject = None):
         )
     except Exception:
         await m.answer("Usage: /setmargin <product_id> <margin_percent>\nExamples: /setmargin 1 50% or /setmargin 1 35")
+
+
+@dp.message(Command("clearprices", "resetprices", "clearprice"), is_admin)
+async def admin_clearprices(m: Message, command: CommandObject = None):
+    """Clear manual fixed prices and reset products back to dynamic supplier margin."""
+    admin_curr = get_user_currency(m.from_user.id)
+    global_margin = get_default_margin()
+
+    # Reset a single product if an ID was supplied
+    if command and command.args and command.args.strip().isdigit():
+        pid = int(command.args.strip())
+        p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        if not p:
+            return await m.answer(f"⚠️ Product #{pid} not found.")
+
+        cost = p["supplier_price"]
+        if cost and cost > 0:
+            new_price = max(100, round(cost * (1 + global_margin / 100)))
+            db.execute("UPDATE products SET fixed_price=0, margin=NULL, price=? WHERE id=?", (new_price, pid))
+            price_msg = f"recalculated to <b>{format_price(new_price, admin_curr)}</b> (wholesale {format_price(cost, admin_curr)} + {global_margin}% margin)"
+        else:
+            db.execute("UPDATE products SET fixed_price=0, margin=NULL WHERE id=?", (pid,))
+            price_msg = "fixed price lock removed"
+
+        db.commit()
+        try:
+            from generate_catalog_excel import build_catalog_excel
+            asyncio.create_task(build_catalog_excel(DB_PATH))
+        except Exception:
+            pass
+        return await m.answer(f"✅ Reset Product #{pid} (<b>{esc(p['name'])}</b>): {price_msg}.")
+
+    # Wipe all fixed price locks and custom margins across the store
+    overridden = db.execute(
+        "SELECT id, name, price, supplier_price, fixed_price, margin FROM products WHERE fixed_price=1 OR margin IS NOT NULL"
+    ).fetchall()
+
+    db.execute("UPDATE products SET fixed_price=0, margin=NULL")
+
+    # Recalculate price for all supplier products using default store margin
+    supplier_prods = db.execute(
+        "SELECT id, supplier_price FROM products WHERE supplier_product_id IS NOT NULL AND supplier_price > 0"
+    ).fetchall()
+
+    recalc_count = 0
+    for sp in supplier_prods:
+        cost = sp["supplier_price"]
+        recalculated_price = max(100, round(cost * (1 + global_margin / 100)))
+        db.execute("UPDATE products SET price=? WHERE id=?", (recalculated_price, sp["id"]))
+        recalc_count += 1
+
+    db.commit()
+
+    try:
+        from generate_catalog_excel import build_catalog_excel
+        asyncio.create_task(build_catalog_excel(DB_PATH))
+    except Exception:
+        pass
+
+    await m.answer(
+        f"✅ <b>All Manual Price Overrides Cleared!</b>\n\n"
+        f"• Cleared manual price locks: <b>{len(overridden)}</b> product(s)\n"
+        f"• Reset to dynamic pricing: <b>{recalc_count}</b> supplier product(s)\n"
+        f"• Active store profit margin: <b>{global_margin}%</b>\n\n"
+        f"<i>All supplier products are now dynamically calculated from wholesale costs.</i>"
+    )
 
 
 @dp.message(Command("toggle"), is_admin)
@@ -4950,6 +5017,7 @@ async def main():
             BotCommand(command="export", description="Download updated products Excel (.xlsx)"),
             BotCommand(command="stats", description="View store sales stats"),
             BotCommand(command="products", description="List products & margins"),
+            BotCommand(command="clearprices", description="Clear manual price overrides"),
             BotCommand(command="s_products", description="List supplier products"),
             BotCommand(command="s_sync", description="Sync supplier catalog"),
             BotCommand(command="s_orders", description="Recent supplier orders"),

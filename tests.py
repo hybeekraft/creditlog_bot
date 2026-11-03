@@ -468,6 +468,61 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p_after_margin_sync["margin"], 50)
         self.assertEqual(p_after_margin_sync["fixed_price"], 0)
 
+    async def test_admin_clearprices_wipes_all_overrides(self):
+        # Insert two products with fixed manual prices and custom margins
+        pid1 = bot.db.execute("""
+            INSERT INTO products(name, price, supplier_product_id, supplier_price, margin, fixed_price, active)
+            VALUES('Item One', 500, 'sp-1', 200, 150, 1, 1)
+        """).lastrowid
+        pid2 = bot.db.execute("""
+            INSERT INTO products(name, price, supplier_product_id, supplier_price, margin, fixed_price, active)
+            VALUES('Item Two', 800, 'sp-2', 400, 100, 1, 1)
+        """).lastrowid
+
+        mock_msg = AsyncMock()
+        mock_msg.from_user.id = 12345
+        mock_cmd = MagicMock()
+        mock_cmd.args = ""
+
+        with patch.object(bot, "get_default_margin", return_value=45):
+            await bot.admin_clearprices(mock_msg, mock_cmd)
+
+        p1 = bot.db.execute("SELECT * FROM products WHERE id=?", (pid1,)).fetchone()
+        p2 = bot.db.execute("SELECT * FROM products WHERE id=?", (pid2,)).fetchone()
+
+        # Both should have fixed_price = 0 and margin = NULL
+        self.assertEqual(p1["fixed_price"], 0)
+        self.assertIsNone(p1["margin"])
+        self.assertEqual(p1["price"], 290)  # 200 * 1.45 = 290
+
+        self.assertEqual(p2["fixed_price"], 0)
+        self.assertIsNone(p2["margin"])
+        self.assertEqual(p2["price"], 580)  # 400 * 1.45 = 580
+
+        # Message answer should confirm clearing
+        self.assertTrue(mock_msg.answer.called)
+        self.assertIn("All Manual Price Overrides Cleared", mock_msg.answer.call_args[0][0])
+
+    async def test_admin_clearprices_single_product(self):
+        pid = bot.db.execute("""
+            INSERT INTO products(name, price, supplier_product_id, supplier_price, margin, fixed_price, active)
+            VALUES('Single Reset Item', 999, 'sp-single', 300, 233, 1, 1)
+        """).lastrowid
+
+        mock_msg = AsyncMock()
+        mock_msg.from_user.id = 12345
+        mock_cmd = MagicMock()
+        mock_cmd.args = str(pid)
+
+        with patch.object(bot, "get_default_margin", return_value=50):
+            await bot.admin_clearprices(mock_msg, mock_cmd)
+
+        p = bot.db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(p["fixed_price"], 0)
+        self.assertIsNone(p["margin"])
+        self.assertEqual(p["price"], 450)  # 300 * 1.50 = 450
+        self.assertIn("Reset Product", mock_msg.answer.call_args[0][0])
+
     def test_category_detection_and_icons(self):
         self.assertEqual(bot.detect_category("Codex API 10M Tokens 1 Day"), "Codex API")
         self.assertEqual(bot.detect_category("Gemini 18 Months"), "Gemini")
