@@ -10,3 +10,4 @@ data/
 .pytest_cache/
 *.xlsx
 scratch/
+.vscode/

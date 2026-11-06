@@ -2060,7 +2060,7 @@ async def initialize_bachs_transaction(
     bot_username = (
         get_setting("bot_username", "")
         or os.environ.get("BOT_USERNAME", "")
-        or "creditlog_bot"
+        or "creditlogbot"
     ).strip().lstrip("@")
 
     tg_url = f"https://t.me/{bot_username}?start=order_{order_id}"
