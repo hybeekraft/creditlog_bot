@@ -9,4 +9,5 @@ scratch/
 .env
 *.xlsx
 *.csv
+.vscode
 
