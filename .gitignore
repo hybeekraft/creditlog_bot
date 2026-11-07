@@ -1,23 +1,12 @@
-# Secrets
 .env
-
-# Virtual environment
 .venv/
-
-# Python cache
 __pycache__/
 *.py[cod]
 .ruff_cache/
-
-# Local database
 *.db
 *.db-wal
 *.db-shm
-
-# Generated exports & logs
 *.xlsx
 *.csv
 *.log
-
-# Editor settings
 .vscode/
