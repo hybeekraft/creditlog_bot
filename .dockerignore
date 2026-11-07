@@ -1,13 +1,30 @@
+# Version control
 .git
+.github
+
+# Environment & secrets
+.env
+
+# Virtual environments & host cache
 .venv
+venv
 __pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+
+# Databases & local storage
 *.db
 *.db-wal
 *.db-shm
 data/
-scratch/
-.env
+
+# Exports & temporary output
 *.xlsx
 *.csv
-.vscode
+*.log
+scratch/
 
+# IDE & Editor settings
+.vscode
+.idea
