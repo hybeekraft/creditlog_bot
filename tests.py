@@ -523,6 +523,37 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p["price"], 450)  # 300 * 1.50 = 450
         self.assertIn("Reset Product", mock_msg.answer.call_args[0][0])
 
+    async def test_admin_clearcache_purges_unlinked_and_syncs_from_supplier_api(self):
+        # Insert an unlinked cached product
+        bot.db.execute("INSERT INTO products(name, price, active, delivery_type) VALUES('Cached Manual Item', 500, 1, 'manual')")
+        # Insert a delisted product no longer in supplier API
+        bot.db.execute("INSERT INTO products(name, price, supplier_product_id, supplier, auto_fulfill, active, delivery_type) VALUES('Old Delisted', 300, 'sp-delisted-999', 'default', 1, 1, 'auto')")
+
+        mock_products = [
+            {"id": "sp-live-1", "name": "Live Supplier Item", "description": "Desc", "price_cents": 200, "stock": 10},
+        ]
+        mock_msg = AsyncMock()
+        mock_msg.from_user.id = 12345
+        mock_cmd = MagicMock()
+        mock_cmd.args = ""
+
+        with patch.object(bot.reseller, "get_products", new=AsyncMock(return_value=mock_products)):
+            await bot.admin_clearcache(mock_msg, mock_cmd)
+
+        # Unlinked cached manual item must be wiped
+        unlinked = bot.db.execute("SELECT * FROM products WHERE name='Cached Manual Item'").fetchone()
+        self.assertIsNone(unlinked)
+
+        # Delisted item must be purged
+        delisted = bot.db.execute("SELECT * FROM products WHERE supplier_product_id='sp-delisted-999'").fetchone()
+        self.assertIsNone(delisted)
+
+        # Live supplier item must exist
+        live = bot.db.execute("SELECT * FROM products WHERE supplier_product_id='sp-live-1'").fetchone()
+        self.assertIsNotNone(live)
+        self.assertEqual(live["active"], 1)
+        self.assertIn("Cache Cleared & Supplier API Synced", mock_msg.answer.call_args[0][0])
+
     def test_category_detection_and_icons(self):
         self.assertEqual(bot.detect_category("Codex API 10M Tokens 1 Day"), "Codex API")
         self.assertEqual(bot.detect_category("Gemini 18 Months"), "Gemini")

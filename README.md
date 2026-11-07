@@ -94,7 +94,8 @@ PROFIT_MARGIN=45%
 ```
 
 ### Pricing & Catalog Commands:
-* `/s_sync [margin_%]` — Sync supplier catalog and apply profit markup (e.g. `/s_sync 40%`).
+* `/s_sync [margin_%]` — Sync supplier catalog and apply profit markup (e.g. `/s_sync 40%`). Pass `/s_sync clear` to wipe cached items.
+* `/clearcache` — Wipe all cached/unlinked products and sync 100% fresh from live Supplier API.
 * `/setprice <product_id> <price>` — Set a manual fixed price lock (e.g. `/setprice 1 12.50` or `15000 NGN`).
 * `/clearprices [product_id]` — Clear manual price overrides in one click and reset products back to dynamic supplier markup.
 * `/setmargin <product_id> <margin_%>` — Custom margin for a single product (e.g. `/setmargin 1 50%`).
@@ -109,6 +110,7 @@ PROFIT_MARGIN=45%
 | :--- | :--- |
 | `/admin` | Open admin command center |
 | `/products` | List all products, prices, stock, and margins |
+| `/clearcache` | Wipe all cached/unlinked products & sync totally from supplier API |
 | `/addproduct <price> <name>` | Create a new manual stock product |
 | `/setprice <id> <price>` | Lock a fixed custom retail price |
 | `/clearprices [id]` | Clear manual price locks & revert to dynamic supplier markup |
@@ -124,7 +126,7 @@ PROFIT_MARGIN=45%
 | `/deliver <order_id> <data>`| Deliver order payload manually to buyer |
 | `/refund <order_id>` | Refund an order |
 | `/s_products` | Browse raw supplier product catalog and costs |
-| `/s_sync [margin]` | Re-sync supplier products and update inventory |
+| `/s_sync [margin]` | Re-sync supplier products and update inventory (`/s_sync clear` wipes cache) |
 | `/s_orders` | View recent supplier orders and fulfillment status |
 | `/supplier` | View supplier account balance and API status |
 | `/setrate [rate]` | View or update USD to NGN exchange rate |

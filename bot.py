@@ -662,322 +662,7 @@ def migrate_db():
             if detected != "AI Tools":
                 db.execute("UPDATE products SET category=? WHERE id=?", (detected, row["id"]))
 
-    # Default showcase products
-    g = db.execute("SELECT id FROM products WHERE name LIKE '%Gemini%'").fetchone()
-    if not g:
-        db.execute("""
-            INSERT INTO products(name, description, price, category, auto_fulfill, active, delivery_type)
-            VALUES('Gemini Pro 18 Months', 'Gemini Advanced & Pro 18 Months Subscription', 72, 'Gemini', 1, 1, 'auto')
-        """)
-    d = db.execute("SELECT id FROM products WHERE name LIKE '%Duolingo%'").fetchone()
-    if not d:
-        db.execute("""
-            INSERT INTO products(name, description, price, category, auto_fulfill, active, delivery_type)
-            VALUES('Duolingo Super 12M', 'Duolingo Super 12 Months Plan', 90, 'Education', 1, 1, 'auto')
-        """)
-
-    # Initial product catalog
-    MANUAL_CATALOG_SEEDS = [
-        ("ChatGPT Plus 1M Apple Pay", "Ready-made ChatGPT Plus account (Apple Pay). Format: Email | Password | 2FA.", 880, "ChatGPT"),
-        ("ChatGPT K12 EDU 24M", "ChatGPT K12 EDU 24 Months student/educational account access.", 420, "ChatGPT"),
-        ("ChatGPT Business Team 1M", "ChatGPT Team Workspace 1 Month access.", 1600, "ChatGPT"),
-        ("ChatGPT Business Team 1M FW", "ChatGPT Team 1 Month Full Warranty access.", 1850, "ChatGPT"),
-        ("ChatGPT Plus Your Mail 4M", "ChatGPT Plus 4 Months upgraded on your own personal email.", 4300, "ChatGPT"),
-        ("ChatGPT Plus 4M", "ChatGPT Plus 4 Months subscription ready-made account.", 2449, "ChatGPT"),
-        ("ChatGPT Go 1M", "ChatGPT Go 1 Month subscription access.", 385, "ChatGPT"),
-        ("100$ API Claude 30D", "Claude API with $100 preloaded credits valid 30 days.", 250, "Claude"),
-        ("500$ API Claude 30D", "Claude API with $500 preloaded credits valid 30 days.", 770, "Claude"),
-        ("ElevenLabs Redeem 131K Credits", "ElevenLabs 131,000 character credits instant redeem code.", 300, "ElevenLabs"),
-        ("ElevenReader Ultra 1Y Gift Link", "ElevenReader Ultra 1 Year official gift redeem link.", 550, "ElevenLabs"),
-        ("Eleven Reader Ultra 12M", "ElevenReader Ultra 12 Months premium account access.", 250, "ElevenLabs"),
-        ("Codex API 10M Tokens 1D", "Codex API 10M tokens 1-day high speed access.", 170, "Codex API"),
-        ("Codex API 10M Tokens 1 Day", "Codex API 10M tokens 1 Day standard access.", 360, "Codex API"),
-        ("Codex API 50M Tokens 2D", "Codex API 50M tokens 2-day access.", 400, "Codex API"),
-
-        ("Grok API $10 1M", "Grok API $10 credit balance valid 1 month.", 250, "Grok"),
-        ("Grok API $30 1M", "Grok API $30 credit balance valid 1 month.", 320, "Grok"),
-        ("Grok API $50 1M", "Grok API $50 credit balance valid 1 month.", 500, "Grok"),
-        ("Grok API $100 1M", "Grok API $100 credit balance valid 1 month.", 740, "Grok"),
-        ("Claude API 10M Tokens 1 Day", "Claude API 10M tokens 1 Day access.", 200, "Claude"),
-        ("Codex API 100M Tokens 3D", "Codex API 100M tokens 3-day access.", 600, "Codex API"),
-        ("Gemini Pro 18 Months", "Google Gemini Pro & Advanced 18 Months access.", 65, "Gemini"),
-        ("Grok API 4.5 HIGH/XHIGH 15M Tokens 1 Day", "Grok API 4.5 High/XHigh tier 15M tokens 1 day.", 250, "Grok"),
-        ("Netflix 4K Private Slot 1M", "Netflix Ultra HD 4K private slot 1 month.", 450, "Streaming"),
-        ("Zoom Pro 1M Ready-made Account", "Zoom Pro 1 Month ready-made account credentials.", 400, "Office"),
-        ("Grok API 4.5 HIGH/XHIGH 100M Tokens 7 Days", "Grok API 4.5 High/XHigh tier 100M tokens 7 days.", 500, "Grok"),
-        ("API Codex Astra $10 1M", "Codex Astra API $10 credits valid 1 month.", 300, "Codex API"),
-        ("API Codex Astra $30 1M", "Codex Astra API $30 credits valid 1 month.", 450, "Codex API"),
-        ("API Codex Astra $50 1M", "Codex Astra API $50 credits valid 1 month.", 550, "Codex API"),
-        ("API Codex Astra $100 1M", "Codex Astra API $100 credits valid 1 month.", 900, "Codex API"),
-
-        ("API Codex Astra $200 1M", "Codex Astra API $200 credits valid 1 month.", 1290, "Codex API"),
-        ("API Codex Astra $300 1M", "Codex Astra API $300 credits valid 1 month.", 1800, "Codex API"),
-        ("API Codex Astra $500 1M", "Codex Astra API $500 credits valid 1 month.", 3000, "Codex API"),
-        ("API Codex Astra $1000 1M", "Codex Astra API $1000 credits valid 1 month.", 6000, "Codex API"),
-        ("Super Grok 7 Days", "Super Grok premium subscription 7 days access.", 375, "Grok"),
-        ("Zoom Pro 14D", "Zoom Pro 14 days subscription.", 200, "Office"),
-        ("CDK Heavy Grok 1M", "Heavy Grok 1 Month CDK activation key.", 3499, "Grok"),
-        ("Zoom Pro 28D", "Zoom Pro 28 days subscription.", 400, "Office"),
-        ("CDK Grok Super 1M", "Grok Super 1 Month CDK activation key.", 2100, "Grok"),
-        ("Claude API 50M Tokens 2 Days", "Claude API 50M tokens valid 2 days.", 400, "Claude"),
-        ("Codex API 50M Tokens 1 Day", "Codex API 50M tokens valid 1 day.", 420, "Codex API"),
-        ("Google AI Pro Gemini 3M", "Google AI Pro Gemini 3 Months subscription.", 1099, "Gemini"),
-        ("Discord Nitro 1M Token", "Discord Nitro 1 Month direct token.", 400, "Discord"),
-        ("Gemini Pro 3M", "Google Gemini Pro 3 Months subscription.", 100, "Gemini"),
-        ("Discord Nitro 3M Token", "Discord Nitro 3 Months direct token.", 600, "Discord"),
-
-        ("HMA VPN 20-30 Days", "HideMyAss VPN 20-30 days private account.", 250, "VPN"),
-        ("O365 Ready Account Random 6-12M", "Office 365 ready-made account random 6-12 months.", 400, "Office"),
-        ("Gemini API $10 1M", "Gemini API $10 credits valid 1 month.", 250, "Gemini"),
-        ("Gemini API $30 1M", "Gemini API $30 credits valid 1 month.", 350, "Gemini"),
-        ("Gemini API $50 1M", "Gemini API $50 credits valid 1 month.", 500, "Gemini"),
-        ("Discord Nitro Trial 3M", "Discord Nitro 3 Months trial link.", 750, "Discord"),
-        ("HMA Android/PC 20-30 Days", "HMA VPN Android & PC access 20-30 days.", 150, "VPN"),
-        ("Microsoft 365 Family 5U 12M", "Microsoft 365 Family 5 Users 12 Months.", 1200, "Office"),
-        ("Proton VPN Plus 1 Month", "Proton VPN Plus 1 Month subscription.", 325, "VPN"),
-        ("Proton Unlimited 1M", "Proton Unlimited 1 Month premium account.", 550, "VPN"),
-        ("Claude API 100M Tokens 3D", "Claude API 100M tokens valid 3 days.", 600, "Claude"),
-        ("Codex API 100M Tokens 1 Day", "Codex API 100M tokens valid 1 day.", 500, "Codex API"),
-        ("Discord Decor 66K Profile Effect", "Discord Profile Decor 66K points effect.", 600, "Discord"),
-        ("Discord Decor 79K Profile Effect", "Discord Profile Decor 79K points effect.", 650, "Discord"),
-        ("Discord Decor 92K Profile Effect", "Discord Profile Decor 92K points effect.", 750, "Discord"),
-
-        ("Lovable Pro Lite 1 Year Link", "Lovable Pro Lite 1 Year activation invite link.", 800, "AI Tools"),
-        ("Netflix Premium 4K Slot 1M", "Netflix Premium 4K UHD private profile 1 month.", 650, "Streaming"),
-        ("CapCut Pro Team 1M", "CapCut Pro Team membership 1 month.", 270, "Video AI"),
-        ("Duolingo Super 12M", "Duolingo Super 12 Months subscription.", 65, "Education"),
-        ("Discord Gifting Badge x1", "Discord Gifting Badge x1 delivery.", 550, "Discord"),
-        ("CapCut Pro Professional 28 Days", "CapCut Pro Professional 28 days activation.", 250, "Video AI"),
-        ("Super Duolingo Your Mail 12 Months", "Duolingo Super 12 Months activated on your own email.", 900, "Education"),
-        ("Claude API 500M Tokens 6D", "Claude API 500M tokens valid 6 days.", 2300, "Claude"),
-        ("NordVPN Basic 3 Months Code", "NordVPN Basic 3 Months activation code.", 399, "VPN"),
-        ("LinkedIn Career 3M", "LinkedIn Premium Career 3 Months subscription.", 220, "Social"),
-        ("NordVPN 10 Devices 5M", "NordVPN 10 Devices support 5 Months.", 1500, "VPN"),
-        ("Notion Business 3M", "Notion Business Workspace 3 Months.", 199, "Office"),
-        ("NordVPN 10 Devices 3M", "NordVPN 10 Devices support 3 Months.", 1100, "VPN"),
-        ("Notion Plus 12 Months", "Notion Plus 12 Months subscription.", 250, "Office"),
-        ("Canva Pro Add to Team 12 Months", "Canva Pro Add to Team 12 Months membership.", 450, "Design"),
-
-        ("Adobe Express 4M", "Adobe Express 4 Months subscription.", 881, "Design"),
-        ("Scribd Premium 1M", "Scribd Premium 1 Month subscription.", 220, "Education"),
-        ("Adobe Express 12M", "Adobe Express 12 Months workspace plan.", 350, "Design"),
-        ("Adobe Express 1 Year", "Adobe Express 1 Year access.", 50, "Design"),
-        ("Adobe Express 12M Ready-made Account", "Adobe Express 12 Months ready-made account.", 400, "Design"),
-        ("Adobe All Apps 7D", "Adobe All Apps 7 Days activation access.", 367, "Adobe"),
-        ("iLovePDF Premium 1 Year", "iLovePDF Premium 1 Year subscription.", 150, "Office"),
-        ("ExpressVPN 1M", "ExpressVPN 1 Month high speed VPN.", 587, "VPN"),
-        ("ExpressVPN 3 Days", "ExpressVPN 3 Days quick access.", 110, "VPN"),
-        ("YouTube Premium 3M ROW", "YouTube Premium 3 Months Rest of World.", 574, "Streaming"),
-        ("YouTube Premium 12M Provider Account", "YouTube Premium 12 Months provider account.", 850, "Streaming"),
-        ("AutoCAD EDU 12M", "AutoCAD Educational 12 Months license.", 980, "Autodesk"),
-        ("YouTube Premium 3M Vietnam", "YouTube Premium 3 Months Vietnam region.", 1000, "Streaming"),
-        ("YouTube Premium 3M Abroad", "YouTube Premium 3 Months Abroad region.", 1250, "Streaming"),
-        ("YouTube Premium 3 Months", "YouTube Premium 3 Months individual plan.", 350, "Streaming"),
-
-        ("Codex API 500M Tokens 6 Days", "Codex API 500M tokens valid 6 days.", 2980, "Codex API"),
-        ("Wordwall Pro 1 Month", "Wordwall Pro 1 Month educational license.", 380, "Education"),
-        ("GitHub Student Developer Pack", "GitHub Student Developer Pack activation.", 1500, "Office"),
-        ("Grammarly AI Pro 1M", "Grammarly AI Pro 1 Month premium writing.", 550, "Office"),
-        ("Krea Basic 5100 Credits 1M", "Krea Basic 5,100 Credits 1 Month video & image.", 550, "AI Tools"),
-        ("Figma Pro EDU 2 Years", "Figma Pro Educational 2 Years membership.", 600, "Design"),
-        ("Pocket FM Premium 3M", "Pocket FM Premium 3 Months audiobook plan.", 60, "Music"),
-        ("Figma EDU 12M", "Figma Educational 12 Months membership.", 1250, "Design"),
-        ("Leonardo AI Essential 8500 Credits 1M", "Leonardo AI Essential 8,500 Credits 1 Month.", 300, "Video AI"),
-        ("Apple Music 6M", "Apple Music individual 6 Months subscription.", 200, "Music"),
-        ("ElevenLabs Creator 3 Months", "ElevenLabs Creator 3 Months full access.", 1749, "ElevenLabs"),
-        ("Claude API 10M Tokens 1D", "Claude API 10M tokens valid 1 day.", 300, "Claude"),
-        ("Claude API 50M Tokens 1 Day", "Claude API 50M tokens valid 1 day.", 500, "Claude"),
-        ("Claude API 100M Tokens 1 Day", "Claude API 100M tokens valid 1 day.", 600, "Claude"),
-        ("Claude API 100M Tokens 3 Days", "Claude API 100M tokens valid 3 days.", 1000, "Claude"),
-
-        ("Prime Video 6 Months", "Amazon Prime Video 6 Months private subscription.", 300, "Streaming"),
-        ("Apple TV+ 1M Canada", "Apple TV+ 1 Month Canada region access.", 50, "Streaming"),
-        ("Claude API 500M Tokens 1 Day", "Claude API 500M tokens 1 Day high volume access.", 3300, "Claude"),
-        ("Microsoft Office 365 Plus 1 Year", "Microsoft Office 365 Plus 1 Year account license.", 160, "Office"),
-        ("Apple TV+ 12 Months Activation Link", "Apple TV+ 12 Months official activation link.", 290, "Streaming"),
-        ("CapCut Pro 1 Month", "CapCut Pro 1 Month membership access.", 250, "Design"),
-        ("CapCut Pro 1M 1600 AI Credits", "CapCut Pro 1 Month with 1600 AI credits.", 250, "Design"),
-        ("Fallout 76 MS Store", "Fallout 76 Microsoft Store digital edition key.", 259, "Games"),
-        ("PC Game Pass 1M", "Xbox PC Game Pass 1 Month subscription.", 816, "Games"),
-        ("Avast Premium Security 1Y", "Avast Premium Security 1 Year activation license.", 539, "Security"),
-        ("McAfee Total Protection 1Y", "McAfee Total Protection 1 Year security subscription.", 625, "Security"),
-        ("McAfee AntiVirus 1 Device 1Y", "McAfee AntiVirus 1 Device 1 Year license.", 656, "Security"),
-        ("CapCut Pro 6M Personal", "CapCut Pro 6 Months personal account subscription.", 1450, "Design"),
-        ("Gamma Pro 1M", "Gamma Pro AI presentation maker 1 Month subscription.", 1400, "AI Tools"),
-        ("Gamma Pro 12 Months", "Gamma Pro AI presentation maker 12 Months subscription.", 2700, "AI Tools"),
-
-        ("Gamma Pro 12M Coupon Code", "Gamma Pro 12 Months coupon redeem code.", 4600, "AI Tools"),
-        ("Framer Pro 12 Months", "Framer Pro 12 Months workspace plan.", 1700, "Design"),
-        ("Prime Video Ultra 6M 6 Profiles", "Prime Video Ultra 6 Months 6 Profiles private slot.", 260, "Streaming"),
-        ("ElevenLabs Free 10k Credits", "ElevenLabs 10,000 character credits access.", 150, "ElevenLabs"),
-        ("Gamma Plus 1M", "Gamma Plus 1 Month subscription access.", 800, "AI Tools"),
-        ("Gamma AI Plus 1 Month", "Gamma AI Plus 1 Month subscription access.", 1100, "AI Tools"),
-        ("ElevenLabs Creator 12 Months", "ElevenLabs Creator 12 Months full plan.", 4298, "ElevenLabs"),
-        ("Magic Patterns Starter 12M", "Magic Patterns Starter 12 Months subscription.", 350, "Design"),
-        ("Mobbin 10x Seat 12M", "Mobbin Design Library 10x Seat 12 Months.", 800, "Design"),
-        ("N8N Starter 12 Months", "n8n Cloud Starter 12 Months subscription.", 1500, "AI Tools"),
-        ("N8N Starter 1 Year", "n8n Cloud Starter 1 Year subscription.", 1500, "AI Tools"),
-        ("Brain.fm 1 Year", "Brain.fm Focus Music 1 Year subscription.", 670, "Music"),
-        ("Kling Pro 3K3 Credits 1M", "Kling Pro 3,300 Credits 1 Month video plan.", 2600, "Video AI"),
-        ("Customer.io Essentials 1Y", "Customer.io Essentials 1 Year account access.", 350, "Office"),
-        ("Fin AI + Advanced", "Fin AI Copilot + Advanced 1 Month access.", 350, "AI Tools"),
-
-        ("Warp Build 1 Year", "Warp Terminal Build 1 Year membership.", 1100, "Office"),
-        ("Wink Smile+ 7 Days", "Wink Smile+ Video AI 7 Days access.", 230, "Design"),
-        ("Readwise 1 Year", "Readwise Reader 1 Year subscription.", 550, "Office"),
-        ("Supercut Pro 10 Seats 12M", "Supercut Pro 10 Seats 12 Months team license.", 550, "Design"),
-        ("Autodesk Admin Access", "Autodesk Admin Console Access license.", 1400, "Autodesk"),
-        ("Veo Ultra X20 25K Credits Share 1M", "Veo Ultra X20 25K Credits shared 1 Month access.", 2300, "Video AI"),
-        ("ElevenLabs Redeem 300K Credits", "ElevenLabs 300,000 character credits redeem code.", 700, "ElevenLabs"),
-        ("ElevenLabs Redeem 1M Credits", "ElevenLabs 1,000,000 character credits redeem code.", 1250, "ElevenLabs"),
-        ("ElevenLabs Redeem 3M Credits", "ElevenLabs 3,000,000 character credits redeem code.", 3450, "ElevenLabs"),
-        ("HeyGen Creator 1M 28D", "HeyGen Creator 1 Month 28 Days active account.", 2500, "Video AI"),
-        ("HeyGen Creator 1M 48H", "HeyGen Creator 1 Month 48 Hours fast access.", 1850, "Video AI"),
-        ("Leonardo AI Video Gen", "Leonardo AI Video Generation 1 Month access.", 290, "Video AI"),
-        ("iCloud 400GB Your Mail 12M", "Apple iCloud+ 400GB activated on your email 12 Months.", 2400, "Office"),
-        ("Wordwall Pro 12M", "Wordwall Pro Teaching Resources 12 Months.", 1950, "Education"),
-        ("Wordwall Pro 1M", "Wordwall Pro Teaching Resources 1 Month.", 400, "Education"),
-
-        ("KREA Basic", "KREA AI Basic 1 Month subscription.", 750, "AI Tools"),
-        ("KREA Max", "KREA AI Max 1 Month subscription.", 3650, "AI Tools"),
-        ("Notion Business 6M", "Notion Business Workspace 6 Months access.", 1750, "Office"),
-        ("Quizlet Plus Ultimate 12M", "Quizlet Plus Ultimate 12 Months subscription.", 950, "Education"),
-        ("Quizlet Plus 12M", "Quizlet Plus 12 Months individual plan.", 950, "Education"),
-        ("Gemini Pro 400GB 12M", "Google Gemini Pro 400GB storage 12 Months.", 600, "Gemini"),
-        ("Gemini Pro 5TB 12M", "Google Gemini Pro 5TB storage 12 Months.", 1950, "Gemini"),
-        ("Gemini Pro 2TB 12M", "Google Gemini Pro 2TB storage 12 Months.", 900, "Gemini"),
-        ("API Kimi 15M Tokens 1D", "Kimi API 15M tokens 1 Day access.", 300, "Kimi"),
-        ("API Kimi 100M Tokens 7D", "Kimi API 100M tokens 7 Days access.", 600, "Kimi"),
-        ("API Kimi 300M Tokens 30D", "Kimi API 300M tokens 30 Days access.", 1000, "Kimi"),
-        ("API Qwen $10 1 Month", "Qwen API $10 balance credits 1 Month.", 220, "Qwen API"),
-        ("API Qwen $30 1 Month", "Qwen API $30 balance credits 1 Month.", 290, "Qwen API"),
-        ("API Qwen $50 1 Month", "Qwen API $50 balance credits 1 Month.", 400, "Qwen API"),
-        ("API Qwen $100 1 Month", "Qwen API $100 balance credits 1 Month.", 650, "Qwen API"),
-
-        ("DeepSeek API $10 1 Month", "DeepSeek API $10 credit balance valid 1 Month.", 220, "DeepSeek AI"),
-        ("DeepSeek API $30 1 Month", "DeepSeek API $30 credit balance valid 1 Month.", 290, "DeepSeek AI"),
-        ("DeepSeek API $50 1 Month", "DeepSeek API $50 credit balance valid 1 Month.", 410, "DeepSeek AI"),
-        ("DeepSeek API $100 1 Month", "DeepSeek API $100 credit balance valid 1 Month.", 610, "DeepSeek AI"),
-        ("Cursor Pro API 2600 Credits 1 Month", "Cursor Pro API 2600 Credits 1 Month plan.", 1150, "Cursor API"),
-        ("Cursor Pro API 400 Credits/day 1 Month", "Cursor Pro dedicated API key with 400 credits/day refresh.", 1550, "Cursor API"),
-        ("Cursor Pro API 6500 Credits 1 Month", "Cursor Pro high-volume 6500 credits 1 month plan.", 1550, "Cursor API"),
-        ("Kimi GLM DeepSeek API 50M Tokens 2D", "High speed Kimi GLM DeepSeek API 50M Tokens 2 Days.", 300, "Codex API"),
-        ("API QWEN Unlimited Tokens 7D", "Qwen API Unlimited tokens 7-day access.", 500, "AI Tools"),
-        ("Kimi GLM DeepSeek API 100M Tokens 4D", "High speed Kimi GLM DeepSeek API 100M Tokens 4-day access.", 650, "Codex API"),
-        ("Surfshark VPN 18M", "Surfshark VPN 18 Months unlimited devices.", 700, "VPN"),
-        ("Freepik Magnific API Panel 30D", "Freepik Magnific AI upscale & generator panel 30 days.", 500, "AI Tools"),
-        ("MiniMax Redeem 300K", "MiniMax 300,000 tokens instant redeem code.", 600, "AI Tools"),
-        ("Discord Nitro 2M", "Discord Nitro 2 months subscription gift link.", 900, "Discord"),
-        ("Notion Business Admin 1M", "Notion Business Workspace Admin 1 month.", 770, "Office"),
-
-        ("iCloud 2TB 3M", "Apple iCloud+ 2TB Family storage access 3 months.", 1150, "Office"),
-        ("MiniMax Redeem 131K", "MiniMax 131,000 character credits instant redeem code.", 260, "AI Tools"),
-        ("Flux 03 1M", "Flux 03 AI 1 Month generator access.", 150, "AI Tools"),
-        ("ExpressVPN 12M", "ExpressVPN 12 Months full access.", 700, "VPN"),
-        ("Canva Education 12M", "Canva Education 12 Months team slot.", 250, "Design"),
-        ("Adobe CC Pro 1M", "Adobe Creative Cloud Pro 1 Month plan.", 2253, "Adobe"),
-        ("AdGuard VPN 7D", "AdGuard VPN 7 Days private access.", 230, "VPN"),
-        ("Surfshark VPN One 7D", "Surfshark VPN One 7 Days security bundle.", 200, "VPN"),
-        ("Hotspot Shield VPN 7D", "Hotspot Shield VPN 7 Days access.", 200, "VPN"),
-        ("IPVanish VPN 7D", "IPVanish VPN 7 Days access.", 200, "VPN"),
-        ("Kaspersky Premium + VPN 1Y", "Kaspersky Premium Security + VPN 1 Year.", 960, "Security"),
-        ("ChatGPT Plus 1M Momo Pay", "ChatGPT Plus 1 Month Momo Pay access.", 600, "ChatGPT"),
-        ("ChatGPT Plus 1M 30D", "ChatGPT Plus 1 Month 30 Days account.", 768, "ChatGPT"),
-        ("ChatGPT Plus 1M Pix", "ChatGPT Plus 1 Month Pix payment access.", 590, "ChatGPT"),
-        ("ChatGPT Plus Your Mail 1M", "ChatGPT Plus 1 Month upgraded on your email.", 1800, "ChatGPT"),
-
-        ("ChatGPT Business 1M", "ChatGPT Business Workspace 1 Month.", 650, "ChatGPT"),
-        ("ChatGPT Plus 4M Ready Account", "ChatGPT Plus 4 Months ready-made account.", 5750, "ChatGPT"),
-        ("Admin Netflix 4K Premium 1M 5 Profiles", "Netflix 4K Premium 1 Month 5 Profiles Admin.", 250, "Streaming"),
-        ("Admin Netflix 4K 1M", "Netflix 4K Admin 1 Month access.", 380, "Streaming"),
-        ("ExpressVPN 1 Month Private", "ExpressVPN 1 Month Private dedicated slot.", 350, "VPN"),
-        ("Codex API 500M Tokens 6D", "Codex API 500M tokens 6 Days access.", 3400, "Codex API"),
-        ("Apple Music 5M", "Apple Music 5 Months subscription.", 200, "Music"),
-        ("Apple TV+ 12 Months", "Apple TV+ 12 Months full plan.", 600, "Streaming"),
-        ("Capcut 6M Personal", "CapCut Pro 6 Months personal account.", 1635, "Design"),
-        ("Gamma Pro 1 Year", "Gamma Pro AI presentation maker 1 Year.", 2900, "AI Tools"),
-        ("ElevenLabs Creator 1 Year", "ElevenLabs Creator 1 Year plan.", 3700, "ElevenLabs"),
-        ("ChatGPT Plus 1M Google Pay", "ChatGPT Plus 1 Month Google Pay.", 870, "ChatGPT"),
-        ("ChatGPT Plus 1M GPAY", "ChatGPT Plus 1 Month GPAY.", 830, "ChatGPT"),
-        ("ChatGPT Plus 1M UPI", "ChatGPT Plus 1 Month UPI account.", 600, "ChatGPT"),
-        ("Kling 66 Credits", "Kling AI 66 Credits pack.", 55, "Video AI"),
-
-        ("Gmail account new", "Gmail freshly created PVA account.", 62, "Office"),
-        ("HBO Max Standard 3 Months", "HBO Max Standard 3 Months private slot.", 200, "Streaming"),
-        ("HBO Max Standard 5 Months", "HBO Max Standard 5 Months private slot.", 250, "Streaming"),
-        ("CapCut Pro 7D", "CapCut Pro 7 Days quick access.", 50, "Design"),
-        ("CapCut Pro 7 Days", "CapCut Pro 7 Days standard license.", 65, "Design"),
-        ("Adobe Full App Bypass Version 1M", "Adobe Full App Bypass Version 1 Month.", 550, "Adobe"),
-        ("Loveable Pro 1M Redeem Link", "Loveable Pro 1 Month official redeem link.", 120, "AI Tools"),
-        ("Windows 10 Pro Retail Key", "Windows 10 Pro Retail digital license key.", 300, "Office"),
-        ("Duolingo Super 2M", "Duolingo Super 2 Months subscription.", 50, "Education"),
-        ("Notion Business 1 Year", "Notion Business Workspace 1 Year.", 1250, "Office"),
-        ("Autodesk Education Plan 1 Year", "Autodesk Education Plan 1 Year access.", 200, "Autodesk"),
-        ("YouTube Ready Account 3M", "YouTube Premium Ready Account 3 Months.", 220, "Streaming"),
-        ("JetBrains EDU 1 Year", "JetBrains All Products EDU 1 Year.", 450, "Office"),
-        ("Higgsfield Starter 1M", "Higgsfield AI Video Starter 1 Month.", 1000, "Video AI"),
-        ("OpenArt Starter 4K Credits 1M", "OpenArt Starter 4K Credits 1 Month.", 450, "AI Tools"),
-
-        ("Coursera Premium 12 Months", "Coursera Plus/Premium 12 Months learning.", 350, "Education"),
-        ("Spotify Premium 3M", "Spotify Premium 3 Months private account.", 150, "Music"),
-        ("Kiro Pro Edu Official Owner 1Y", "Kiro Pro EDU Official Owner 1 Year.", 7300, "Education"),
-        ("Spotify Individual 12M", "Spotify Individual 12 Months subscription.", 2200, "Music"),
-        ("Spotify Premium 6 Months", "Spotify Premium 6 Months subscription.", 980, "Music"),
-        ("Claude API 50M Tokens 3 Days", "Claude API 50M tokens valid 3 days.", 600, "Claude"),
-        ("Apple TV+ 6 Months", "Apple TV+ 6 Months subscription.", 450, "Streaming"),
-        ("Amazon Prime Video 1 Month", "Amazon Prime Video 1 Month private slot.", 200, "Streaming"),
-        ("QuillBot Premium 1M", "QuillBot Premium 1 Month paraphrase tool.", 300, "Office"),
-        ("Snapchat Plus+ 3 Months", "Snapchat Plus 3 Months access.", 500, "Social"),
-        ("Peacock Official Subscription 1 Year", "Peacock Official TV 1 Year subscription.", 500, "Streaming"),
-        ("Gamma AI 20K Credits 10 Years", "Gamma AI 20K Credits 10 Years lifetime.", 1100, "AI Tools"),
-        ("Manus Pro 12 Months", "Manus Pro AI agent 12 Months access.", 3500, "AI Tools"),
-        ("KlingAI 750-1100 Credits 1M", "KlingAI 750-1100 Credits 1 Month video plan.", 1138, "Video AI"),
-        ("Kling Random 700-1000 Credits 1M", "Kling Random 700-1000 Credits 1 Month video plan.", 850, "Video AI"),
-
-        ("Snapchat Plus+ 6 Months", "Snapchat Plus 6 Months subscription access.", 800, "Social", 0),
-        ("Cursor Pro + Grok Bot 1M", "Cursor Pro + Grok Bot 1 Month bundle access.", 4500, "AI Tools", 0),
-        ("Veo Ultra X20 0 Credits 1M", "Veo Ultra X20 0 Credits 1 Month video generation access.", 1750, "Video AI", 0),
-        ("ElevenLabs Creator 1M", "ElevenLabs Creator 1 Month audio subscription.", 750, "ElevenLabs", 0),
-        ("Perplexity Pro 1M", "Perplexity Pro 1 Month subscription access.", 800, "AI Tools", 0),
-        ("Vidiq Boost 1 Channel 2000 Credits", "Vidiq Boost 1 Channel 2000 Credits 1 Month plan.", 750, "Subscriptions", 0),
-        ("Pixverse 600 Credits", "Pixverse 600 Credits 1 Month generation plan.", 100, "Video AI", 0),
-        ("Kimi GLM DeepSeek API 500M Tokens 7D", "Kimi GLM DeepSeek API 500M Tokens 7 Days access.", 2400, "Codex API", 0),
-        ("CapCut Pro Team 3M", "CapCut Pro Team 3 Months premium access.", 920, "Design", 0),
-        ("KlingAI 725-850 Credits 1M", "KlingAI 725-850 Credits 1 Month plan.", 1000, "Video AI", 0),
-        ("Seedance 400-600 Credits", "Seedance 400-600 Credits video access.", 150, "AI Tools", 0),
-        ("Autodesk All Apps 3Y", "Autodesk All Apps 3 Years student/educator access.", 380, "Autodesk", 0),
-        ("Autodesk 1 App 3Y Upgrade", "Autodesk 1 App 3 Years upgrade license.", 500, "Autodesk", 0),
-        ("Autodesk Full Apps 3Y Upgrade", "Autodesk Full Apps 3 Years upgrade license.", 800, "Autodesk", 0),
-    ]
-    for item in MANUAL_CATALOG_SEEDS:
-        m_name, m_desc, m_price, m_cat = item[0], item[1], item[2], item[3]
-        m_stock = item[4] if len(item) > 4 else None
-        retail = max(100, round(m_price * (1 + PROFIT_MARGIN / 100.0)))
-        exists = db.execute("SELECT id, margin, price, supplier_price FROM products WHERE name=?", (m_name,)).fetchone()
-        if not exists:
-            db.execute("""
-                INSERT INTO products(name, description, price, supplier_price, category, auto_fulfill, active, supplier_stock, delivery_type)
-                VALUES(?,?,?,?,?,0,1,?,'manual')
-            """, (m_name, m_desc, retail, m_price, m_cat, m_stock))
-        else:
-            # Update retail price if missing or set at cost
-            if exists["supplier_price"] is None or exists["price"] == m_price:
-                db.execute("""
-                    UPDATE products SET price=?, supplier_price=? WHERE id=?
-                """, (retail, m_price, exists["id"]))
-            db.execute("""
-                UPDATE products SET category=?, description=COALESCE(description, ?), supplier_stock=? WHERE id=?
-            """, (m_cat, m_desc, m_stock, exists["id"]))
-
-    # Add markup to any products saved at cost price
-    db.execute("""
-        UPDATE products
-        SET price = max(100, round(supplier_price * (1 + ? / 100.0)))
-        WHERE supplier_price IS NOT NULL AND price = supplier_price
-    """, (PROFIT_MARGIN,))
-
-    # Keep manual items available even if stock is 0
-    db.execute("UPDATE products SET supplier_stock=NULL WHERE delivery_type='manual' AND supplier_stock=0")
+    # Products catalog is populated dynamically from the supplier API via perform_supplier_sync()
 
     # Brand custom emoji table
     db.execute("""
@@ -3500,6 +3185,7 @@ async def admin_help(m: Message):
         "/addproduct &lt;price&gt; [currency] &lt;name&gt; [| description] (e.g. $12.50 or 15000 NGN)\n"
         "/setprice &lt;product_id&gt; &lt;price&gt; [currency] (e.g. /setprice 1 15000 NGN or $12.50)\n"
         "/clearprices [product_id] - Clear manual price overrides & reset to dynamic supplier pricing\n"
+        "• <code>/clearcache</code> - Clear all cached products & sync totally from supplier API\n"
         "/setmargin &lt;product_id&gt; &lt;margin_%&gt; (e.g. /setmargin 1 60%)\n"
         "/toggle &lt;product_id&gt;  (activate/deactivate)\n"
         "/addstock &lt;product_id&gt; &lt;item&gt;  (manual items, 1 per line)\n"
@@ -4676,6 +4362,7 @@ async def admin_supplier_products(m: Message, command: CommandObject = None):
 async def perform_supplier_sync(
     target_suppliers: Optional[List[str]] = None,
     markup: Optional[int] = None,
+    purge_delisted: bool = False,
 ) -> Tuple[int, int, int, List[str]]:
     """
     Synchronizes catalog and live inventory from reseller API.
@@ -4723,19 +4410,8 @@ async def perform_supplier_sync(
                 (sp_id, sup_name)
             ).fetchone()
 
-            # Try matching by name if ID didn't match
-            if not existing:
-                existing = db.execute(
-                    "SELECT id, price, margin, fixed_price FROM products WHERE supplier_product_id IS NULL AND LOWER(name)=LOWER(?)",
-                    (sp["name"],)
-                ).fetchone()
-
-            if not existing:
-                clean_sp_name = sp["name"].lower()
-                if "gemini" in clean_sp_name and "18" in clean_sp_name:
-                    existing = db.execute("SELECT id, price, margin, fixed_price FROM products WHERE supplier_product_id IS NULL AND name LIKE '%Gemini%18%'").fetchone()
-                elif "duolingo" in clean_sp_name and ("12" in clean_sp_name or "super" in clean_sp_name):
-                    existing = db.execute("SELECT id, price, margin, fixed_price FROM products WHERE supplier_product_id IS NULL AND name LIKE '%Duolingo%'").fetchone()
+            # Sync strictly by supplier_product_id from supplier API
+            pass
 
             is_fixed = bool(existing and ("fixed_price" in existing.keys()) and existing["fixed_price"])
             is_active = 0 if (stock is not None and stock == 0) else 1
@@ -4772,8 +4448,17 @@ async def perform_supplier_sync(
                 """, (sp["name"], sp["description"], retail_cents, sp_id, cost_cents, is_active, cat, sup_name, stock, None))
                 total_added += 1
 
-        # Deactivate supplier products no longer in feed
-        if seen_supplier_ids:
+        # Clear legacy unlinked cached products
+        db.execute("DELETE FROM products WHERE supplier_product_id IS NULL")
+
+        if purge_delisted and seen_supplier_ids:
+            placeholders = ",".join("?" for _ in seen_supplier_ids)
+            db.execute(
+                f"DELETE FROM products WHERE supplier=? AND supplier_product_id NOT IN ({placeholders})",
+                (sup_name, *seen_supplier_ids)
+            )
+        elif seen_supplier_ids:
+            # Deactivate supplier products no longer in feed
             cur_prods = db.execute(
                 "SELECT id, supplier_product_id FROM products WHERE supplier=? AND delivery_type='auto' AND supplier_product_id IS NOT NULL",
                 (sup_name,)
@@ -4796,6 +4481,13 @@ async def admin_supplier_sync(m: Message, command: CommandObject = None):
     args = (command.args or "").strip().split() if command else []
     target_suppliers = []
     markup = get_default_margin()
+    purge_delisted = False
+
+    if args and args[0].lower() in ("clear", "clean", "reset", "purge"):
+        purge_delisted = True
+        db.execute("DELETE FROM products WHERE supplier_product_id IS NULL")
+        db.commit()
+        args = args[1:]
 
     if not args:
         target_suppliers = [supplier_registry.default_name()]
@@ -4814,7 +4506,7 @@ async def admin_supplier_sync(m: Message, command: CommandObject = None):
         set_setting("profit_margin", str(markup))
         target_suppliers = [supplier_registry.default_name()]
 
-    total_added, total_updated, total_items, errors = await perform_supplier_sync(target_suppliers, markup)
+    total_added, total_updated, total_items, errors = await perform_supplier_sync(target_suppliers, markup, purge_delisted=purge_delisted)
 
     # Group products by status
     all_prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
@@ -4887,6 +4579,36 @@ async def admin_supplier_sync(m: Message, command: CommandObject = None):
             asyncio.create_task(build_catalog_excel(DB_PATH))
         except Exception:
             pass
+
+
+@dp.message(Command("clearcache", "clearcatalog"), is_admin)
+async def admin_clearcache(m: Message, command: CommandObject = None):
+    """Purge all cached/unlinked products and perform a clean 100% sync from the live supplier API."""
+    db.execute("DELETE FROM products WHERE supplier_product_id IS NULL")
+    db.commit()
+
+    total_added, total_updated, total_items, errors = await perform_supplier_sync(purge_delisted=True)
+
+    if "unittest" not in sys.modules:
+        try:
+            from generate_catalog_excel import build_catalog_excel
+            asyncio.create_task(build_catalog_excel(DB_PATH))
+        except Exception as ex:
+            log.warning("Catalog excel build failed during /clearcache: %s", ex)
+
+    admin_curr = get_user_currency(m.from_user.id)
+    active_count = db.execute("SELECT COUNT(*) FROM products WHERE active=1").fetchone()[0]
+    total_count = db.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+
+    err_text = f"\n⚠️ Errors: {', '.join(errors)}" if errors else ""
+    await m.answer(
+        f"🧹 <b>Cache Cleared & Supplier API Synced</b>\n\n"
+        f"• All manual cached products removed.\n"
+        f"• Catalog synced 100% directly from Supplier API.\n"
+        f"• Live Products Processed: <b>{total_items}</b>\n"
+        f"• Active In-Stock in Shop: <b>{active_count}</b> / <b>{total_count}</b>\n"
+        f"• Currency: <b>{admin_curr}</b>{err_text}"
+    )
 
 
 @dp.message(Command("s_link"), is_admin)
@@ -5018,6 +4740,7 @@ async def main():
             BotCommand(command="stats", description="View store sales stats"),
             BotCommand(command="products", description="List products & margins"),
             BotCommand(command="clearprices", description="Clear manual price overrides"),
+            BotCommand(command="clearcache", description="Clear cached products & sync from supplier API"),
             BotCommand(command="s_products", description="List supplier products"),
             BotCommand(command="s_sync", description="Sync supplier catalog"),
             BotCommand(command="s_orders", description="Recent supplier orders"),
