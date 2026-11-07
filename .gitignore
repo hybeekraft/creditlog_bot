@@ -26,6 +26,3 @@ scratch/
 # IDE & Editor settings
 .vscode/
 .idea/
-
-# Tool artifacts
-.playwright-mcp/
