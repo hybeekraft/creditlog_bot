@@ -1,28 +1,23 @@
-# Environment & secrets
+# Secrets
 .env
 
-# Virtual environments
+# Virtual environment
 .venv/
-venv/
 
-# Python cache & build
+# Python cache
 __pycache__/
 *.py[cod]
-.pytest_cache/
 .ruff_cache/
 
-# Databases & local storage
+# Local database
 *.db
 *.db-wal
 *.db-shm
-data/
 
-# Exports & temporary output
+# Generated exports & logs
 *.xlsx
 *.csv
 *.log
-scratch/
 
-# IDE & Editor settings
+# Editor settings
 .vscode/
-.idea/
