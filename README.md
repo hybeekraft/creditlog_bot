@@ -1,112 +1,152 @@
-# Telegram Store Bot
+# CreditLog Telegram Store Bot
 
-Digital goods reseller bot with direct guest checkout, automatic delivery from our catalog, instant purchase history, 4 languages, and admin tools.
+Digital goods reseller and automated store bot with direct guest checkout, supplier catalog integration, multi-currency support (USD / NGN), automatic fulfillment, and admin command center.
 
-**No user accounts or deposit wallets required:** Customers browse products as guests, checkout directly, and can view their recent purchases anytime.
+**No user accounts or deposit wallets required:** Customers browse products as guests, checkout directly via cards, crypto, or bank transfer, and view their purchase history anytime.
 
-## 1. Create the bot
-1. Open @BotFather → `/newbot` → copy the token.
-2. Get your numeric Telegram ID from @userinfobot.
+---
 
-## 2. Configure
+## 1. Quick Start
+
+### 1. Create Your Telegram Bot
+1. Open [@BotFather](https://t.me/BotFather) on Telegram and run `/newbot`.
+2. Copy your bot token.
+3. Obtain your numeric Telegram ID from [@userinfobot](https://t.me/userinfobot).
+
+### 2. Configure Environment
 ```bash
 cp .env.example .env
-nano .env          # fill BOT_TOKEN, ADMIN_IDS, RESELLER_API_KEY, CRYPTOBOT_TOKEN, etc.
+# Edit .env with your credentials:
+# BOT_TOKEN, ADMIN_IDS, RESELLER_API_KEY, etc.
 ```
 
-## 3. Direct Checkout (Crypto Payments & Direct Mode)
-The bot supports multiple payment options for seamless guest checkout:
-1. **@CryptoBot (Automated in-Telegram checkout):**
-   - Obtain an API token from [@CryptoBot](https://t.me/CryptoBot) (`/pay` → Create App).
-   - Set `CRYPTOBOT_TOKEN=your_token` in `.env`.
-   - Buyers can pay directly inside Telegram with USDT, TON, BTC, etc., and check payment status with one tap for instant item delivery!
-2. **Direct USDT & Binance Pay Transfer:**
-   - Configure `BINANCE_PAY_ID`, `CRYPTO_USDT_BEP20`, and/or `CRYPTO_USDT_TRC20`.
-   - Buyers can see your payment details and submit their TXID/receipt to support.
-3. **Direct / Free Mode:**
-   - If payment gateways are left unconfigured, the bot delivers items immediately (ideal for testing or free distribution).
-
-## 4. Run locally
+### 3. Run Locally
 ```bash
 pip install -r requirements.txt
 python bot.py
 ```
 
-## 5. Deploy on a VPS (recommended)
-Point a DNS A record for your domain at the server, then:
+---
+
+## 2. Payment Gateways Supported
+
+1. **Bachs Payment Gateway (Cards, Bank Transfer, Mobile Money, Crypto):**
+   - Get API key from [app.bachs.io](https://app.bachs.io).
+   - Set `BACHS_API_KEY=sk_live_...` and `BACHS_CURRENCY=USD` (or NGN) in `.env` (or configure live via `/setbachs`).
+   - Automatically redirects buyers back into Telegram after checkout.
+
+2. **Direct Naira Bank Transfer:**
+   - Configure your bank details in `.env` (`BANK_NAME`, `BANK_ACCOUNT_NUMBER`, `BANK_ACCOUNT_NAME`).
+   - Or manage accounts directly via `/setbank`, `/addbank`, and `/delbank`.
+   - Supports live USD/NGN exchange rates via `/setrate`.
+
+3. **@CryptoBot (Automated in-Telegram crypto checkout):**
+   - Obtain token from [@CryptoBot](https://t.me/CryptoBot) (`/pay` → Create App).
+   - Set `CRYPTOBOT_TOKEN=...` in `.env`.
+   - Instant verification and automatic order delivery.
+
+4. **Direct USDT (TRC20 / BEP20) & Binance Pay:**
+   - Set `BINANCE_PAY_ID`, `CRYPTO_USDT_BEP20`, and `CRYPTO_USDT_TRC20`.
+   - Direct wallet payment with TXID submission.
+
+---
+
+## 3. Deployment Options
+
+### Option A: Fly.io (Recommended Cloud Deployment)
+Fly.io provides 24/7 hosting with encrypted persistent storage volumes for SQLite.
+
+1. **Install flyctl and authenticate:**
+   ```powershell
+   irm https://fly.io/install.ps1 | iex
+   fly auth login
+   ```
+2. **Create app configuration & persistent volume:**
+   ```powershell
+   fly launch --no-deploy
+   fly volumes create bot_data --region iad --size 1
+   ```
+3. **Import secrets safely:**
+   ```powershell
+   python -c "import subprocess, os; fly = os.path.expanduser('~/.fly/bin/flyctl.exe'); [subprocess.run([fly, 'secrets', 'set', line.strip()]) for line in open('.env', encoding='utf-8') if '=' in line and not line.strip().startswith('#')]"
+   ```
+4. **Deploy:**
+   ```powershell
+   fly deploy --depot=false
+   ```
+
+### Option B: Docker Compose / VPS
 ```bash
 docker compose up -d --build
 docker compose logs -f bot
 ```
-Caddy obtains the HTTPS certificate automatically. Data lives in `./data/store.db`.
 
-## 6. Products: Manual Stock or Automated Supplier Catalog
+---
 
-You can sell products via **manual stock** OR **automatically connect to our supplier catalog**:
+## 4. Supplier Catalog & Pricing Controls
 
-### Option A: Automated Supplier Catalog (Single or Multi-Supplier)
-Add your primary supplier and optional additional suppliers to `.env`:
+### Automated Supplier Integration
+Set your supplier API URL and key in `.env`:
+```env
+RESELLER_BASE_URL=https://api-vendor.com/api/reseller/v1
+RESELLER_API_KEY=your_key
+PROFIT_MARGIN=45%
+```
+
+### Pricing & Catalog Commands:
+* `/s_sync [margin_%]` — Sync supplier catalog and apply profit markup (e.g. `/s_sync 40%`).
+* `/setprice <product_id> <price>` — Set a manual fixed price lock (e.g. `/setprice 1 12.50` or `15000 NGN`).
+* `/clearprices [product_id]` — Clear manual price overrides in one click and reset products back to dynamic supplier markup.
+* `/setmargin <product_id> <margin_%>` — Custom margin for a single product (e.g. `/setmargin 1 50%`).
+* `/products` — List all products, prices, and profit margins.
+* `/export` / `/excel` — Download full product catalog in formatted Excel spreadsheet.
+
+---
+
+## 5. Complete Admin Commands Reference
+
+| Command | Description |
+| :--- | :--- |
+| `/admin` | Open admin command center |
+| `/products` | List all products, prices, stock, and margins |
+| `/addproduct <price> <name>` | Create a new manual stock product |
+| `/setprice <id> <price>` | Lock a fixed custom retail price |
+| `/clearprices [id]` | Clear manual price locks & revert to dynamic supplier markup |
+| `/setmargin <id> <margin>` | Set custom profit margin for a specific product |
+| `/toggle <id>` | Enable or disable a product |
+| `/addstock <id> <items>` | Add digital delivery keys/accounts (one per line) |
+| `/stats` | View sales stats and revenue |
+| `/export` / `/excel` | Download catalog spreadsheet (`.xlsx`) |
+| `/backup` | Download complete SQLite database file (`.db`) |
+| `/broadcast <text>` | Send broadcast announcement to all store buyers |
+| `/mode [auto\|manual]` | Switch between Model A (instant fulfillment) and Model B (manual approval) |
+| `/approve <order_id>` | Approve Model B order and purchase from supplier |
+| `/deliver <order_id> <data>`| Deliver order payload manually to buyer |
+| `/refund <order_id>` | Refund an order |
+| `/s_products` | Browse raw supplier product catalog and costs |
+| `/s_sync [margin]` | Re-sync supplier products and update inventory |
+| `/s_orders` | View recent supplier orders and fulfillment status |
+| `/supplier` | View supplier account balance and API status |
+| `/setrate [rate]` | View or update USD to NGN exchange rate |
+| `/setbachs [key]` | Configure Bachs Payment Gateway API Key |
+| `/bachs` | View Bachs configuration and status |
+| `/bachscurrency [USD\|NGN]` | Set Bachs checkout currency |
+| `/setbank [Bank \| Acc \| Name]`| Configure Direct Bank Transfer |
+| `/addbank <Bank \| Acc \| Name>`| Add additional bank account (multi-bank support) |
+| `/delbank [id\|all]` | Remove a bank account |
+| `/bank` | View active Bank Transfer details |
+| `/fsub` | Manage mandatory join channels (Force-Subscribe) |
+| `/setemoji <brand> <id>` | Configure official brand custom emojis |
+| `/emojis` | View configured custom emoji mappings |
+| `/delemoji <brand>` | Remove brand custom emoji |
+
+---
+
+## 6. Testing
+
+Run the automated test suite covering all checkout flows, supplier integrations, currency converters, and edge cases:
+
 ```bash
-# Primary Supplier (default)
-RESELLER_BASE_URL=https://api-geminipro.ignorelist.com/api/reseller/v1
-RESELLER_API_KEY=YOUR_API_KEY
-PROFIT_MARGIN=45%   # Default profit margin (supports "45%" or 45)
-
-# Optional Additional Suppliers (Generic Multi-Supplier Registry)
-# Any SUPPLIER_<NAME>_KEY will be automatically registered!
-SUPPLIER_STREAMING_URL=https://api-streaming.com/api/v1
-SUPPLIER_STREAMING_KEY=your_streaming_api_key
-
-SUPPLIER_GAMES_URL=https://api-games.com/api/v1
-SUPPLIER_GAMES_KEY=your_games_api_key
+python -m unittest tests.py
 ```
-
-From your Telegram admin account:
-- `/supplier` or `/suppliers` — View all configured suppliers, their balances, and active product counts. Or `/supplier <name>` for detailed info.
-- `/s_products [supplier]` — View catalog products and wholesale costs from a specific supplier (defaults to primary).
-- `/s_sync [supplier_or_all] [margin_%]` — Automatically import/sync products:
-  - `/s_sync` — Sync primary supplier with default margin.
-  - `/s_sync 50%` — Sync primary supplier with 50% margin.
-  - `/s_sync streaming 40%` — Sync a specific supplier.
-  - `/s_sync all 45%` — Sync all configured suppliers in one command!
-- `/setmargin <id> <margin_%>` — Set a custom profit margin for a specific product (e.g. `/setmargin 1 60%`). Overrides the default margin and is preserved across `/s_sync`!
-- `/setprice <id> <price_usd>` — Set a direct fixed retail price for a specific product (e.g. `/setprice 1 2.99`).
-- `/s_link <local_id> <supplier_id> [supplier_name]` — Link an existing product to auto-fulfill via a specific supplier.
-- `/s_unlink <local_id>` — Unlink and switch back to manual stock.
-- `/s_orders` — View recent supplier orders.
-
-**How automatic delivery works:**
-1. User clicks **Buy now** on any supplier product (`⚡ Auto`).
-2. Bot contacts `POST /orders` with the product ID and quantity.
-3. Bot retrieves `order.value` and delivers it instantly to the buyer.
-4. If supplier is out of stock or returns an error, the buyer's balance is automatically preserved/refunded and admins receive an alert.
-
-### Option B: Manual Stock
-Send to your bot from an admin account:
-```
-/addproduct 0.72 Gemini 18 Months | Activation link delivered instantly
-/addstock 1 first-key-or-link
-second-key-or-link
-third-key-or-link
-/products
-/admin          <- full command list
-```
-
-## Backups
-```bash
-sqlite3 data/store.db ".backup 'backup-$(date +%F).db'"
-```
-Add that to cron daily and copy backups off the server.
-
-## Before going live checklist
-- [ ] Test a checkout end to end and confirm digital goods are delivered instantly.
-- [ ] Test `/orders` to confirm buyers can view their recent purchases.
-- [ ] Test a manual product or run `/s_sync` to import supplier catalog.
-- [ ] Write a short terms / refund policy and pin it in your news channel.
-- [ ] Never share `.env`; rotate the bot token if it leaks.
-
-## Using a different payment gateway
-Only two places change: `create_order_invoice()` (create the invoice for the order) and
-`ipn_handler()` (verify the webhook signature, then call `fulfill_order()` to deliver).
-
-# creditlog_bot
+*(All 161 tests passing).*
