@@ -11,3 +11,5 @@ __pycache__
 *.csv
 *.log
 .vscode
+.idea
+tests.py

@@ -241,7 +241,8 @@ def get_bank_accounts() -> list[dict[str, str]]:
                                 "account_number": acc_num,
                                 "account_name": acc_name or "CreditLog Store"
                             })
-                return res
+                if res:
+                    return res
         except Exception:
             pass
 
@@ -732,6 +733,22 @@ def resequence_product_ids(conn=None) -> Dict[int, int]:
                 cur.execute("UPDATE stock SET product_id = ? WHERE product_id = ?", (-new_id, old_id))
             cur.execute("UPDATE stock SET product_id = -product_id WHERE product_id < 0")
 
+        has_settings = cur.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='settings'").fetchone()[0]
+        if has_settings:
+            row_feat = cur.execute("SELECT value FROM settings WHERE key='featured_products'").fetchone()
+            if row_feat and row_feat[0]:
+                try:
+                    raw_feat = str(row_feat[0]).strip()
+                    if raw_feat.startswith("["):
+                        f_list = json.loads(raw_feat)
+                    else:
+                        f_list = [int(x.strip()) for x in raw_feat.split(",") if x.strip().isdigit()]
+                    if isinstance(f_list, list):
+                        new_f_list = [mapping.get(pid, pid) for pid in f_list]
+                        cur.execute("UPDATE settings SET value=? WHERE key='featured_products'", (",".join(str(x) for x in new_f_list),))
+                except Exception:
+                    pass
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS products_seq_tmp (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1178,8 +1195,9 @@ def get_featured_product_ids() -> List[int]:
         return []
 
     pids = []
-    for part in raw.split(","):
-        part = part.strip()
+    cleaned = raw.strip().lstrip("[").rstrip("]")
+    for part in cleaned.split(","):
+        part = part.strip().strip('"').strip("'")
         if part.isdigit():
             pid = int(part)
             if pid not in pids:
@@ -4711,7 +4729,13 @@ async def admin_setbachs(m: Message, command: CommandObject = None):
             return await admin_pause_bachs(m, command)
         else:
             return await admin_play_bachs(m, command)
-    if not raw_args:
+    if args_lower.startswith("currency") or args_lower.startswith("curr"):
+        c_parts = raw_args.split(None, 1)
+        sub_arg = c_parts[1].strip() if len(c_parts) > 1 else ""
+        c_obj = CommandObject(prefix="/", command="bachscurrency", args=sub_arg)
+        return await admin_bachs_currency(m, c_obj)
+
+    if not raw_args or args_lower in ("status", "info", "view", "check", "help"):
         key = get_bachs_key()
         has_key = bool(key and key.lower() not in ("off", "disable", "disabled", "none", "0") and not key.startswith("your_") and len(key) >= 10)
         if not has_key:
@@ -4733,9 +4757,23 @@ async def admin_setbachs(m: Message, command: CommandObject = None):
             f"<b>Controls:</b>\n"
             f"• <code>/bachspause</code> or <code>/bachs pause</code> - Pause Bachs payments\n"
             f"• <code>/bachsplay</code> or <code>/bachs play</code> - Resume Bachs payments\n"
-            f"• <code>/bachscurrency USD|NGN</code> - Set billing currency\n"
+            f"• <code>/bachscurrency USD|NGN</code> or <code>/bachs currency USD|NGN</code> - Set billing currency\n"
             f"• <code>/setbachs &lt;api_key&gt;</code> - Update API key\n\n"
             f"<i>Get your API key (sk_live_... or sk_sandbox_...) from your dashboard at https://app.bachs.io</i>"
+        )
+
+    # If called via /bachs with unrecognized text that isn't an API key, don't overwrite key
+    is_likely_key = raw_args.startswith("sk_") or (len(raw_args) >= 15 and " " not in raw_args)
+    if cmd_name not in ("setbachs", "bachskey") and not is_likely_key:
+        return await m.answer(
+            "⚠️ <b>Unknown Bachs command option.</b>\n\n"
+            "<b>Available Bachs commands:</b>\n"
+            "• <code>/bachs</code> - View status\n"
+            "• <code>/bachs pause</code> - Pause Bachs checkouts\n"
+            "• <code>/bachs play</code> - Resume Bachs checkouts\n"
+            "• <code>/bachs currency USD|NGN</code> - Change currency\n"
+            "• <code>/setbachs &lt;api_key&gt;</code> - Update Bachs API key\n"
+            "• <code>/delbachs</code> - Disable Bachs gateway"
         )
     set_setting("bachs_api_key", raw_args)
     set_setting("bachs_enabled", "1")

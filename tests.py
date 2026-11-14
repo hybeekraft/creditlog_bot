@@ -3252,6 +3252,12 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(details["account_number"], "8123456789")
         self.assertEqual(details["account_name"], "Adebayo Olawale")
 
+        # Fallback when bank_accounts setting is empty list "[]"
+        bot.set_setting("bank_accounts", "[]")
+        self.assertTrue(bot.is_bank_configured())
+        self.assertEqual(len(bot.get_bank_accounts()), 1)
+        self.assertEqual(bot.get_bank_accounts()[0]["account_number"], "8123456789")
+
     async def test_admin_setbank_help_and_view(self):
         m = AsyncMock()
         admin_id = next(iter(bot.ADMIN_IDS)) if bot.ADMIN_IDS else 999999
@@ -3667,6 +3673,28 @@ class TestBachsPaymentGateway(unittest.IsolatedAsyncioTestCase):
         await bot.admin_bachs_currency(m, cmd)
         self.assertIn("Bachs Currency Setting:", m.answer.call_args[0][0])
         self.assertEqual(bot.get_bachs_currency(), "NGN")
+
+        # 7. Subcommands via /bachs: /bachs currency USD
+        m.reset_mock()
+        cmd.command = "bachs"
+        cmd.args = "currency USD"
+        await bot.admin_setbachs(m, cmd)
+        self.assertEqual(bot.get_bachs_currency(), "USD")
+        self.assertTrue(bot.is_bachs_configured())
+
+        # 8. Subcommands via /bachs: /bachs status (doesn't overwrite key)
+        m.reset_mock()
+        cmd.args = "status"
+        await bot.admin_setbachs(m, cmd)
+        self.assertIn("Bachs Payment Gateway Status:</b> 🟢", m.answer.call_args[0][0])
+        self.assertEqual(bot.get_bachs_key(), "sk_sandbox_testkey123456")
+
+        # 9. Unknown text via /bachs rejected without overwriting key
+        m.reset_mock()
+        cmd.args = "random_typo"
+        await bot.admin_setbachs(m, cmd)
+        self.assertIn("Unknown Bachs command option", m.answer.call_args[0][0])
+        self.assertEqual(bot.get_bachs_key(), "sk_sandbox_testkey123456")
 
     def test_render_fiat_payment_methods_with_bachs(self):
         pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Bachs Item', 'Desc', 1000, 1)").lastrowid
@@ -4111,6 +4139,15 @@ class TestBachsPaymentGateway(unittest.IsolatedAsyncioTestCase):
         cmd_set = bot.CommandObject(prefix="/", command="featured", args="set 101, 102")
         await bot.admin_featured_cmd(m, cmd_set)
         self.assertEqual(bot.get_featured_product_ids(), [101, 102])
+
+        # Verify resequencing preserves and remaps featured product IDs
+        remap = bot.resequence_product_ids(bot.db)
+        if 101 in remap and 102 in remap:
+            self.assertEqual(bot.get_featured_product_ids(), [remap[101], remap[102]])
+            # Re-seed test IDs for remainder of callback tests
+            bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active) VALUES(101, 'Test Item 1', 100, 1)")
+            bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active) VALUES(102, 'Test Item 2', 200, 1)")
+            bot.set_featured_product_ids([101, 102])
 
         # 3. /featured remove 101
         cmd_rm = bot.CommandObject(prefix="/", command="featured", args="remove 101")
