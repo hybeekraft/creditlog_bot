@@ -4038,6 +4038,120 @@ class TestBachsPaymentGateway(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res["value"], "KEY-A\nKEY-B")
             self.assertEqual(res["order_code"], "ORD2")
 
+    def test_featured_products_helpers_and_non_deletion(self):
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active) VALUES(1, 'Prod A', 100, 1)")
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active) VALUES(2, 'Prod B', 200, 1)")
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active) VALUES(3, 'Prod C', 300, 1)")
+
+        # Set specific featured products
+        bot.set_featured_product_ids([3, 1])
+        self.assertEqual(bot.get_featured_product_ids(), [3, 1])
+
+        prods = bot.get_featured_products()
+        self.assertEqual(len(prods), 2)
+        self.assertEqual(prods[0]["id"], 3)
+        self.assertEqual(prods[1]["id"], 1)
+
+        # Add another product
+        self.assertTrue(bot.add_featured_product_id(2))
+        self.assertEqual(bot.get_featured_product_ids(), [3, 1, 2])
+
+        # Remove featured product 1 - ensure it does NOT delete it from products catalogue
+        self.assertTrue(bot.remove_featured_product_id(1))
+        self.assertEqual(bot.get_featured_product_ids(), [3, 2])
+        p1 = bot.db.execute("SELECT * FROM products WHERE id=1").fetchone()
+        self.assertIsNotNone(p1, "Product 1 must remain in catalogue when unfeatured")
+        self.assertEqual(p1["name"], "Prod A")
+
+        # Clear all
+        bot.set_featured_product_ids([])
+        self.assertEqual(bot.get_featured_product_ids(), [])
+        self.assertEqual(bot.get_featured_products(), [])
+
+    def test_home_kb_with_custom_featured_and_clear(self):
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active) VALUES(10, 'Custom VPN', 500, 1)")
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active) VALUES(20, 'Custom AI', 1000, 1)")
+
+        bot.set_featured_product_ids([20, 10])
+        markup = bot.home_kb(uid=1001)
+
+        # Verify buttons appear in chosen order (20 then 10)
+        btn_texts = [b.text for row in markup.inline_keyboard for b in row]
+        self.assertTrue(any("Custom AI" in t for t in btn_texts))
+        self.assertTrue(any("Custom VPN" in t for t in btn_texts))
+
+        feat_btns = [b for row in markup.inline_keyboard for b in row if b.callback_data and b.callback_data.startswith("p:")]
+        self.assertEqual(len(feat_btns), 2)
+        self.assertEqual(feat_btns[0].callback_data, "p:20:home")
+        self.assertEqual(feat_btns[1].callback_data, "p:10:home")
+
+        # Clear all featured products
+        bot.set_featured_product_ids([])
+        markup_empty = bot.home_kb(uid=1001)
+        feat_empty = [b for row in markup_empty.inline_keyboard for b in row if b.callback_data and b.callback_data.startswith("p:")]
+        self.assertEqual(len(feat_empty), 0, "No product buttons should appear on homepage when featured is cleared")
+
+    async def test_admin_featured_command_and_callbacks(self):
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active) VALUES(101, 'Test Item 1', 100, 1)")
+        bot.db.execute("INSERT OR REPLACE INTO products(id, name, price, active) VALUES(102, 'Test Item 2', 200, 1)")
+
+        admin_id = list(bot.ADMIN_IDS)[0] if bot.ADMIN_IDS else 12345
+        bot.ADMIN_IDS.add(admin_id)
+
+        # 1. /featured (view)
+        m = AsyncMock()
+        m.from_user.id = admin_id
+        m.text = "/featured"
+        cmd = bot.CommandObject(prefix="/", command="featured", args="")
+        await bot.admin_featured_cmd(m, cmd)
+        m.answer.assert_called()
+        self.assertIn("Homepage Featured Products", m.answer.call_args[0][0])
+
+        # 2. /featured set 101, 102
+        cmd_set = bot.CommandObject(prefix="/", command="featured", args="set 101, 102")
+        await bot.admin_featured_cmd(m, cmd_set)
+        self.assertEqual(bot.get_featured_product_ids(), [101, 102])
+
+        # 3. /featured remove 101
+        cmd_rm = bot.CommandObject(prefix="/", command="featured", args="remove 101")
+        await bot.admin_featured_cmd(m, cmd_rm)
+        self.assertEqual(bot.get_featured_product_ids(), [102])
+        self.assertIsNotNone(bot.db.execute("SELECT * FROM products WHERE id=101").fetchone())
+
+        # 4. /featured add 101
+        cmd_add = bot.CommandObject(prefix="/", command="featured", args="add 101")
+        await bot.admin_featured_cmd(m, cmd_add)
+        self.assertEqual(bot.get_featured_product_ids(), [102, 101])
+
+        # 5. /featured clear
+        cmd_clr = bot.CommandObject(prefix="/", command="featured", args="clear")
+        await bot.admin_featured_cmd(m, cmd_clr)
+        self.assertEqual(bot.get_featured_product_ids(), [])
+
+        # 6. Test callbacks
+        c = AsyncMock()
+        c.from_user.id = admin_id
+        c.message.edit_text = AsyncMock()
+        c.answer = AsyncMock()
+
+        # Pick 101 via callback
+        c.data = "admin_f_pick:101:1"
+        await bot.cb_admin_featured_pick(c)
+        self.assertEqual(bot.get_featured_product_ids(), [101])
+
+        # Delete 101 via callback
+        c.data = "admin_f_del:101"
+        await bot.cb_admin_featured_del(c)
+        self.assertEqual(bot.get_featured_product_ids(), [])
+
+        # Non-admin rejection
+        c_bad = AsyncMock()
+        c_bad.from_user.id = 9999999
+        c_bad.data = "admin_featured"
+        c_bad.answer = AsyncMock()
+        await bot.cb_admin_featured(c_bad)
+        c_bad.answer.assert_called_with("Unauthorized", show_alert=True)
+
 
 if __name__ == "__main__":
     unittest.main()
