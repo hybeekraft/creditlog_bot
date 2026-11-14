@@ -1237,6 +1237,7 @@ def render_featured_panel(admin_uid: int) -> Tuple[str, InlineKeyboardMarkup]:
     admin_curr = get_user_currency(admin_uid)
     all_featured = get_featured_products(include_inactive=True)
     pids = get_featured_product_ids()
+    missing_ids = [pid for pid in pids if pid not in {p["id"]: True for p in all_featured}]
 
     text_lines = [
         "⭐ <b>Homepage Featured Products Management</b>\n",
@@ -1249,10 +1250,9 @@ def render_featured_panel(admin_uid: int) -> Tuple[str, InlineKeyboardMarkup]:
         for idx, p in enumerate(all_featured, 1):
             status = "🟢" if p["active"] else "🔴 [INACTIVE]"
             price_disp = format_price(p["price"], admin_curr)
-            cat_disp = f" [{p['category']}]" if ("category" in p.keys() and p["category"]) else ""
+            cat_disp = f" [{esc(p['category'])}]" if ("category" in p.keys() and p["category"]) else ""
             text_lines.append(f"{idx}. {status} <code>#{p['id']}</code> <b>{esc(p['name'])}</b>{cat_disp} · {price_disp}")
 
-        missing_ids = [pid for pid in pids if pid not in {p["id"]: True for p in all_featured}]
         for m_id in missing_ids:
             text_lines.append(f"⚠️ <code>#{m_id}</code> <i>(Deleted from catalogue)</i>")
         text_lines.append("")
@@ -1268,6 +1268,8 @@ def render_featured_panel(admin_uid: int) -> Tuple[str, InlineKeyboardMarkup]:
     rows = []
     for p in all_featured:
         rows.append([btn(f"❌ Remove #{p['id']} {p['name'][:20]}", f"admin_f_del:{p['id']}", style="danger")])
+    for m_id in missing_ids:
+        rows.append([btn(f"❌ Remove #{m_id} (Deleted)", f"admin_f_del:{m_id}", style="danger")])
 
     action_row = [btn("➕ Add Product", "admin_f_add:1", style="success")]
     if all_featured or pids:
@@ -1277,6 +1279,7 @@ def render_featured_panel(admin_uid: int) -> Tuple[str, InlineKeyboardMarkup]:
     rows.append([
         btn("👁 Preview Homepage", "home", style="primary"),
         btn("🔄 Refresh", "admin_featured", style="primary"),
+        btn("⬅ Admin Menu", "admin_menu", style="primary"),
     ])
     return "\n".join(text_lines), kb(rows)
 
@@ -1336,7 +1339,7 @@ def home_kb(uid: int):
         elif "duolingo" in p_name_lower:
             emoji_id = get_custom_emoji_id("duolingo_product") or get_custom_emoji_id("duolingo") or get_custom_emoji_id("education")
         else:
-            cat_key = p["category"].lower() if ("category" in p.keys() and p["category"]) else ""
+            cat_key = p["category"].lower().replace(" ", "_") if ("category" in p.keys() and p["category"]) else ""
             emoji_id = get_custom_emoji_id(f"p_{p['id']}") or get_custom_emoji_id(cat_key)
 
         price_disp = format_user_price(p["price"], uid)
@@ -3447,10 +3450,8 @@ async def cmd_currency(m: Message):
     await m.answer(t(uid, "currency_choose"), reply_markup=kb(rows))
 
 
-# Admin commands
-@dp.message(Command("admin"), is_admin)
-async def admin_help(m: Message):
-    await m.answer(
+def render_admin_help() -> Tuple[str, InlineKeyboardMarkup]:
+    text = (
         "<b>Admin Commands</b>\n\n"
         "<b>Catalog & Products</b>\n"
         "/featured - Manage homepage featured products (add/remove/set/clear)\n"
@@ -3493,12 +3494,29 @@ async def admin_help(m: Message):
         "/approve &lt;order_id&gt; - Approve & buy from supplier after top-up\n"
         "/deliver &lt;order_id&gt; &lt;item&gt; - Deliver manually to buyer\n\n"
         "🔒 <b>Force-Subscription (FSUB)</b>\n"
-        "/fsub - View status & manage mandatory join channels",
-        reply_markup=kb([
-            [btn("⭐ Homepage Products", "admin_featured", style="primary"),
-             btn("📊 Export Excel", "admin_export_excel", style="success")]
-        ])
+        "/fsub - View status & manage mandatory join channels"
     )
+    markup = kb([
+        [btn("⭐ Homepage Products", "admin_featured", style="primary"),
+         btn("📊 Export Excel", "admin_export_excel", style="success")]
+    ])
+    return text, markup
+
+
+# Admin commands
+@dp.message(Command("admin"), is_admin)
+async def admin_help(m: Message):
+    text, markup = render_admin_help()
+    await m.answer(text, reply_markup=markup)
+
+
+@dp.callback_query(F.data == "admin_menu")
+async def cb_admin_menu(c: CallbackQuery):
+    if not (c.from_user and c.from_user.id in ADMIN_IDS):
+        return await c.answer("Unauthorized", show_alert=True)
+    text, markup = render_admin_help()
+    await edit(c, text, markup)
+    await c.answer()
 
 
 @dp.message(Command("fsub"), is_admin)
@@ -3724,34 +3742,66 @@ async def admin_featured_cmd(m: Message, command: CommandObject = None):
     sub_args = parts[1].strip() if len(parts) > 1 else ""
 
     if action in ("add", "+"):
-        if not sub_args or not sub_args.isdigit():
-            return await m.answer("Usage: <code>/featured add &lt;product_id&gt;</code> (e.g. <code>/featured add 85</code>)")
-        pid = int(sub_args)
-        p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
-        if not p:
-            return await m.answer(f"❌ Product <code>#{pid}</code> not found in catalogue.")
-        if add_featured_product_id(pid):
-            admin_curr = get_user_currency(m.from_user.id)
-            return await m.answer(
-                f"✅ Added <code>#{pid}</code> <b>{esc(p['name'])}</b> ({format_price(p['price'], admin_curr)}) to homepage featured products.",
-                reply_markup=kb([[btn("⭐ Manage Featured", "admin_featured", style="primary"), btn("👁 View Homepage", "home", style="success")]])
-            )
-        else:
-            return await m.answer(f"⚠️ Product <code>#{pid}</code> <b>{esc(p['name'])}</b> is already featured on the homepage.")
+        if not sub_args:
+            return await m.answer("Usage: <code>/featured add &lt;product_id&gt;</code> (e.g. <code>/featured add 85</code> or <code>/featured add 85, 72</code>)")
+        raw_tokens = [tok for tok in re.split(r"[,\s]+", sub_args) if tok]
+        added = []
+        already = []
+        missing = []
+        for tok in raw_tokens:
+            if tok.isdigit():
+                pid = int(tok)
+                p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+                if not p:
+                    missing.append(str(pid))
+                elif add_featured_product_id(pid):
+                    added.append(f"#{pid} {p['name']}")
+                else:
+                    already.append(f"#{pid}")
+            else:
+                missing.append(tok)
+
+        reply_parts = []
+        if added:
+            reply_parts.append(f"✅ Added {len(added)} product(s) to homepage: <b>{esc(', '.join(added))}</b>")
+        if already:
+            reply_parts.append(f"⚠️ Already featured: <code>{', '.join(esc(x) for x in already)}</code>")
+        if missing:
+            reply_parts.append(f"❌ Not found in catalogue: <code>{', '.join(esc(x) for x in missing)}</code>")
+
+        return await m.answer(
+            "\n".join(reply_parts) if reply_parts else "❌ No valid product IDs provided.",
+            reply_markup=kb([[btn("⭐ Manage Featured", "admin_featured", style="primary"), btn("👁 View Homepage", "home", style="success")]])
+        )
 
     elif action in ("remove", "del", "rm", "-"):
-        if not sub_args or not sub_args.isdigit():
+        if not sub_args:
             return await m.answer("Usage: <code>/featured remove &lt;product_id&gt;</code> (e.g. <code>/featured remove 85</code>)")
-        pid = int(sub_args)
-        p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
-        name_str = f" <b>{esc(p['name'])}</b>" if p else ""
-        if remove_featured_product_id(pid):
-            return await m.answer(
-                f"✅ Removed <code>#{pid}</code>{name_str} from homepage.\n<i>(Note: Product remains active in the store catalogue)</i>",
-                reply_markup=kb([[btn("⭐ Manage Featured", "admin_featured", style="primary")]])
-            )
-        else:
-            return await m.answer(f"⚠️ Product <code>#{pid}</code> is not currently in the homepage featured list.")
+        raw_tokens = [tok for tok in re.split(r"[,\s]+", sub_args) if tok]
+        removed = []
+        not_feat = []
+        for tok in raw_tokens:
+            if tok.isdigit():
+                pid = int(tok)
+                p = db.execute("SELECT name FROM products WHERE id=?", (pid,)).fetchone()
+                name_str = f"#{pid} {p['name']}" if p else f"#{pid}"
+                if remove_featured_product_id(pid):
+                    removed.append(name_str)
+                else:
+                    not_feat.append(str(pid))
+            else:
+                not_feat.append(tok)
+
+        reply_parts = []
+        if removed:
+            reply_parts.append(f"✅ Removed {len(removed)} product(s) from homepage: <b>{esc(', '.join(removed))}</b>\n<i>(Note: Products remain active in the store catalogue)</i>")
+        if not_feat:
+            reply_parts.append(f"⚠️ Not currently featured: <code>{', '.join(esc(x) for x in not_feat)}</code>")
+
+        return await m.answer(
+            "\n".join(reply_parts) if reply_parts else "❌ No valid product IDs provided.",
+            reply_markup=kb([[btn("⭐ Manage Featured", "admin_featured", style="primary")]])
+        )
 
     elif action == "clear":
         set_featured_product_ids([])
@@ -3782,7 +3832,7 @@ async def admin_featured_cmd(m: Message, command: CommandObject = None):
             return await m.answer("❌ No valid product IDs provided.")
 
         set_featured_product_ids(valid_ids)
-        warning = f"\n⚠️ Ignored unknown IDs: {', '.join(invalid_ids)}" if invalid_ids else ""
+        warning = f"\n⚠️ Ignored unknown IDs: {', '.join(esc(i) for i in invalid_ids)}" if invalid_ids else ""
         return await m.answer(
             f"✅ Homepage featured products updated ({len(valid_ids)} items): <code>{', '.join(str(i) for i in valid_ids)}</code>{warning}",
             reply_markup=kb([[btn("⭐ Manage Featured", "admin_featured", style="primary"), btn("👁 View Homepage", "home", style="success")]])
@@ -3861,15 +3911,18 @@ async def cb_admin_featured_pick(c: CallbackQuery):
         return await c.answer("Unauthorized", show_alert=True)
     parts = c.data.split(":")
     pid_str = parts[1]
+    page_str = parts[2] if len(parts) > 2 else "1"
+    page = int(page_str) if page_str.isdigit() else 1
     if pid_str.isdigit():
         pid = int(pid_str)
         p = db.execute("SELECT name FROM products WHERE id=?", (pid,)).fetchone()
         pname = p["name"] if p else f"#{pid}"
         if add_featured_product_id(pid):
-            await c.answer(f"Added #{pid} to homepage!", show_alert=False)
+            await c.answer(f"Added #{pid} {pname[:20]} to homepage!", show_alert=False)
         else:
-            await c.answer(f"#{pid} is already featured.", show_alert=False)
-    text, markup = render_featured_panel(c.from_user.id)
+            remove_featured_product_id(pid)
+            await c.answer(f"Removed #{pid} from homepage!", show_alert=False)
+    text, markup = render_featured_add_picker(c.from_user.id, page)
     await edit(c, text, markup)
 
 
@@ -3917,7 +3970,7 @@ async def admin_products(m: Message):
         price_disp = format_price(p["price"], admin_curr)
         cost_disp = f" (cost {format_price(p['supplier_price'], admin_curr)})" if p["supplier_price"] else ""
 
-        cat_disp = f" [{p['category']}]" if ("category" in p.keys() and p["category"]) else ""
+        cat_disp = f" [{esc(p['category'])}]" if ("category" in p.keys() and p["category"]) else ""
         lines.append(
             f"{status_badge} #{p['id']}. <b>{esc(p['name'])}</b>{cat_disp} · {price_disp}{cost_disp}{margin_info}"
         )

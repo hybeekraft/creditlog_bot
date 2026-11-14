@@ -4128,6 +4128,15 @@ class TestBachsPaymentGateway(unittest.IsolatedAsyncioTestCase):
         await bot.admin_featured_cmd(m, cmd_clr)
         self.assertEqual(bot.get_featured_product_ids(), [])
 
+        # 5b. Multi-add and multi-remove
+        cmd_multi = bot.CommandObject(prefix="/", command="featured", args="add 101, 102")
+        await bot.admin_featured_cmd(m, cmd_multi)
+        self.assertEqual(bot.get_featured_product_ids(), [101, 102])
+
+        cmd_multi_rm = bot.CommandObject(prefix="/", command="featured", args="remove 101 102")
+        await bot.admin_featured_cmd(m, cmd_multi_rm)
+        self.assertEqual(bot.get_featured_product_ids(), [])
+
         # 6. Test callbacks
         c = AsyncMock()
         c.from_user.id = admin_id
@@ -4143,6 +4152,11 @@ class TestBachsPaymentGateway(unittest.IsolatedAsyncioTestCase):
         c.data = "admin_f_del:101"
         await bot.cb_admin_featured_del(c)
         self.assertEqual(bot.get_featured_product_ids(), [])
+
+        # Admin menu callback
+        c.data = "admin_menu"
+        await bot.cb_admin_menu(c)
+        c.answer.assert_called()
 
         # Non-admin rejection
         c_bad = AsyncMock()
