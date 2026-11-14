@@ -12,7 +12,7 @@ import re
 import sqlite3
 import sys
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 from aiohttp import web
