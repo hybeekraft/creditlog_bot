@@ -293,8 +293,15 @@ def get_bachs_key() -> str:
     return (get_setting("bachs_api_key", "") or os.environ.get("BACHS_API_KEY", "")).strip()
 
 
+def is_bachs_enabled() -> bool:
+    """Check if Bachs payments are active (not paused)."""
+    return get_setting("bachs_enabled", "1") not in ("0", "false", "paused", "off")
+
+
 def is_bachs_configured() -> bool:
-    """Check if Bachs is set up."""
+    """Check if Bachs is set up and active."""
+    if not is_bachs_enabled():
+        return False
     key = get_bachs_key()
     if key.lower() in ("off", "disable", "disabled", "none", "0"):
         return False
@@ -3197,7 +3204,8 @@ async def admin_help(m: Message):
         "/setrate [rate_ngn] - View or update USD to NGN exchange rate\n"
         "/currency - Switch your active display currency (USD / NGN)\n"
         "/setbachs [api_key] - Configure Bachs Payments Gateway\n"
-        "/bachs - View Bachs Gateway configuration & status\n"
+        "/bachs [play|pause] - View Bachs Gateway status, play or pause checkout\n"
+        "/bachsplay / /bachspause - Play (resume) or pause Bachs payments\n"
         "/bachscurrency [USD|NGN] - Set Bachs checkout currency\n"
         "/setbank [Bank | AccNum | Name] - Configure or update Direct Bank Transfer\n"
         "/addbank &lt;Bank | AccNum | Name&gt; - Add another bank account (multi-bank)\n"
@@ -4158,22 +4166,73 @@ async def admin_view_bank(m: Message, command: CommandObject = None):
     return await admin_setbank(m, command)
 
 
+@dp.message(Command("bachspause", "pausebachs"), is_admin)
+async def admin_pause_bachs(m: Message, command: CommandObject = None):
+    set_setting("bachs_enabled", "0")
+    await m.answer(
+        "⏸️ <b>Bachs Payments Paused!</b>\n\n"
+        "Bachs checkout is now paused and hidden from customers in checkout.\n\n"
+        "<i>To resume payments at any time, run <code>/bachs play</code> or <code>/bachsplay</code>.</i>"
+    )
+
+
+@dp.message(Command("bachsplay", "playbachs"), is_admin)
+async def admin_play_bachs(m: Message, command: CommandObject = None):
+    # Clear "off" setting if previously set so environment key can be used
+    if get_setting("bachs_api_key", "").lower() in ("off", "disable", "disabled", "none", "0"):
+        set_setting("bachs_api_key", "")
+    key = get_bachs_key()
+    has_key = bool(key and key.lower() not in ("off", "disable", "disabled", "none", "0") and not key.startswith("your_") and len(key) >= 10)
+    if not has_key:
+        return await m.answer(
+            "⚠️ <b>Cannot resume Bachs payments:</b> No valid API key is configured.\n\n"
+            "Please configure your API key first:\n"
+            "<code>/setbachs &lt;api_key&gt;</code>"
+        )
+    set_setting("bachs_enabled", "1")
+    curr = get_bachs_currency()
+    env_type = "Sandbox" if "sandbox" in key.lower() or key.startswith("sk_test") else "Live"
+    await m.answer(
+        "▶️ <b>Bachs Payments Resumed!</b>\n\n"
+        "Bachs checkout is now active and available for buyers.\n\n"
+        f"• <b>Environment:</b> <code>{env_type}</code>\n"
+        f"• <b>Currency:</b> <code>{curr}</code>\n\n"
+        "<i>To pause payments at any time, run <code>/bachs pause</code> or <code>/bachspause</code>.</i>"
+    )
+
+
 @dp.message(Command("delbachs", "clearbachs"), is_admin)
 @dp.message(Command("setbachs"), is_admin)
 async def admin_setbachs(m: Message, command: CommandObject = None):
     cmd_name = command.command.lower() if command and command.command else ""
-    args = (command.args or "").strip() if command else ""
-    if cmd_name in ("delbachs", "clearbachs") or args.lower() in ("off", "disable", "clear", "del", "delete", "none", "0"):
+    raw_args = (command.args or "").strip() if command else ""
+    args_lower = raw_args.lower()
+    if cmd_name in ("delbachs", "clearbachs") or args_lower in ("off", "disable", "clear", "del", "delete", "none", "0"):
         set_setting("bachs_api_key", "off")
         return await m.answer(
             "✅ <b>Bachs Payment Gateway Disabled!</b>\n\n"
             "Bachs checkout has been deactivated. The Bachs payment button will no longer appear in the checkout menu.\n\n"
             "<i>To re-enable at any time, run <code>/setbachs &lt;api_key&gt;</code></i>"
         )
-    if not args:
-        configured = is_bachs_configured()
-        status_text = "🟢 <b>Configured & Active</b>" if configured else "🔴 <b>Not Configured</b>"
+    if args_lower in ("pause", "stop", "hold", "freeze"):
+        return await admin_pause_bachs(m, command)
+    if args_lower in ("play", "start", "resume", "enable", "on", "unpause"):
+        return await admin_play_bachs(m, command)
+    if args_lower == "toggle":
+        if is_bachs_enabled():
+            return await admin_pause_bachs(m, command)
+        else:
+            return await admin_play_bachs(m, command)
+    if not raw_args:
         key = get_bachs_key()
+        has_key = bool(key and key.lower() not in ("off", "disable", "disabled", "none", "0") and not key.startswith("your_") and len(key) >= 10)
+        if not has_key:
+            status_text = "🔴 <b>Not Configured</b>"
+        elif not is_bachs_enabled():
+            status_text = "⏸️ <b>Paused (Checkout Disabled)</b>"
+        else:
+            status_text = "🟢 <b>Configured & Active</b>"
+
         masked = f"{key[:8]}...{key[-4:]}" if len(key) > 12 else ("(not set)" if not key else "***")
         curr = get_bachs_currency()
         env_type = "Sandbox" if "sandbox" in key.lower() or key.startswith("sk_test") else "Live"
@@ -4183,16 +4242,20 @@ async def admin_setbachs(m: Message, command: CommandObject = None):
             f"• <b>Environment:</b> <code>{env_type}</code>\n"
             f"• <b>Currency:</b> <code>{curr}</code>\n"
             f"• <b>Base URL:</b> <code>{get_bachs_base_url()}</code>\n\n"
-            f"<b>To configure or update your Bachs API key:</b>\n"
-            f"<code>/setbachs &lt;api_key&gt;</code>\n\n"
+            f"<b>Controls:</b>\n"
+            f"• <code>/bachspause</code> or <code>/bachs pause</code> - Pause Bachs payments\n"
+            f"• <code>/bachsplay</code> or <code>/bachs play</code> - Resume Bachs payments\n"
+            f"• <code>/bachscurrency USD|NGN</code> - Set billing currency\n"
+            f"• <code>/setbachs &lt;api_key&gt;</code> - Update API key\n\n"
             f"<i>Get your API key (sk_live_... or sk_sandbox_...) from your dashboard at https://app.bachs.io</i>"
         )
-    set_setting("bachs_api_key", args)
-    env_type = "Sandbox" if "sandbox" in args.lower() or args.startswith("sk_test") else "Live"
+    set_setting("bachs_api_key", raw_args)
+    set_setting("bachs_enabled", "1")
+    env_type = "Sandbox" if "sandbox" in raw_args.lower() or raw_args.startswith("sk_test") else "Live"
     await m.answer(
         f"✅ <b>Bachs API Key Updated!</b>\n\n"
         f"• <b>Environment:</b> <code>{env_type}</code>\n"
-        f"• <b>Base URL:</b> <code>{get_bachs_base_url(args)}</code>\n\n"
+        f"• <b>Base URL:</b> <code>{get_bachs_base_url(raw_args)}</code>\n\n"
         f"💳 Customers can now pay using Cards, Bank Transfer, Mobile Money, and Crypto via Bachs in checkout!"
     )
 
@@ -4747,7 +4810,9 @@ async def main():
             BotCommand(command="supplier", description="Supplier balance & info"),
             BotCommand(command="setrate", description="Update USD/NGN exchange rate"),
             BotCommand(command="setbachs", description="Configure Bachs API Key"),
-            BotCommand(command="bachs", description="View Bachs Gateway details"),
+            BotCommand(command="bachs", description="View Bachs Gateway details & status"),
+            BotCommand(command="bachsplay", description="Play/resume Bachs payments"),
+            BotCommand(command="bachspause", description="Pause Bachs payments"),
             BotCommand(command="setbank", description="Configure Direct Bank Transfer"),
             BotCommand(command="addbank", description="Add additional bank account"),
             BotCommand(command="delbank", description="Remove a bank account"),

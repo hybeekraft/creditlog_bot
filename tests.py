@@ -3914,6 +3914,64 @@ class TestBachsPaymentGateway(unittest.IsolatedAsyncioTestCase):
         # Cleanup
         bot.set_setting("bachs_api_key", "")
 
+    async def test_bachs_pause_and_play(self):
+        # 1. Setup valid live key
+        bot.set_setting("bachs_api_key", "sk_live_1234567890abcdef")
+        self.assertTrue(bot.is_bachs_enabled())
+        self.assertTrue(bot.is_bachs_configured())
+
+        # 2. Pause via /bachspause
+        m = AsyncMock()
+        cmd = MagicMock()
+        await bot.admin_pause_bachs(m, cmd)
+        self.assertFalse(bot.is_bachs_enabled())
+        self.assertFalse(bot.is_bachs_configured())
+        self.assertIn("Paused", m.answer.call_args[0][0])
+
+        # 3. Status shows paused
+        m.reset_mock()
+        cmd.args = ""
+        await bot.admin_view_bachs(m, cmd)
+        self.assertIn("Paused", m.answer.call_args[0][0])
+
+        # 4. Resume via /bachsplay
+        m.reset_mock()
+        await bot.admin_play_bachs(m, cmd)
+        self.assertTrue(bot.is_bachs_enabled())
+        self.assertTrue(bot.is_bachs_configured())
+        self.assertIn("Resumed", m.answer.call_args[0][0])
+
+        # 5. Pause via /bachs pause arg
+        m.reset_mock()
+        cmd.args = "pause"
+        await bot.admin_setbachs(m, cmd)
+        self.assertFalse(bot.is_bachs_configured())
+        self.assertIn("Paused", m.answer.call_args[0][0])
+
+        # 6. Resume via /bachs play arg
+        m.reset_mock()
+        cmd.args = "play"
+        await bot.admin_setbachs(m, cmd)
+        self.assertTrue(bot.is_bachs_configured())
+        self.assertIn("Resumed", m.answer.call_args[0][0])
+
+        # 7. Toggle
+        m.reset_mock()
+        cmd.args = "toggle"
+        await bot.admin_setbachs(m, cmd)
+        self.assertFalse(bot.is_bachs_configured())
+        m.reset_mock()
+        cmd.args = "toggle"
+        await bot.admin_setbachs(m, cmd)
+        self.assertTrue(bot.is_bachs_configured())
+
+        # 8. Resume without key warns
+        bot.set_setting("bachs_api_key", "")
+        bot.set_setting("bachs_enabled", "0")
+        m.reset_mock()
+        await bot.admin_play_bachs(m, cmd)
+        self.assertIn("Cannot resume", m.answer.call_args[0][0])
+
     async def test_start_deep_linking(self):
         # Setup product and order
         pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Start Deep Link Test', 'Desc', 200, 1)").lastrowid
