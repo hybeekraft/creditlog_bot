@@ -680,6 +680,80 @@ def migrate_db():
         );
     """)
 
+    # One-time safe product ID resequencing to clean 1..N
+    if get_setting("products_resequenced_v1") != "1":
+        resequence_product_ids(db)
+        set_setting("products_resequenced_v1", "1")
+
+
+def resequence_product_ids(conn=None) -> Dict[int, int]:
+    """Safely resequence products to consecutive IDs (1..N) and update referencing orders/stock."""
+    target = conn or db
+    try:
+        cur = target.cursor()
+        has_table = cur.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='products'").fetchone()[0]
+        if not has_table:
+            return {}
+        prods = cur.execute("SELECT id, name, category FROM products ORDER BY category ASC, name ASC").fetchall()
+        if not prods:
+            return {}
+
+        mapping = {p["id"]: idx for idx, p in enumerate(prods, 1)}
+        if all(p["id"] == mapping[p["id"]] for p in prods):
+            return mapping
+
+        has_orders = cur.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='orders'").fetchone()[0]
+        has_stock = cur.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='stock'").fetchone()[0]
+
+        if has_orders:
+            for old_id, new_id in mapping.items():
+                cur.execute("UPDATE orders SET product_id = ? WHERE product_id = ?", (-new_id, old_id))
+            cur.execute("UPDATE orders SET product_id = -product_id WHERE product_id < 0")
+
+        if has_stock:
+            for old_id, new_id in mapping.items():
+                cur.execute("UPDATE stock SET product_id = ? WHERE product_id = ?", (-new_id, old_id))
+            cur.execute("UPDATE stock SET product_id = -product_id WHERE product_id < 0")
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS products_seq_tmp (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                price INTEGER NOT NULL,
+                active INTEGER DEFAULT 1,
+                supplier_product_id TEXT DEFAULT NULL,
+                supplier_price INTEGER DEFAULT NULL,
+                auto_fulfill INTEGER DEFAULT 0,
+                margin INTEGER DEFAULT NULL,
+                category TEXT DEFAULT 'AI Tools',
+                supplier TEXT DEFAULT 'default',
+                supplier_stock INTEGER DEFAULT NULL,
+                delivery_type TEXT DEFAULT 'auto',
+                fixed_price INTEGER DEFAULT 0
+            )
+        """)
+
+        for p in prods:
+            old_id = p["id"]
+            new_id = mapping[old_id]
+            row = dict(cur.execute("SELECT * FROM products WHERE id = ?", (old_id,)).fetchone())
+            row["id"] = new_id
+            cols = list(row.keys())
+            placeholders = ",".join("?" for _ in cols)
+            cur.execute(f"INSERT INTO products_seq_tmp ({','.join(cols)}) VALUES ({placeholders})", [row[k] for k in cols])
+
+        cur.execute("DROP TABLE products")
+        cur.execute("ALTER TABLE products_seq_tmp RENAME TO products")
+        cur.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'products'", (len(prods),))
+        target.commit()
+        log.info("Products resequenced successfully to 1..%d", len(prods))
+        return mapping
+    except Exception as e:
+        log.warning("Product resequencing failed: %s", e)
+        return {}
+
+
 migrate_db()
 
 
