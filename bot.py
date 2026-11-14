@@ -3185,7 +3185,7 @@ async def admin_help(m: Message):
         "/addproduct &lt;price&gt; [currency] &lt;name&gt; [| description] (e.g. $12.50 or 15000 NGN)\n"
         "/setprice &lt;product_id&gt; &lt;price&gt; [currency] (e.g. /setprice 1 15000 NGN or $12.50)\n"
         "/clearprices [product_id] - Clear manual price overrides & reset to dynamic supplier pricing\n"
-        "• <code>/clearcache</code> - Clear all cached products & sync totally from supplier API\n"
+        "/clearcache - Clear all cached products & sync totally from supplier API\n"
         "/setmargin &lt;product_id&gt; &lt;margin_%&gt; (e.g. /setmargin 1 60%)\n"
         "/toggle &lt;product_id&gt;  (activate/deactivate)\n"
         "/addstock &lt;product_id&gt; &lt;item&gt;  (manual items, 1 per line)\n"
