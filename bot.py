@@ -86,7 +86,7 @@ PROFIT_MARGIN = parse_profit_margin(raw_margin, default=45)
 RESELLER_MARKUP_PERCENT = PROFIT_MARGIN
 
 # Supplier API setup
-RESELLER_BASE_URL = (os.environ.get("RESELLER_BASE_URL") or "https://api-geminipro.ignorelist.com/api/reseller/v1").rstrip("/")
+RESELLER_BASE_URL = (os.environ.get("RESELLER_BASE_URL") or "https://api.renqis.online/api/reseller/v1").rstrip("/")
 RESELLER_API_KEY = os.environ.get("RESELLER_API_KEY", "")
 supplier_registry = SupplierRegistry.from_env()
 reseller = supplier_registry.get("default") or ResellerClient(base_url=RESELLER_BASE_URL, api_key=RESELLER_API_KEY)

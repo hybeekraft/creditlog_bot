@@ -1,7 +1,7 @@
 """
 Reseller API Client for digital goods catalog.
 
-Provider Base URL: https://api-geminipro.ignorelist.com/api/reseller/v1
+Provider Base URL: https://api.renqis.online/api/reseller/v1
 Endpoints:
   - Products: GET /products
   - Product: GET /products/{productId}
@@ -36,7 +36,7 @@ class ResellerAPIError(Exception):
 class ResellerClient:
     def __init__(
         self,
-        base_url: str = "https://api-geminipro.ignorelist.com/api/reseller/v1",
+        base_url: str = "https://api.renqis.online/api/reseller/v1",
         api_key: str = "",
         timeout: int = 30,
         session: Optional[aiohttp.ClientSession] = None,
@@ -396,7 +396,7 @@ class SupplierRegistry:
                SUPPLIER_GAMES_URL=https://...
         """
         registry = cls()
-        def_url = os.environ.get("RESELLER_BASE_URL") or "https://api-geminipro.ignorelist.com/api/reseller/v1"
+        def_url = os.environ.get("RESELLER_BASE_URL") or "https://api.renqis.online/api/reseller/v1"
         def_key = os.environ.get("RESELLER_API_KEY", "").strip()
         if def_key:
             registry.register("default", ResellerClient(base_url=def_url, api_key=def_key), is_default=True)

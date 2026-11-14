@@ -7,7 +7,7 @@ os.environ["BOT_TOKEN"] = "123456:TEST_TOKEN_FOR_UNITTESTS"
 os.environ["ADMIN_IDS"] = "111222333"
 os.environ["DB_PATH"] = ":memory:"
 os.environ["RESELLER_API_KEY"] = "test_key"
-os.environ["RESELLER_BASE_URL"] = "https://api-geminipro.ignorelist.com/api/reseller/v1"
+os.environ["RESELLER_BASE_URL"] = "https://api.renqis.online/api/reseller/v1"
 
 import bot
 import onchain
