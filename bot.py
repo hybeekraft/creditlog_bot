@@ -459,152 +459,86 @@ CAT_BY_KEY = {k: (name, icon) for k, name, icon in CATEGORIES}
 CAT_KEY_BY_NAME = {name.lower(): k for k, name, icon in CATEGORIES}
 
 
+CATEGORY_KEYWORDS = (
+    (("codex", "astra"), "Codex API"),
+    (("chatgpt", "gpt", "openai"), "ChatGPT"),
+    (("gemini",), "Gemini"),
+    (("grok",), "Grok"),
+    (("claude", "anthropic"), "Claude"),
+    (("kimi", "moonshot"), "Kimi"),
+    (("sora", "runway", "pika", "kling", "luma", "video ai", "capcut"), "Video AI"),
+    (("elevenlabs", "eleven"), "ElevenLabs"),
+    (("qwen", "tongyi"), "Qwen API"),
+    (("deepseek",), "DeepSeek AI"),
+    (("cursor",), "Cursor API"),
+    (("adobe", "photoshop", "illustrator"), "Adobe"),
+    (("autodesk", "autocad", "revit", "3ds max", "maya"), "Autodesk"),
+    (("canva", "figma", "freepik", "envato", "design"), "Design"),
+    (("office", "windows", "microsoft", "o365", "excel", "word", "zoom", "notion"), "Office"),
+    (("duolingo", "coursera", "udemy", "education", "chegg", "quizlet", "cambly"), "Education"),
+    (("netflix", "disney", "hbo", "prime video", "streaming", "hulu", "crunchyroll", "youtube"), "Streaming"),
+    (("spotify", "apple music", "tidal", "deezer", "music"), "Music"),
+    (("vpn", "nordvpn", "expressvpn", "surfshark", "mullvad", "hma", "proton", "windscribe"), "VPN"),
+    (("security", "antivirus", "malwarebytes", "kaspersky", "eset"), "Security"),
+    (("steam", "playstation", "xbox", "nintendo", "game", "roblox"), "Games"),
+    (("twitter", "x.com", "instagram", "tiktok", "facebook", "linkedin", "social"), "Social"),
+    (("discord", "nitro", "decor", "gifting"), "Discord"),
+)
+
+PRODUCT_ICON_KEYWORDS = (
+    (("snapchat",), "👻"),
+    (("cursor",), "🔲"),
+    (("elevenlabs", "eleven"), "⏸️"),
+    (("kimi",), "🐇"),
+    (("capcut",), "✂️"),
+    (("kling", "veo", "heygen", "higgsfield"), "🎥"),
+    (("autodesk", "autocad"), "🅰️"),
+    (("prime video", "prime", "apple tv"), "📺"),
+    (("fallout", "game pass", "xbox"), "🎮"),
+    (("avast", "mcafee"), "🛡️"),
+    (("gamma", "wink", "gemini"), "✨"),
+    (("framer", "magic patterns", "mobbin", "supercut", "krea", "leonardo", "figma", "openart"), "🎨"),
+    (("n8n",), "⚙️"),
+    (("brain.fm",), "🎵"),
+    (("customer.io",), "📬"),
+    (("fin ai", "manus"), "🤖"),
+    (("warp", "jetbrains"), "💻"),
+    (("readwise",), "📖"),
+    (("icloud",), "☁️"),
+    (("wordwall", "quizlet", "scribd", "ilovepdf"), "📚"),
+    (("notion",), "📝"),
+    (("qwen",), "🔮"),
+    (("deepseek",), "🐳"),
+    (("surfshark",), "🦈"),
+    (("discord", "nitro"), "👾"),
+    (("gmail",), "📧"),
+    (("grammarly", "quillbot"), "✍️"),
+    (("pocket fm",), "📻"),
+    (("flux",), "⚡"),
+    (("hbo",), "🎬"),
+    (("windows",), "🪟"),
+    (("coursera", "kiro"), "🎓"),
+    (("peacock",), "🦚"),
+)
+
+
 def detect_category(name: str) -> str:
     n = name.lower()
-    if "codex" in n or "astra" in n:
-        return "Codex API"
-    if "chatgpt" in n or "gpt" in n or "openai" in n:
-        return "ChatGPT"
-    if "gemini" in n:
-        return "Gemini"
-    if "grok" in n:
-        return "Grok"
-    if "claude" in n or "anthropic" in n:
-        return "Claude"
-    if "kimi" in n or "moonshot" in n:
-        return "Kimi"
-    if any(k in n for k in ["sora", "runway", "pika", "kling", "luma", "video ai", "capcut"]):
-        return "Video AI"
-    if "elevenlabs" in n or "eleven" in n:
-        return "ElevenLabs"
-    if "qwen" in n or "tongyi" in n:
-        return "Qwen API"
-    if "deepseek" in n:
-        return "DeepSeek AI"
-    if "cursor" in n:
-        return "Cursor API"
-    if "adobe" in n or "photoshop" in n or "illustrator" in n:
-        return "Adobe"
-    if "autodesk" in n or "autocad" in n or "revit" in n or "3ds max" in n or "maya" in n:
-        return "Autodesk"
-    if any(k in n for k in ["canva", "figma", "freepik", "envato", "design"]):
-        return "Design"
-    if any(k in n for k in ["office", "windows", "microsoft", "o365", "excel", "word", "zoom", "notion"]):
-        return "Office"
-    if any(k in n for k in ["duolingo", "coursera", "udemy", "education", "chegg", "quizlet", "cambly"]):
-        return "Education"
-    if any(k in n for k in ["netflix", "disney", "hbo", "prime video", "streaming", "hulu", "crunchyroll", "youtube"]):
-        return "Streaming"
-    if any(k in n for k in ["spotify", "apple music", "tidal", "deezer", "music"]):
-        return "Music"
-    if any(k in n for k in ["vpn", "nordvpn", "expressvpn", "surfshark", "mullvad", "hma", "proton", "windscribe"]):
-        return "VPN"
-    if any(k in n for k in ["security", "antivirus", "malwarebytes", "kaspersky", "eset"]):
-        return "Security"
-    if any(k in n for k in ["steam", "playstation", "xbox", "nintendo", "game", "roblox"]):
-        return "Games"
-    if any(k in n for k in ["twitter", "x.com", "instagram", "tiktok", "facebook", "linkedin", "social"]):
-        return "Social"
-    if any(k in n for k in ["discord", "nitro", "decor", "gifting"]):
-        return "Discord"
+    for keywords, category in CATEGORY_KEYWORDS:
+        if any(k in n for k in keywords):
+            return category
     return "AI Tools"
 
 
 def get_product_icon(name: str, cat_name: Optional[str] = None) -> str:
     n = name.lower()
-    if "snapchat" in n:
-        return "👻"
-    if "cursor" in n:
-        return "🔲"
-    if "elevenlabs" in n or "eleven" in n:
-        return "⏸️"
-    if "kimi" in n:
-        return "🐇"
-    if "capcut" in n:
-        return "✂️"
-    if "kling" in n:
-        return "🎥"
-    if "autodesk" in n or "autocad" in n:
-        return "🅰️"
-    if "prime video" in n or "prime" in n:
-        return "📺"
-    if "apple tv" in n:
-        return "📺"
-    if "fallout" in n or "game pass" in n or "xbox" in n:
-        return "🎮"
-    if "avast" in n or "mcafee" in n:
-        return "🛡️"
-    if "gamma" in n:
-        return "✨"
-    if "framer" in n or "magic patterns" in n or "mobbin" in n or "supercut" in n or "krea" in n or "leonardo" in n:
-        return "🎨"
-    if "n8n" in n:
-        return "⚙️"
-    if "brain.fm" in n:
-        return "🎵"
-    if "customer.io" in n:
-        return "📬"
-    if "fin ai" in n:
-        return "🤖"
-    if "warp" in n:
-        return "💻"
-    if "wink" in n:
-        return "✨"
-    if "readwise" in n:
-        return "📖"
-    if "veo" in n or "heygen" in n:
-        return "🎥"
-    if "icloud" in n:
-        return "☁️"
-    if "wordwall" in n or "quizlet" in n:
-        return "📚"
-    if "notion" in n:
-        return "📝"
-    if "gemini" in n:
-        return "✨"
-    if "qwen" in n:
-        return "🔮"
-    if "deepseek" in n:
-        return "🐳"
-    if "surfshark" in n:
-        return "🦈"
-    if "discord" in n or "nitro" in n:
-        return "👾"
-    if "gmail" in n:
-        return "📧"
-    if "figma" in n:
-        return "🎨"
-    if "scribd" in n or "ilovepdf" in n:
-        return "📚"
-    if "grammarly" in n or "quillbot" in n:
-        return "✍️"
-    if "pocket fm" in n:
-        return "📻"
-    if "flux" in n:
-        return "⚡"
-    if "hbo" in n:
-        return "🎬"
-    if "windows" in n:
-        return "🪟"
-    if "jetbrains" in n:
-        return "💻"
-    if "higgsfield" in n:
-        return "🎥"
-    if "openart" in n:
-        return "🎨"
-    if "coursera" in n or "kiro" in n:
-        return "🎓"
-    if "peacock" in n:
-        return "🦚"
-    if "manus" in n:
-        return "🤖"
+    for keywords, icon in PRODUCT_ICON_KEYWORDS:
+        if any(k in n for k in keywords):
+            return icon
     category = cat_name or detect_category(name)
     key = CAT_KEY_BY_NAME.get(category.lower())
     if key and key in CAT_BY_KEY:
         return CAT_BY_KEY[key][1]
-    for _, c_name, icon in CATEGORIES:
-        if c_name.lower() == category.lower():
-            return icon
     return "📦"
 
 
@@ -623,45 +557,36 @@ def get_products_for_category(key: str) -> list[sqlite3.Row]:
 
 
 def migrate_db():
-    cols_p = {row["name"] for row in db.execute("PRAGMA table_info(products)").fetchall()}
-    if "supplier_product_id" not in cols_p:
-        db.execute("ALTER TABLE products ADD COLUMN supplier_product_id TEXT DEFAULT NULL")
-    if "supplier_price" not in cols_p:
-        db.execute("ALTER TABLE products ADD COLUMN supplier_price INTEGER DEFAULT NULL")
-    if "auto_fulfill" not in cols_p:
-        db.execute("ALTER TABLE products ADD COLUMN auto_fulfill INTEGER DEFAULT 0")
-    if "margin" not in cols_p:
-        db.execute("ALTER TABLE products ADD COLUMN margin INTEGER DEFAULT NULL")
-    if "category" not in cols_p:
-        db.execute("ALTER TABLE products ADD COLUMN category TEXT DEFAULT 'AI Tools'")
-    if "supplier" not in cols_p:
-        db.execute("ALTER TABLE products ADD COLUMN supplier TEXT DEFAULT 'default'")
-    if "supplier_stock" not in cols_p:
-        db.execute("ALTER TABLE products ADD COLUMN supplier_stock INTEGER DEFAULT NULL")
-    if "delivery_type" not in cols_p:
-        db.execute("ALTER TABLE products ADD COLUMN delivery_type TEXT DEFAULT 'auto'")
-
-    cols_o = {row["name"] for row in db.execute("PRAGMA table_info(orders)").fetchall()}
-    if "supplier_order_id" not in cols_o:
-        db.execute("ALTER TABLE orders ADD COLUMN supplier_order_id TEXT DEFAULT NULL")
-    if "supplier" not in cols_o:
-        db.execute("ALTER TABLE orders ADD COLUMN supplier TEXT DEFAULT 'default'")
-    if "status" not in cols_o:
-        db.execute("ALTER TABLE orders ADD COLUMN status TEXT DEFAULT 'completed'")
-    if "invoice_id" not in cols_o:
-        db.execute("ALTER TABLE orders ADD COLUMN invoice_id TEXT DEFAULT NULL")
-    if "quantity" not in cols_o:
-        db.execute("ALTER TABLE orders ADD COLUMN quantity INTEGER DEFAULT 1")
-    if "payment_method" not in cols_o:
-        db.execute("ALTER TABLE orders ADD COLUMN payment_method TEXT DEFAULT NULL")
-    if "txid" not in cols_o:
-        db.execute("ALTER TABLE orders ADD COLUMN txid TEXT DEFAULT NULL")
-    if "expected_amount" not in cols_o:
-        db.execute("ALTER TABLE orders ADD COLUMN expected_amount TEXT DEFAULT NULL")
-
-    cols_u = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
-    if "currency" not in cols_u:
-        db.execute("ALTER TABLE users ADD COLUMN currency TEXT DEFAULT 'USD'")
+    table_cols = {
+        "products": [
+            ("supplier_product_id", "TEXT DEFAULT NULL"),
+            ("supplier_price", "INTEGER DEFAULT NULL"),
+            ("auto_fulfill", "INTEGER DEFAULT 0"),
+            ("margin", "INTEGER DEFAULT NULL"),
+            ("category", "TEXT DEFAULT 'AI Tools'"),
+            ("supplier", "TEXT DEFAULT 'default'"),
+            ("supplier_stock", "INTEGER DEFAULT NULL"),
+            ("delivery_type", "TEXT DEFAULT 'auto'"),
+        ],
+        "orders": [
+            ("supplier_order_id", "TEXT DEFAULT NULL"),
+            ("supplier", "TEXT DEFAULT 'default'"),
+            ("status", "TEXT DEFAULT 'completed'"),
+            ("invoice_id", "TEXT DEFAULT NULL"),
+            ("quantity", "INTEGER DEFAULT 1"),
+            ("payment_method", "TEXT DEFAULT NULL"),
+            ("txid", "TEXT DEFAULT NULL"),
+            ("expected_amount", "TEXT DEFAULT NULL"),
+        ],
+        "users": [
+            ("currency", "TEXT DEFAULT 'USD'"),
+        ],
+    }
+    for table, cols in table_cols.items():
+        existing = {r["name"] for r in db.execute(f"PRAGMA table_info({table})").fetchall()}
+        for col_name, col_def in cols:
+            if col_name not in existing:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
 
     # Set categories for older products if missing
     for row in db.execute("SELECT id, name, category FROM products").fetchall():
@@ -789,6 +714,28 @@ def resequence_product_ids(conn=None) -> Dict[int, int]:
 
 
 migrate_db()
+
+
+async def refresh_catalog_excel(db_path: str = DB_PATH) -> Optional[str]:
+    """Generate the catalog Excel file safely."""
+    try:
+        from generate_catalog_excel import build_catalog_excel
+        return await build_catalog_excel(db_path)
+    except Exception as e:
+        log.warning("Catalog excel generation failed: %s", e)
+        return None
+
+
+def trigger_catalog_refresh(db_path: str = DB_PATH):
+    """Dispatch background catalog Excel generation if not in testing."""
+    if "unittest" in sys.modules:
+        return None
+    try:
+        from generate_catalog_excel import build_catalog_excel
+        return asyncio.create_task(build_catalog_excel(db_path))
+    except Exception as e:
+        log.warning("Catalog refresh dispatch failed: %s", e)
+        return None
 
 
 def get_custom_emoji_id(key: str) -> Optional[str]:
@@ -2256,22 +2203,54 @@ def render_fiat_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) ->
 
 
 
+def check_product_stock_available(p: sqlite3.Row, qty: int) -> Tuple[bool, int]:
+    """Check if product has enough manual stock for requested quantity."""
+    is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
+    deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
+    if not is_auto and deliv_type != "manual":
+        has_stock_rows = db.execute("SELECT 1 FROM stock WHERE product_id=?", (p["id"],)).fetchone()
+        if has_stock_rows:
+            avail = stock_count(p["id"])
+            if avail < qty:
+                return False, avail
+    return True, 0
+
+
+def parse_cart_callback(c: CallbackQuery) -> Tuple[Optional[Tuple[int, int, str, sqlite3.Row]], Optional[str]]:
+    """Validate and parse cart callback in format 'prefix:pid:qty:ctx'."""
+    parts = c.data.split(":", 3)
+    if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
+        return None, "⚠️ Invalid callback data."
+    _, pid_str, qty_str, ctx = parts
+    pid, qty = int(pid_str), int(qty_str)
+    if not (1 <= qty <= 1000):
+        return None, "⚠️ Invalid quantity."
+    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
+    if not p:
+        return None, t(c.from_user.id, "out_of_stock")
+    return (pid, qty, ctx, p), None
+
+
+def build_order_action_kb(oid: int, action_btn: InlineKeyboardButton, check_callback: str, back_callback: str) -> InlineKeyboardMarkup:
+    """Standard 4-row keyboard for payment screens."""
+    return kb([
+        [action_btn],
+        [btn("✅ I've Paid — Check Status", check_callback, style="success")],
+        [btn("↩️ Back", back_callback, style="danger")],
+        [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
+    ])
+
+
 async def start_checkout(event: Message | CallbackQuery, uid: int, p: sqlite3.Row, qty: int, ctx: str):
     """Start checkout summary."""
     if not (1 <= qty <= 1000):
         qty = 1
-    pid = p["id"]
-    is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
-    deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
-    if not is_auto and deliv_type != "manual":
-        has_stock_rows = db.execute("SELECT 1 FROM stock WHERE product_id=?", (pid,)).fetchone()
-        if has_stock_rows:
-            avail = stock_count(pid)
-            if avail < qty:
-                msg = f"⚠️ Not enough stock available ({avail} left)."
-                if isinstance(event, CallbackQuery):
-                    return await event.answer(msg, show_alert=True)
-                return await event.answer(msg)
+    ok, avail = check_product_stock_available(p, qty)
+    if not ok:
+        msg = f"⚠️ Not enough stock available ({avail} left)."
+        if isinstance(event, CallbackQuery):
+            return await event.answer(msg, show_alert=True)
+        return await event.answer(msg)
 
     text, markup = render_order_summary(uid, p, qty, ctx)
     if isinstance(event, CallbackQuery):
@@ -2283,52 +2262,32 @@ async def start_checkout(event: Message | CallbackQuery, uid: int, p: sqlite3.Ro
 @dp.callback_query(F.data.startswith("summary:"))
 async def on_summary_back(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
-    uid = c.from_user.id
-    parts = c.data.split(":", 3)
-    if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
-        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
-    _, pid_str, qty_str, ctx = parts
-    pid, qty = int(pid_str), int(qty_str)
-    if not (1 <= qty <= 1000):
-        return await c.answer("⚠️ Invalid quantity.", show_alert=True)
-    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
-    if not p:
-        return await c.answer(t(uid, "out_of_stock"), show_alert=True)
-    text, markup = render_order_summary(uid, p, qty, ctx)
+    res, err = parse_cart_callback(c)
+    if err:
+        return await c.answer(err, show_alert=True)
+    pid, qty, ctx, p = res
+    text, markup = render_order_summary(c.from_user.id, p, qty, ctx)
     await edit(c, text, markup)
 
 
 @dp.callback_query(F.data.startswith("pay_dir:"))
 async def on_pay_directly(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
-    uid = c.from_user.id
-    parts = c.data.split(":", 3)
-    if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
-        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
-    _, pid_str, qty_str, ctx = parts
-    pid, qty = int(pid_str), int(qty_str)
-    if not (1 <= qty <= 1000):
-        return await c.answer("⚠️ Invalid quantity.", show_alert=True)
-    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
-    if not p:
-        return await c.answer(t(uid, "out_of_stock"), show_alert=True)
-    text, markup = render_payment_methods(uid, p, qty, ctx)
+    res, err = parse_cart_callback(c)
+    if err:
+        return await c.answer(err, show_alert=True)
+    pid, qty, ctx, p = res
+    text, markup = render_payment_methods(c.from_user.id, p, qty, ctx)
     await edit(c, text, markup)
 
 
 @dp.callback_query(F.data.startswith("pay_usdt_net:"))
 async def on_pay_usdt_network(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
-    parts = c.data.split(":", 3)
-    if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
-        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
-    _, pid_str, qty_str, ctx = parts
-    pid, qty = int(pid_str), int(qty_str)
-    if not (1 <= qty <= 1000):
-        return await c.answer("⚠️ Invalid quantity.", show_alert=True)
-    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
-    if not p:
-        return await c.answer(t(c.from_user.id, "out_of_stock"), show_alert=True)
+    res, err = parse_cart_callback(c)
+    if err:
+        return await c.answer(err, show_alert=True)
+    pid, qty, ctx, p = res
 
     trc20_emoji = get_custom_emoji_id("trc20") or get_custom_emoji_id("tron")
     bep20_emoji = get_custom_emoji_id("bep20") or get_custom_emoji_id("binance")
@@ -2350,16 +2309,10 @@ async def on_pay_usdt_network(c: CallbackQuery):
 @dp.callback_query(F.data.startswith("pay_fiat:"))
 async def on_pay_fiat(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
-    parts = c.data.split(":", 3)
-    if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
-        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
-    _, pid_str, qty_str, ctx = parts
-    pid, qty = int(pid_str), int(qty_str)
-    if not (1 <= qty <= 1000):
-        return await c.answer("⚠️ Invalid quantity.", show_alert=True)
-    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
-    if not p:
-        return await c.answer(t(c.from_user.id, "out_of_stock"), show_alert=True)
+    res, err = parse_cart_callback(c)
+    if err:
+        return await c.answer(err, show_alert=True)
+    pid, qty, ctx, p = res
 
     if not is_bank_configured() and not is_bachs_configured():
         return await c.answer("⚠️ Local / fiat payment methods are currently being set up. Please select CryptoPay, Binance Pay, or USDT.", show_alert=True)
@@ -2383,14 +2336,9 @@ async def on_pay_option_selected(c: CallbackQuery):
     if not p:
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
 
-    is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
-    deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
-    if not is_auto and deliv_type != "manual":
-        has_stock_rows = db.execute("SELECT 1 FROM stock WHERE product_id=?", (pid,)).fetchone()
-        if has_stock_rows:
-            avail = stock_count(pid)
-            if avail < qty:
-                return await c.answer(f"⚠️ Not enough stock available ({avail} left).", show_alert=True)
+    ok, avail = check_product_stock_available(p, qty)
+    if not ok:
+        return await c.answer(f"⚠️ Not enough stock available ({avail} left).", show_alert=True)
 
     total_cents = p["price"] * qty
     total_usdt = f"{total_cents / 100:.2f}"
@@ -2450,13 +2398,12 @@ async def on_pay_option_selected(c: CallbackQuery):
             "👉 <b>Step 3:</b> Return here and tap <b>✅ I've Paid — Check Status</b>.\n\n"
             "⌛ <i>Your product is delivered instantly upon payment confirmation!</i>"
         )
-        rows = [
-            [btn("💳 Pay with Bachs", url=checkout_url)],
-            [btn("✅ I've Paid — Check Status", f"chk_bachs:{oid}:{checkout_id}", style="success")],
-            [btn("↩️ Back", f"pay_fiat:{pid}:{qty}:{ctx}", style="danger")],
-            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
-        ]
-        return await edit(c, text, kb(rows))
+        return await edit(c, text, build_order_action_kb(
+            oid,
+            btn("💳 Pay with Bachs", url=checkout_url),
+            f"chk_bachs:{oid}:{checkout_id}",
+            f"pay_fiat:{pid}:{qty}:{ctx}"
+        ))
 
     # Bank transfer
     if method == "bank":
@@ -2509,13 +2456,12 @@ async def on_pay_option_selected(c: CallbackQuery):
             "✅ <b>Step 3:</b> Our admin verifies the transfer and your order is instantly delivered!\n\n"
             "⌛ <b>Please pay within 60 minutes.</b>"
         )
-        rows = [
-            [btn("🔗 Submit Transfer Reference / Name", f"submit_tx:{oid}", style="primary")],
-            [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
-            [btn("↩️ Back", f"pay_fiat:{pid}:{qty}:{ctx}", style="danger")],
-            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
-        ]
-        return await edit(c, text, kb(rows))
+        return await edit(c, text, build_order_action_kb(
+            oid,
+            btn("🔗 Submit Transfer Reference / Name", f"submit_tx:{oid}", style="primary"),
+            f"chk_manual:{oid}",
+            f"pay_fiat:{pid}:{qty}:{ctx}"
+        ))
 
     # CryptoBot (+3% fee)
     if method == "cryptobot":
@@ -2552,13 +2498,12 @@ async def on_pay_option_selected(c: CallbackQuery):
             "2. Complete payment in Telegram.\n"
             "3. Return and tap <b>I've Paid — Check Status</b> for instant delivery."
         )
-        rows = [
-            [btn(f"💳 Pay ${cb_usdt} USDT", url=pay_url, style="success")],
-            [btn("✅ I've Paid — Check Status", f"chk_cb:{oid}:{inv_id}", style="success")],
-            [btn("↩️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="danger")],
-            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
-        ]
-        return await edit(c, text, kb(rows))
+        return await edit(c, text, build_order_action_kb(
+            oid,
+            btn(f"💳 Pay ${cb_usdt} USDT", url=pay_url, style="success"),
+            f"chk_cb:{oid}:{inv_id}",
+            f"pay_dir:{pid}:{qty}:{ctx}"
+        ))
 
     # Binance Pay
     if method == "binance":
@@ -2584,13 +2529,12 @@ async def on_pay_option_selected(c: CallbackQuery):
             "⌛ <b>Please pay within 70 minutes</b>, otherwise this order expires and needs manual review.\n\n"
             "<i>Delivery is instant once verified by admin.</i>"
         )
-        rows = [
-            [btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary")],
-            [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
-            [btn("↩️ Back", f"pay_dir:{pid}:{qty}:{ctx}", style="danger")],
-            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
-        ]
-        return await edit(c, text, kb(rows))
+        return await edit(c, text, build_order_action_kb(
+            oid,
+            btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary"),
+            f"chk_manual:{oid}",
+            f"pay_dir:{pid}:{qty}:{ctx}"
+        ))
 
     # Add cents to crypto amount so we can identify this order on-chain
     extra_suffix = f"{(oid % 90) + 10:02d}"
@@ -2623,13 +2567,12 @@ async def on_pay_option_selected(c: CallbackQuery):
             "⌛ <b>Please pay within 70 minutes</b>, otherwise this order expires and needs manual review.\n\n"
             "<i>Delivery is instant once the transaction is confirmed on-chain (usually under a minute).</i>"
         )
-        rows = [
-            [btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary")],
-            [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
-            [btn("↩️ Back", f"pay_usdt_net:{pid}:{qty}:{ctx}", style="danger")],
-            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
-        ]
-        return await edit(c, text, kb(rows))
+        return await edit(c, text, build_order_action_kb(
+            oid,
+            btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary"),
+            f"chk_manual:{oid}",
+            f"pay_usdt_net:{pid}:{qty}:{ctx}"
+        ))
 
     # USDT on Tron (TRC20)
     if method == "trc20":
@@ -2653,13 +2596,12 @@ async def on_pay_option_selected(c: CallbackQuery):
             "⌛ <b>Please pay within 70 minutes</b>, otherwise this order expires and needs manual review.\n\n"
             "<i>Delivery is instant once the transaction is confirmed on-chain (usually under a minute).</i>"
         )
-        rows = [
-            [btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary")],
-            [btn("✅ I've Paid — Check Status", f"chk_manual:{oid}", style="success")],
-            [btn("↩️ Back", f"pay_usdt_net:{pid}:{qty}:{ctx}", style="danger")],
-            [btn("❌ Cancel Order", f"cancel_order:{oid}", style="danger")]
-        ]
-        return await edit(c, text, kb(rows))
+        return await edit(c, text, build_order_action_kb(
+            oid,
+            btn("🔗 Submit Transaction ID", f"submit_tx:{oid}", style="primary"),
+            f"chk_manual:{oid}",
+            f"pay_usdt_net:{pid}:{qty}:{ctx}"
+        ))
 
 
 @dp.callback_query(F.data.startswith("submit_tx:"))
@@ -2855,18 +2797,13 @@ async def on_cancel_order(c: CallbackQuery):
 @dp.callback_query(F.data.startswith("buyqty:"))
 async def on_buy_qty(c: CallbackQuery):
     pending_inputs.pop(c.from_user.id, None)
-    uid = c.from_user.id
-    parts = c.data.split(":", 3)
-    if len(parts) < 4 or not parts[1].isdigit() or not parts[2].isdigit():
-        return await c.answer("⚠️ Invalid callback data.", show_alert=True)
-    _, pid_str, qty_str, ctx = parts
-    pid, qty = int(pid_str), int(qty_str)
-    if not (1 <= qty <= 1000):
-        return await c.answer("⚠️ Invalid quantity.", show_alert=True)
-    p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
-    if not p or not is_product_available(p):
-        return await c.answer(t(uid, "out_of_stock"), show_alert=True)
-    await start_checkout(c, uid, p, qty, ctx)
+    res, err = parse_cart_callback(c)
+    if err:
+        return await c.answer(err, show_alert=True)
+    pid, qty, ctx, p = res
+    if not is_product_available(p):
+        return await c.answer(t(c.from_user.id, "out_of_stock"), show_alert=True)
+    await start_checkout(c, c.from_user.id, p, qty, ctx)
 
 
 @dp.callback_query(F.data.startswith("buy:"))
@@ -4160,11 +4097,7 @@ async def admin_clearprices(m: Message, command: CommandObject = None):
             price_msg = "fixed price lock removed"
 
         db.commit()
-        try:
-            from generate_catalog_excel import build_catalog_excel
-            asyncio.create_task(build_catalog_excel(DB_PATH))
-        except Exception:
-            pass
+        trigger_catalog_refresh()
         return await m.answer(f"✅ Reset Product #{pid} (<b>{esc(p['name'])}</b>): {price_msg}.")
 
     # Wipe all fixed price locks and custom margins across the store
@@ -4187,12 +4120,7 @@ async def admin_clearprices(m: Message, command: CommandObject = None):
         recalc_count += 1
 
     db.commit()
-
-    try:
-        from generate_catalog_excel import build_catalog_excel
-        asyncio.create_task(build_catalog_excel(DB_PATH))
-    except Exception:
-        pass
+    trigger_catalog_refresh()
 
     await m.answer(
         f"✅ <b>All Manual Price Overrides Cleared!</b>\n\n"
@@ -4373,13 +4301,10 @@ async def admin_backup(m: Message):
                 pass
 
 
-@dp.message(Command("export"), is_admin)
-@dp.message(Command("excel"), is_admin)
-async def admin_export_excel(m: Message):
-    status_msg = await m.answer("⏳ <i>Generating fresh products Excel catalog...</i>")
+async def send_catalog_document(target, status_msg: Optional[Message] = None):
+    """Generate and send the products Excel catalog (or CSV fallback) to a chat or callback."""
     try:
-        from generate_catalog_excel import build_catalog_excel
-        excel_path = await build_catalog_excel(DB_PATH)
+        excel_path = await refresh_catalog_excel(DB_PATH)
         if not excel_path or not os.path.exists(excel_path):
             excel_path = "CreditLog_Bot_Supplier_Products_Catalog.xlsx"
             if not os.path.exists(excel_path):
@@ -4389,19 +4314,34 @@ async def admin_export_excel(m: Message):
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         ext = "csv" if excel_path.endswith(".csv") else "xlsx"
         doc = FSInputFile(excel_path, filename=f"CreditLog_Products_{time.strftime('%Y%m%d_%H%M%S')}.{ext}")
-        await m.answer_document(
-            doc,
-            caption=(
-                f"📊 <b>Updated Products Catalog ({ext.upper()})</b>\n"
-                f"📅 Generated: <code>{ts}</code>\n"
-                f"📦 Size: <code>{size_kb:.1f} KB</code>\n\n"
-                f"• Wholesale costs, store prices, profit margins, stock & instructions included."
-            )
+        caption = (
+            f"📊 <b>Updated Products Catalog ({ext.upper()})</b>\n"
+            f"📅 Generated: <code>{ts}</code>\n"
+            f"📦 Size: <code>{size_kb:.1f} KB</code>\n\n"
+            f"• Wholesale costs, store prices, profit margins, stock & instructions included."
         )
-        await status_msg.delete()
+        if hasattr(target, "message") and target.message:
+            await target.message.answer_document(doc, caption=caption)
+        elif hasattr(target, "answer_document"):
+            await target.answer_document(doc, caption=caption)
+        if status_msg:
+            await status_msg.delete()
     except Exception as e:
         log.exception("Excel catalog export failed: %s", e)
-        await status_msg.edit_text(f"❌ Failed to generate Excel catalog: <code>{esc(str(e))}</code>")
+        err_msg = f"❌ Failed to generate Excel catalog: <code>{esc(str(e))}</code>"
+        if status_msg:
+            await status_msg.edit_text(err_msg)
+        elif hasattr(target, "message") and target.message:
+            await target.message.answer(err_msg)
+        elif hasattr(target, "answer"):
+            await target.answer(err_msg)
+
+
+@dp.message(Command("export"), is_admin)
+@dp.message(Command("excel"), is_admin)
+async def admin_export_excel(m: Message):
+    status_msg = await m.answer("⏳ <i>Generating fresh products Excel catalog...</i>")
+    await send_catalog_document(m, status_msg=status_msg)
 
 
 @dp.callback_query(F.data == "admin_export_excel")
@@ -4409,30 +4349,7 @@ async def cb_admin_export_excel(c: CallbackQuery):
     if not (c.from_user and c.from_user.id in ADMIN_IDS):
         return await c.answer("Unauthorized", show_alert=True)
     await c.answer("Generating catalog document...", show_alert=False)
-    try:
-        from generate_catalog_excel import build_catalog_excel
-        excel_path = await build_catalog_excel(DB_PATH)
-        if not excel_path or not os.path.exists(excel_path):
-            excel_path = "CreditLog_Bot_Supplier_Products_Catalog.xlsx"
-            if not os.path.exists(excel_path):
-                excel_path = "CreditLog_Bot_Supplier_Products_Catalog.csv"
-
-        size_kb = os.path.getsize(excel_path) / 1024.0
-        ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        ext = "csv" if excel_path.endswith(".csv") else "xlsx"
-        doc = FSInputFile(excel_path, filename=f"CreditLog_Products_{time.strftime('%Y%m%d_%H%M%S')}.{ext}")
-        await c.message.answer_document(
-            doc,
-            caption=(
-                f"📊 <b>Updated Products Catalog ({ext.upper()})</b>\n"
-                f"📅 Generated: <code>{ts}</code>\n"
-                f"📦 Size: <code>{size_kb:.1f} KB</code>\n\n"
-                f"• Wholesale costs, store prices, profit margins, stock & instructions included."
-            )
-        )
-    except Exception as e:
-        log.exception("Excel export callback failed: %s", e)
-        await c.message.answer(f"❌ Failed to generate Excel catalog: <code>{esc(str(e))}</code>")
+    await send_catalog_document(c)
 
 
 @dp.message(Command("setrate"), is_admin)
@@ -5162,12 +5079,7 @@ async def admin_supplier_sync(m: Message, command: CommandObject = None):
     sync_kb = kb([[btn("📊 Download Excel Catalog (.xlsx)", "admin_export_excel", style="success")]])
     await m.answer(res_msg, reply_markup=sync_kb)
 
-    if "unittest" not in sys.modules:
-        try:
-            from generate_catalog_excel import build_catalog_excel
-            asyncio.create_task(build_catalog_excel(DB_PATH))
-        except Exception:
-            pass
+    trigger_catalog_refresh()
 
 
 @dp.message(Command("clearcache", "clearcatalog"), is_admin)
@@ -5178,12 +5090,7 @@ async def admin_clearcache(m: Message, command: CommandObject = None):
 
     total_added, total_updated, total_items, errors = await perform_supplier_sync(purge_delisted=True)
 
-    if "unittest" not in sys.modules:
-        try:
-            from generate_catalog_excel import build_catalog_excel
-            asyncio.create_task(build_catalog_excel(DB_PATH))
-        except Exception as ex:
-            log.warning("Catalog excel build failed during /clearcache: %s", ex)
+    trigger_catalog_refresh()
 
     admin_curr = get_user_currency(m.from_user.id)
     active_count = db.execute("SELECT COUNT(*) FROM products WHERE active=1").fetchone()[0]
@@ -5269,11 +5176,7 @@ async def periodic_supplier_sync(interval_sec: int = 600):
             await asyncio.sleep(interval_sec)
             added, updated, total, errors = await perform_supplier_sync()
             log.info("Periodic supplier sync completed: %d updated, %d added of %d total (errors: %s)", updated, added, total, len(errors))
-            try:
-                from generate_catalog_excel import build_catalog_excel
-                await build_catalog_excel(DB_PATH)
-            except Exception as ex:
-                log.warning("Periodic Excel catalog refresh failed: %s", ex)
+            await refresh_catalog_excel()
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -5300,11 +5203,7 @@ async def main():
     try:
         init_added, init_updated, init_total, init_errs = await perform_supplier_sync()
         log.info("Initial supplier sync: %d updated, %d added of %d total (errors: %d)", init_updated, init_added, init_total, len(init_errs))
-        try:
-            from generate_catalog_excel import build_catalog_excel
-            await build_catalog_excel(DB_PATH)
-        except Exception:
-            pass
+        await refresh_catalog_excel()
     except Exception as e:
         log.warning("Initial supplier sync on startup failed: %s", e)
 

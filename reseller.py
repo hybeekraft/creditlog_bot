@@ -33,6 +33,22 @@ class ResellerAPIError(Exception):
         self.raw = raw
 
 
+DELIVERY_PAYLOAD_KEYS = ("value", "code", "key", "payload", "delivered", "keys", "tokens", "token", "items")
+ORDER_ID_KEYS = ("orderCode", "id", "code", "order_id")
+ITEM_PAYLOAD_KEYS = ("code", "key", "pin", "value", "token", "payload")
+
+
+def _find_field(d: Any, *keys: str) -> Any:
+    """Return the first non-None value in dict d matching any given key."""
+    if not isinstance(d, dict):
+        return None
+    for k in keys:
+        v = d.get(k)
+        if v is not None:
+            return v
+    return None
+
+
 class ResellerClient:
     def __init__(
         self,
@@ -252,71 +268,28 @@ class ResellerClient:
             elif isinstance(data.get("data"), dict):
                 order_obj = data["data"]
 
-        value = None
-        order_code = None
-
-        if isinstance(order_obj, dict):
-            value = (
-                order_obj.get("value")
-                or order_obj.get("code")
-                or order_obj.get("key")
-                or order_obj.get("payload")
-                or order_obj.get("delivered")
-                or order_obj.get("keys")
-                or order_obj.get("tokens")
-                or order_obj.get("token")
-                or order_obj.get("items")
-            )
-            order_code = (
-                order_obj.get("orderCode")
-                or order_obj.get("id")
-                or order_obj.get("code")
-                or order_obj.get("order_id")
-            )
+        value = _find_field(order_obj, *DELIVERY_PAYLOAD_KEYS)
+        order_code = _find_field(order_obj, *ORDER_ID_KEYS)
 
         # Fall back to root object if missing in nested dict
         if value is None and isinstance(data, dict):
-            value = (
-                data.get("value")
-                or data.get("code")
-                or data.get("key")
-                or data.get("payload")
-                or data.get("delivered")
-                or data.get("keys")
-                or data.get("tokens")
-                or data.get("token")
-                or data.get("items")
-            )
+            value = _find_field(data, *DELIVERY_PAYLOAD_KEYS)
             if value is None and isinstance(data.get("data"), (list, str, dict)):
                 value = data["data"]
         if order_code is None and isinstance(data, dict):
-            order_code = data.get("orderCode") or data.get("order_id")
+            order_code = _find_field(data, "orderCode", "order_id")
 
         if isinstance(value, list):
             formatted_items = []
             for v in value:
                 if isinstance(v, dict):
-                    extracted = (
-                        v.get("code")
-                        or v.get("key")
-                        or v.get("pin")
-                        or v.get("value")
-                        or v.get("token")
-                        or v.get("payload")
-                    )
+                    extracted = _find_field(v, *ITEM_PAYLOAD_KEYS)
                     formatted_items.append(str(extracted) if extracted is not None else str(v))
                 else:
                     formatted_items.append(str(v))
             value_str = "\n".join(formatted_items)
         elif isinstance(value, dict):
-            extracted = (
-                value.get("code")
-                or value.get("key")
-                or value.get("pin")
-                or value.get("value")
-                or value.get("token")
-                or value.get("payload")
-            )
+            extracted = _find_field(value, *ITEM_PAYLOAD_KEYS)
             if extracted is not None and len(value) == 1:
                 value_str = str(extracted)
             else:

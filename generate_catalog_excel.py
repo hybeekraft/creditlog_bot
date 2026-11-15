@@ -31,60 +31,53 @@ except ModuleNotFoundError:
         HAS_OPENPYXL = False
 
 
+BRAND_SERVICE_KEYWORDS = (
+    (("chatgpt", "gpt", "openai", "sora"), "OpenAI / ChatGPT"),
+    (("claude", "anthropic"), "Anthropic / Claude"),
+    (("cursor",), "Cursor AI"),
+    (("gemini", "google"), "Google / Gemini"),
+    (("midjourney",), "Midjourney"),
+    (("grok", "xai"), "xAI / Grok"),
+    (("deepseek",), "DeepSeek"),
+    (("perplexity",), "Perplexity AI"),
+    (("canva",), "Canva"),
+    (("adobe",), "Adobe Creative Cloud"),
+    (("capcut", "bytedance"), "CapCut Pro"),
+    (("telegram",), "Telegram Premium"),
+    (("nordvpn", "surfshark", "expressvpn", "vpn", "proxy"), "VPN & Proxy Services"),
+    (("spotify", "netflix", "youtube", "apple music", "disney", "prime"), "Media & Streaming"),
+    (("microsoft", "office", "windows", "azure", "onedrive"), "Microsoft Office / 365"),
+    (("autodesk",), "Autodesk"),
+    (("github", "copilot"), "GitHub Copilot"),
+    (("codex",), "Codex API"),
+    (("higgsfield",), "Higgsfield AI"),
+    (("lovable",), "Lovable AI"),
+    (("elevenlabs",), "ElevenLabs AI Voice"),
+    (("kimi", "moonshot", "glm"), "Moonshot / Kimi / GLM"),
+    (("suno",), "Suno AI Music"),
+    (("luma",), "Luma Dream Machine"),
+    (("runway",), "Runway Gen-3"),
+    (("muse",), "Muse AI"),
+)
+
+EXCEL_CATEGORY_KEYWORDS = (
+    (("cursor",), "Cursor API"),
+    (("codex",), "Codex API"),
+    (("chatgpt",), "ChatGPT"),
+    (("claude",), "Claude"),
+    (("gemini", "google"), "Gemini"),
+    (("vpn", "proxy"), "VPN & Security"),
+    (("canva", "adobe", "capcut", "midjourney"), "Creative & Design"),
+    (("office", "microsoft", "windows"), "Productivity & Office"),
+    (("spotify", "netflix", "youtube"), "Streaming & Entertainment"),
+)
+
+
 def determine_brand_service(name: str) -> str:
     n = name.lower()
-    if any(k in n for k in ["chatgpt", "gpt", "openai", "sora"]):
-        return "OpenAI / ChatGPT"
-    if any(k in n for k in ["claude", "anthropic"]):
-        return "Anthropic / Claude"
-    if "cursor" in n:
-        return "Cursor AI"
-    if any(k in n for k in ["gemini", "google"]):
-        return "Google / Gemini"
-    if "midjourney" in n:
-        return "Midjourney"
-    if any(k in n for k in ["grok", "xai"]):
-        return "xAI / Grok"
-    if "deepseek" in n:
-        return "DeepSeek"
-    if "perplexity" in n:
-        return "Perplexity AI"
-    if "canva" in n:
-        return "Canva"
-    if "adobe" in n:
-        return "Adobe Creative Cloud"
-    if any(k in n for k in ["capcut", "bytedance"]):
-        return "CapCut Pro"
-    if "telegram" in n:
-        return "Telegram Premium"
-    if any(k in n for k in ["nordvpn", "surfshark", "expressvpn", "vpn", "proxy"]):
-        return "VPN & Proxy Services"
-    if any(k in n for k in ["spotify", "netflix", "youtube", "apple music", "disney", "prime"]):
-        return "Media & Streaming"
-    if any(k in n for k in ["microsoft", "office", "windows", "azure", "onedrive"]):
-        return "Microsoft Office / 365"
-    if "autodesk" in n:
-        return "Autodesk"
-    if any(k in n for k in ["github", "copilot"]):
-        return "GitHub Copilot"
-    if "codex" in n:
-        return "Codex API"
-    if "higgsfield" in n:
-        return "Higgsfield AI"
-    if "lovable" in n:
-        return "Lovable AI"
-    if "elevenlabs" in n:
-        return "ElevenLabs AI Voice"
-    if any(k in n for k in ["kimi", "moonshot", "glm"]):
-        return "Moonshot / Kimi / GLM"
-    if "suno" in n:
-        return "Suno AI Music"
-    if "luma" in n:
-        return "Luma Dream Machine"
-    if "runway" in n:
-        return "Runway Gen-3"
-    if "muse" in n:
-        return "Muse AI"
+    for keywords, brand in BRAND_SERVICE_KEYWORDS:
+        if any(k in n for k in keywords):
+            return brand
     return "AI & Cloud Tools"
 
 
@@ -92,24 +85,9 @@ def determine_category(name: str, db_cat: str = "") -> str:
     if db_cat and db_cat != "AI Tools":
         return db_cat
     n = name.lower()
-    if "cursor" in n:
-        return "Cursor API"
-    if "codex" in n:
-        return "Codex API"
-    if "chatgpt" in n:
-        return "ChatGPT"
-    if "claude" in n:
-        return "Claude"
-    if any(k in n for k in ["gemini", "google"]):
-        return "Gemini"
-    if any(k in n for k in ["vpn", "proxy"]):
-        return "VPN & Security"
-    if any(k in n for k in ["canva", "adobe", "capcut", "midjourney"]):
-        return "Creative & Design"
-    if any(k in n for k in ["office", "microsoft", "windows"]):
-        return "Productivity & Office"
-    if any(k in n for k in ["spotify", "netflix", "youtube"]):
-        return "Streaming & Entertainment"
+    for keywords, category in EXCEL_CATEGORY_KEYWORDS:
+        if any(k in n for k in keywords):
+            return category
     return db_cat or "AI Tools"
 
 
