@@ -1554,15 +1554,36 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
 
 
 # Order fulfillment
+_order_locks: Dict[int, asyncio.Lock] = {}
+
+
+def _get_order_lock(oid: int) -> asyncio.Lock:
+    lock = _order_locks.get(oid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _order_locks[oid] = lock
+    return lock
+
+
 async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tuple[Optional[str], Optional[str]]:
     """
-    Fulfills an order:
+    Fulfills an order with an per-order async lock to prevent concurrent double-ordering:
       - Model A (when top-up balance > 0): Calls supplier API POST /orders immediately and auto-delivers.
       - Model B (when top-up balance is insufficient / empty): Pauses automated delivery and notifies admin to
         use customer's payment to top up, then tap /approve_<oid>.
       - If local stock: pulls available stock items from database.
     Returns (payload, error_key).
     """
+    lock = _get_order_lock(oid)
+    async with lock:
+        try:
+            return await _fulfill_order_locked(bot, oid, force_supplier)
+        finally:
+            if not lock.locked():
+                _order_locks.pop(oid, None)
+
+
+async def _fulfill_order_locked(bot: Bot, oid: int, force_supplier: bool = False) -> Tuple[Optional[str], Optional[str]]:
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return None, "out_of_stock"
@@ -2208,11 +2229,14 @@ def check_product_stock_available(p: sqlite3.Row, qty: int) -> Tuple[bool, int]:
     is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
     deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
     if not is_auto and deliv_type != "manual":
-        has_stock_rows = db.execute("SELECT 1 FROM stock WHERE product_id=?", (p["id"],)).fetchone()
-        if has_stock_rows:
-            avail = stock_count(p["id"])
-            if avail < qty:
-                return False, avail
+        try:
+            has_stock_rows = db.execute("SELECT 1 FROM stock WHERE product_id=?", (p["id"],)).fetchone()
+            if has_stock_rows:
+                avail = stock_count(p["id"])
+                if avail < qty:
+                    return False, avail
+        except Exception:
+            pass
     return True, 0
 
 
@@ -3525,7 +3549,8 @@ async def admin_fsub(m: Message, command: CommandObject = None):
         new_channels = [c.strip() for c in subarg.split(",") if c.strip()]
         set_fsub_channels(new_channels)
         set_fsub_enabled(True)
-        return await m.answer(f"✅ Configured {len(new_channels)} required channels: {', '.join(new_channels)}")
+        formatted_channels = ", ".join(f"<code>{esc(c)}</code>" for c in new_channels)
+        return await m.answer(f"✅ Configured {len(new_channels)} required channels: {formatted_channels}")
     elif subcmd in ("preview", "test"):
         channels = get_fsub_channels()
         if not channels:
@@ -4027,6 +4052,7 @@ async def admin_setprice(m: Message, command: CommandObject = None):
             cost = p["supplier_price"]
             calc_margin = round(((new_price_cents - cost) / cost) * 100)
             db.execute("UPDATE products SET price=?, margin=?, fixed_price=1 WHERE id=?", (new_price_cents, calc_margin, pid))
+            trigger_catalog_refresh()
             await m.answer(
                 f"✅ Price for #{pid} (<b>{esc(p['name'])}</b>) updated to {disp_price}.\n"
                 f"• Wholesale Cost: <b>{format_price(cost, admin_curr)}</b>\n"
@@ -4034,6 +4060,7 @@ async def admin_setprice(m: Message, command: CommandObject = None):
             )
         else:
             db.execute("UPDATE products SET price=?, fixed_price=1 WHERE id=?", (new_price_cents, pid))
+            trigger_catalog_refresh()
             await m.answer(f"✅ Price for #{pid} (<b>{esc(p['name'])}</b>) updated to {disp_price}.")
     except Exception:
         await m.answer(
@@ -4061,6 +4088,7 @@ async def admin_setmargin(m: Message, command: CommandObject = None):
         cost = p["supplier_price"] or p["price"]
         new_price = max(100, round(cost * (1 + margin / 100)))
         db.execute("UPDATE products SET margin=?, price=?, fixed_price=0 WHERE id=?", (margin, new_price, pid))
+        trigger_catalog_refresh()
 
         admin_curr = get_user_currency(m.from_user.id)
         cost_info = f"• Wholesale Cost: <b>{format_price(cost, admin_curr)}</b>\n" if p["supplier_price"] else ""

@@ -4204,6 +4204,121 @@ class TestBachsPaymentGateway(unittest.IsolatedAsyncioTestCase):
         c_bad.answer.assert_called_with("Unauthorized", show_alert=True)
 
 
+class TestAuditBugFixes(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.orig_admin_ids = bot.ADMIN_IDS
+        self.orig_db = bot.db
+        bot.db = sqlite3.connect(":memory:", isolation_level=None)
+        bot.db.row_factory = sqlite3.Row
+        bot.db.executescript("""
+        CREATE TABLE IF NOT EXISTS users(
+          id INTEGER PRIMARY KEY,
+          lang TEXT DEFAULT 'en',
+          currency TEXT DEFAULT 'USD');
+        CREATE TABLE IF NOT EXISTS products(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          description TEXT DEFAULT '',
+          price INTEGER NOT NULL,
+          active INTEGER DEFAULT 1,
+          supplier_product_id TEXT DEFAULT NULL,
+          supplier_price INTEGER DEFAULT NULL,
+          auto_fulfill INTEGER DEFAULT 0,
+          margin INTEGER DEFAULT NULL,
+          fixed_price INTEGER DEFAULT 0,
+          category TEXT DEFAULT 'AI Tools',
+          supplier TEXT DEFAULT 'default',
+          supplier_stock INTEGER DEFAULT NULL,
+          delivery_type TEXT DEFAULT 'auto');
+        CREATE TABLE IF NOT EXISTS orders(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          product_id INTEGER NOT NULL,
+          product_name TEXT NOT NULL,
+          price INTEGER NOT NULL,
+          status TEXT DEFAULT 'pending',
+          payload TEXT DEFAULT '',
+          created TEXT DEFAULT CURRENT_TIMESTAMP,
+          refunded INTEGER DEFAULT 0,
+          supplier_order_id TEXT DEFAULT NULL,
+          supplier TEXT DEFAULT 'default',
+          invoice_id TEXT DEFAULT NULL,
+          quantity INTEGER DEFAULT 1,
+          payment_method TEXT DEFAULT NULL,
+          txid TEXT DEFAULT NULL,
+          expected_amount TEXT DEFAULT NULL);
+        CREATE TABLE IF NOT EXISTS settings(
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL);
+        """)
+        bot.ADMIN_IDS = {123456}
+
+    def tearDown(self):
+        bot.ADMIN_IDS = self.orig_admin_ids
+        bot.db = self.orig_db
+
+    async def test_concurrent_order_fulfillment_prevents_duplicate_supplier_calls(self):
+        import asyncio
+        pid = bot.db.execute(
+            "INSERT INTO products(name, price, active, auto_fulfill, supplier_product_id, supplier_price) VALUES('Race Product', 1000, 1, 1, 'SUPP_RACE', 500)"
+        ).lastrowid
+        oid = bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(555, ?, 'Race Product', 1000, 'paid')",
+            (pid,)
+        ).lastrowid
+
+        call_count = 0
+        async def slow_create_order(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0.05)
+            return {"ok": True, "value": "TOKEN_RACE_PASS", "order_code": "SUPP_ORD_99"}
+
+        bot_mock = AsyncMock()
+        with patch.object(bot.reseller, "create_order", side_effect=slow_create_order):
+            with patch("bot.check_supplier_balance_sufficient", return_value=(True, 100.0)):
+                res1, res2 = await asyncio.gather(
+                    bot.fulfill_order(bot_mock, oid),
+                    bot.fulfill_order(bot_mock, oid)
+                )
+
+        # Both calls should succeed with payload
+        self.assertEqual(res1[0], "TOKEN_RACE_PASS")
+        self.assertEqual(res2[0], "TOKEN_RACE_PASS")
+        # Critical: Supplier API must only be called once, not twice
+        self.assertEqual(call_count, 1)
+
+    async def test_fsub_set_escapes_special_characters(self):
+        m = AsyncMock()
+        m.from_user.id = 123456
+        cmd = AsyncMock()
+        cmd.args = "set <dangerous_channel>,@valid_channel"
+        await bot.admin_fsub(m, cmd)
+        m.answer.assert_called_once()
+        sent_text = m.answer.call_args[0][0]
+        self.assertNotIn("<dangerous_channel>", sent_text)
+        self.assertIn("&lt;dangerous_channel&gt;", sent_text)
+
+    async def test_setprice_and_setmargin_trigger_catalog_refresh(self):
+        pid = bot.db.execute(
+            "INSERT INTO products(name, price, active, supplier_price) VALUES('Test Refresh Item', 1000, 1, 600)"
+        ).lastrowid
+        m = AsyncMock()
+        m.from_user.id = 123456
+
+        with patch("bot.trigger_catalog_refresh") as mock_refresh:
+            cmd_price = AsyncMock()
+            cmd_price.args = f"{pid} 15.00 USD"
+            await bot.admin_setprice(m, cmd_price)
+            mock_refresh.assert_called()
+
+        with patch("bot.trigger_catalog_refresh") as mock_refresh:
+            cmd_margin = AsyncMock()
+            cmd_margin.args = f"{pid} 50%"
+            await bot.admin_setmargin(m, cmd_margin)
+            mock_refresh.assert_called()
+
+
 if __name__ == "__main__":
     unittest.main()
 
