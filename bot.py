@@ -3437,6 +3437,8 @@ async def cmd_currency(m: Message):
 def render_admin_help() -> Tuple[str, InlineKeyboardMarkup]:
     text = (
         "<b>Admin Commands</b>\n\n"
+        "/start - Start bot / Open store\n"
+        "/admin - Admin command center\n\n"
         "<b>Catalog & Products</b>\n"
         "/featured - Manage homepage featured products (add/remove/set/clear)\n"
         "/products - List all products with margins\n"
@@ -5308,6 +5310,7 @@ async def main():
             BotCommand(command="support", description="Contacts support"),
         ])
         admin_cmd_list = [
+            BotCommand(command="start", description="Start bot / Open store"),
             BotCommand(command="admin", description="Admin command center"),
             BotCommand(command="featured", description="Manage homepage featured products"),
             BotCommand(command="mode", description="Switch Model A / Model B fulfillment"),

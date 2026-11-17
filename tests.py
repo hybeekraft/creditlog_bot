@@ -2123,6 +2123,11 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         await bot.admin_broadcast(m, cmd)
         self.assertTrue(bot.is_broadcaster_enabled())
 
+    def test_render_admin_help_includes_start(self):
+        text, markup = bot.render_admin_help()
+        self.assertIn("/start", text)
+        self.assertIn("/admin", text)
+
     async def test_admin_mode_fulfillment(self):
         m = AsyncMock()
         cmd = AsyncMock()
