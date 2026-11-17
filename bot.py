@@ -5239,7 +5239,7 @@ async def main():
     broadcaster_task = None
     try:
         from broadcaster.broadcaster import start_broadcaster_task
-        broadcaster_task = asyncio.create_task(start_broadcaster_task())
+        broadcaster_task = asyncio.create_task(start_broadcaster_task(aiogram_bot=bot))
     except Exception as e:
         log.info("Stock broadcaster could not be initialized: %s", e)
 

@@ -123,7 +123,73 @@ def create_client() -> Optional[TelegramClient]:
     session_target = str(session_dir / SESSION_NAME)
     return TelegramClient(session_target, int(API_ID), API_HASH)
 
-async def start_broadcaster_task():
+async def broadcast_to_bot_users(text: str, button_text: str, bot_url: str, aiogram_bot=None):
+    """Broadcasts restock alert to all registered bot users in store.db."""
+    if not DB_PATH.exists():
+        return
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        users = [row[0] for row in conn.execute("SELECT id FROM users").fetchall()]
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Could not load users from store.db: {e}")
+        return
+
+    if not users:
+        return
+
+    logger.info(f"Broadcasting restock alert to {len(users)} registered bot users...")
+
+    if aiogram_bot is not None:
+        try:
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=button_text, url=bot_url)]
+            ])
+            sent = 0
+            for uid in users:
+                try:
+                    await aiogram_bot.send_message(uid, text, reply_markup=markup, parse_mode=None)
+                    sent += 1
+                except Exception:
+                    pass
+                await asyncio.sleep(0.05)
+            logger.info(f"Broadcast to bot users finished: {sent}/{len(users)} delivered.")
+            return
+        except Exception as e:
+            logger.warning(f"aiogram broadcast encountered error: {e}")
+
+    bot_token = os.getenv("BOT_TOKEN", "").strip()
+    if not bot_token:
+        return
+
+    try:
+        import aiohttp
+        api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload_markup = {
+            "inline_keyboard": [[{"text": button_text, "url": bot_url}]]
+        }
+        sent = 0
+        async with aiohttp.ClientSession() as session:
+            for uid in users:
+                payload = {
+                    "chat_id": uid,
+                    "text": text,
+                    "reply_markup": payload_markup
+                }
+                try:
+                    async with session.post(api_url, json=payload, timeout=5) as resp:
+                        if resp.status == 200:
+                            sent += 1
+                except Exception:
+                    pass
+                await asyncio.sleep(0.05)
+        logger.info(f"Broadcast to bot users finished: {sent}/{len(users)} delivered.")
+    except Exception as e:
+        logger.error(f"Fallback bot users broadcast failed: {e}")
+
+async def start_broadcaster_task(aiogram_bot=None):
     """Background task entry point for bot.py."""
     client = create_client()
     if client is None:
@@ -185,20 +251,30 @@ async def start_broadcaster_task():
                 [Button.url(button_text, bot_url)]
             ]
 
-            if not DESTINATION_CHANNEL:
+            if DESTINATION_CHANNEL:
+                try:
+                    await client.send_message(
+                        DESTINATION_CHANNEL,
+                        transformed_text,
+                        buttons=buttons,
+                        link_preview=False
+                    )
+                    logger.info(f"Successfully broadcasted restock to {DESTINATION_CHANNEL}!")
+                except Exception as e:
+                    logger.error(f"Failed to post to destination channel: {e}")
+            else:
                 logger.warning("DESTINATION_CHANNEL not set. Transformed preview:\n" + transformed_text)
-                return
 
+            # Also broadcast directly to registered store bot users
             try:
-                await client.send_message(
-                    DESTINATION_CHANNEL,
-                    transformed_text,
-                    buttons=buttons,
-                    link_preview=False
+                await broadcast_to_bot_users(
+                    text=transformed_text,
+                    button_text=button_text,
+                    bot_url=bot_url,
+                    aiogram_bot=aiogram_bot
                 )
-                logger.info(f"Successfully broadcasted restock to {DESTINATION_CHANNEL}!")
             except Exception as e:
-                logger.error(f"Failed to post to destination channel: {e}")
+                logger.error(f"Failed to broadcast to bot users: {e}")
 
         logger.info("Stock broadcaster background service active.")
         await client.run_until_disconnected()
