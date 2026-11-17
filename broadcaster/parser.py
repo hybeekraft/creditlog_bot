@@ -1,6 +1,10 @@
 import re
 from typing import Optional, Dict, Any, List
-from pricing import PricingEngine
+
+try:
+    from .pricing import PricingEngine
+except ImportError:
+    from pricing import PricingEngine
 
 class MessageParser:
     """Parses supplier broadcast messages, recalculates prices, and reconstructs the message."""

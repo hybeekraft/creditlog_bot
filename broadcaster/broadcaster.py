@@ -10,6 +10,9 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
 
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
 # Load local broadcaster .env first, then root creditlog_bot .env
 load_dotenv(BASE_DIR / ".env")
 load_dotenv(ROOT_DIR / ".env")
