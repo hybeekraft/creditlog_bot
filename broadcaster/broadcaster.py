@@ -55,7 +55,7 @@ MY_BOT_USERNAME = (
     or os.getenv("BOT_USERNAME")
     or "creditlogbot"
 ).strip().lstrip("@")
-if MY_BOT_USERNAME.lower() == "creditlog_bot":
+if MY_BOT_USERNAME.lower() in ("creditlog_bot", "credilog_bot", "creditlog"):
     MY_BOT_USERNAME = "creditlogbot"
 
 BUTTON_LABEL = os.getenv("BUTTON_LABEL", "🛍️ Open item")
@@ -355,7 +355,7 @@ async def start_broadcaster_task(aiogram_bot=None):
                         active_bot_username = me.username.lstrip("@")
                 except Exception:
                     pass
-            if active_bot_username.lower() == "creditlog_bot":
+            if active_bot_username.lower() in ("creditlog_bot", "credilog_bot", "creditlog"):
                 active_bot_username = "creditlogbot"
 
             bot_url = f"https://t.me/{active_bot_username}"
