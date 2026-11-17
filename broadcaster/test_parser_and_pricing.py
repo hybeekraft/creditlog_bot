@@ -91,11 +91,29 @@ class TestParserAndPricing(unittest.TestCase):
         res_alert = self.parser.process_message(raw_alert)
         self.assertIsNotNone(res_alert, "Uppercase 'RESTOCK ALERT' should be recognized")
 
+    def test_new_product_format(self):
+        # Matches supplier's "New product" broadcast format
+        raw_msg = (
+            "🆕 New product\n\n"
+            "Ⓜ️ Muse AI 31B Gmail Stable\n\n"
+            "💵 Price: 1.70 USD\n\n"
+            "📦 Available now"
+        )
+        res = self.parser.process_message(raw_msg)
+        self.assertIsNotNone(res, "'New product' announcement should be recognized")
+        self.assertEqual(res["type"], "single")
+        self.assertEqual(res["items"][0]["name"], "Ⓜ️ Muse AI 31B Gmail Stable")
+        # 1.70 * 1.50 = 2.55 USD (Muse AI 50% markup rule)
+        self.assertEqual(res["items"][0]["new_price"], 2.55)
+        self.assertIn("💵 Price: 2.55 USD", res["transformed_text"])
+        self.assertIn("🆕 New product", res["transformed_text"])
+        self.assertIn("📦 Available now", res["transformed_text"])
+
     def test_brand_isolation_product_matching(self):
         try:
-            import broadcaster as b
-        except ImportError:
             from broadcaster import broadcaster as b
+        except ImportError:
+            import broadcaster as b
         import sqlite3, tempfile
         from pathlib import Path
 
@@ -123,9 +141,9 @@ class TestParserAndPricing(unittest.TestCase):
 
     def test_broadcaster_pause_and_play(self):
         try:
-            import broadcaster as b
-        except ImportError:
             from broadcaster import broadcaster as b
+        except ImportError:
+            import broadcaster as b
         import sqlite3, tempfile
         from pathlib import Path
 

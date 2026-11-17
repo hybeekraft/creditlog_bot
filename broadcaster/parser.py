@@ -15,9 +15,9 @@ class MessageParser:
     def process_message(self, text: str) -> Optional[Dict[str, Any]]:
         """
         Processes an incoming supplier message.
-        Returns a dict with transformed text and metadata, or None if not a recognized restock alert.
+        Returns a dict with transformed text and metadata, or None if not a recognized product alert.
         """
-        if not text or "restock" not in text.lower():
+        if not text:
             return None
 
         # Check list format first (e.g. • Product — 0.89 USD)
@@ -38,16 +38,26 @@ class MessageParser:
         base_price = float(price_match.group(1))
         currency = price_match.group(2).upper()
 
-        # Extract product title (line between "Restocked!" and "Price:")
         lines = [line.strip() for line in text.splitlines() if line.strip()]
-        product_name = ""
+        price_idx = -1
         for i, line in enumerate(lines):
-            if "restock" in line.lower() and i + 1 < len(lines):
-                # Next line is usually the product title
-                candidate = lines[i + 1]
-                if "price:" not in candidate.lower():
-                    product_name = candidate
-                    break
+            if re.search(r"Price:\s*[\d.]+", line, re.IGNORECASE):
+                price_idx = i
+                break
+
+        if price_idx <= 0:
+            return None
+
+        HEADER_KEYWORDS = ("restock", "new product", "new item", "alert", "update", "product added", "available")
+        preceding = lines[:price_idx]
+        if len(preceding) == 1:
+            product_name = preceding[0]
+        else:
+            first_lower = preceding[0].lower()
+            if any(k in first_lower for k in HEADER_KEYWORDS):
+                product_name = preceding[1]
+            else:
+                product_name = preceding[-1]
 
         if not product_name:
             product_name = "Product"
@@ -56,7 +66,9 @@ class MessageParser:
 
         # Replace price in original text while preserving format and emojis
         old_price_str = price_match.group(0)
-        new_price_str = f"💵 Price: {new_price:.2f} {currency}"
+        has_dollar_icon = "💵" in old_price_str
+        icon_prefix = "💵 " if has_dollar_icon else ""
+        new_price_str = f"{icon_prefix}Price: {new_price:.2f} {currency}"
         transformed_text = text.replace(old_price_str, new_price_str, 1)
 
         return {
