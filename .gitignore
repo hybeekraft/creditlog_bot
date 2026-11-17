@@ -13,4 +13,3 @@ __pycache__/
 .idea/
 *.session*
 broadcaster/.env
-CreditLog_Bot_Supplier_Products_Catalog.csv
