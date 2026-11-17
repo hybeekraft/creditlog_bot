@@ -189,6 +189,57 @@ async def broadcast_to_bot_users(text: str, button_text: str, bot_url: str, aiog
     except Exception as e:
         logger.error(f"Fallback bot users broadcast failed: {e}")
 
+async def send_channel_broadcast(chat_id: str, text: str, button_text: str, bot_url: str, telethon_client, aiogram_bot=None):
+    """Sends restock post to channel using Bot API with inline buttons (or user fallback)."""
+    # 1. Primary: Use aiogram_bot so Telegram renders native inline keyboard buttons
+    if aiogram_bot is not None:
+        try:
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=button_text, url=bot_url)]
+            ])
+            await aiogram_bot.send_message(chat_id, text, reply_markup=markup, parse_mode=None)
+            logger.info(f"Successfully broadcasted to {chat_id} via Bot with inline button!")
+            return
+        except Exception as e:
+            logger.warning(f"Could not send to channel via aiogram_bot: {e}. Trying Bot API fallback...")
+
+    # 2. Secondary: Bot API via aiohttp if running standalone
+    bot_token = os.getenv("BOT_TOKEN", "").strip()
+    if bot_token:
+        try:
+            import aiohttp
+            api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": text,
+                "reply_markup": {
+                    "inline_keyboard": [[{"text": button_text, "url": bot_url}]]
+                }
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(api_url, json=payload, timeout=10) as resp:
+                    if resp.status == 200:
+                        logger.info(f"Successfully broadcasted to {chat_id} via Bot API with inline button!")
+                        return
+                    else:
+                        err_text = await resp.text()
+                        logger.warning(f"Bot API sendMessage returned {resp.status}: {err_text}")
+        except Exception as e:
+            logger.warning(f"Bot API request failed: {e}")
+
+    # 3. Fallback: Telethon user client
+    try:
+        await telethon_client.send_message(
+            chat_id,
+            text,
+            buttons=[Button.url(button_text, bot_url)] if Button else None,
+            link_preview=False
+        )
+        logger.info(f"Broadcasted to {chat_id} via Telethon user client.")
+    except Exception as e:
+        logger.error(f"Failed to post to {chat_id} via Telethon: {e}")
+
 async def start_broadcaster_task(aiogram_bot=None):
     """Background task entry point for bot.py."""
     client = create_client()
@@ -251,17 +302,16 @@ async def start_broadcaster_task(aiogram_bot=None):
                 [Button.url(button_text, bot_url)]
             ]
 
+            # 1. Broadcast to channel with inline button
             if DESTINATION_CHANNEL:
-                try:
-                    await client.send_message(
-                        DESTINATION_CHANNEL,
-                        transformed_text,
-                        buttons=buttons,
-                        link_preview=False
-                    )
-                    logger.info(f"Successfully broadcasted restock to {DESTINATION_CHANNEL}!")
-                except Exception as e:
-                    logger.error(f"Failed to post to destination channel: {e}")
+                await send_channel_broadcast(
+                    chat_id=DESTINATION_CHANNEL,
+                    text=transformed_text,
+                    button_text=button_text,
+                    bot_url=bot_url,
+                    telethon_client=client,
+                    aiogram_bot=aiogram_bot
+                )
             else:
                 logger.warning("DESTINATION_CHANNEL not set. Transformed preview:\n" + transformed_text)
 

@@ -60,6 +60,16 @@ pip install telethon python-dotenv
    SOURCE_CHATS=@supplier_channel,@supplier_bot
    ```
 
+### 3. Generate String Session (Recommended for Cloud / Docker / Fly.io)
+For headless cloud environments where an interactive SMS code prompt cannot run in the container:
+```bash
+python broadcaster/login_session.py
+```
+Copy the printed session string into `TELEGRAM_STRING_SESSION` in your `.env` or set it in Fly.io secrets:
+```bash
+fly secrets set TELEGRAM_STRING_SESSION="your_string_session"
+```
+
 ---
 
 ## 💰 Configuring Markup Rules
