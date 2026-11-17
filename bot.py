@@ -5236,6 +5236,12 @@ async def main():
         log.warning("Initial supplier sync on startup failed: %s", e)
 
     sync_task = asyncio.create_task(periodic_supplier_sync(600))
+    broadcaster_task = None
+    try:
+        from broadcaster.broadcaster import start_broadcaster_task
+        broadcaster_task = asyncio.create_task(start_broadcaster_task())
+    except Exception as e:
+        log.info("Stock broadcaster could not be initialized: %s", e)
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
@@ -5283,10 +5289,17 @@ async def main():
         await dp.start_polling(bot)
     finally:
         sync_task.cancel()
+        if broadcaster_task:
+            broadcaster_task.cancel()
         try:
             await sync_task
         except asyncio.CancelledError:
             pass
+        if broadcaster_task:
+            try:
+                await broadcaster_task
+            except asyncio.CancelledError:
+                pass
         await supplier_registry.close_all()
         await reseller.close()
         await runner.cleanup()

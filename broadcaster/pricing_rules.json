@@ -1,0 +1,23 @@
+{
+  "default_rule": {
+    "type": "percentage",
+    "value": 30.0
+  },
+  "custom_rules": [
+    {
+      "keyword": "ChatGPT Plus",
+      "type": "fixed",
+      "value": 2.50
+    },
+    {
+      "keyword": "Muse AI",
+      "type": "percentage",
+      "value": 50.0
+    },
+    {
+      "keyword": "CapCut Pro",
+      "type": "fixed",
+      "value": 1.10
+    }
+  ]
+}

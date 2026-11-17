@@ -1,0 +1,214 @@
+import os
+import sys
+import asyncio
+import logging
+import sqlite3
+from pathlib import Path
+from typing import List, Optional
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent
+ROOT_DIR = BASE_DIR.parent
+
+# Load local broadcaster .env first, then root creditlog_bot .env
+load_dotenv(BASE_DIR / ".env")
+load_dotenv(ROOT_DIR / ".env")
+
+try:
+    from telethon import TelegramClient, events, Button
+    from telethon.sessions import StringSession
+except ImportError:
+    TelegramClient = None
+    events = None
+    Button = None
+    StringSession = None
+
+try:
+    from .parser import MessageParser
+    from .pricing import PricingEngine
+except ImportError:
+    from parser import MessageParser
+    from pricing import PricingEngine
+
+# Configuration
+API_ID = os.getenv("TELEGRAM_API_ID")
+API_HASH = os.getenv("TELEGRAM_API_HASH")
+STRING_SESSION = os.getenv("TELEGRAM_STRING_SESSION", "").strip()
+SESSION_NAME = os.getenv("SESSION_NAME", "stock_broadcaster")
+
+# Source channels/bots to listen to (comma-separated, e.g. "@supplier_channel,@supplier_bot")
+SOURCE_CHATS_RAW = os.getenv("SOURCE_CHATS", "")
+
+# Destination channel: defaults to root .env CHANNEL_URL (e.g. https://t.me/credit_log -> @credit_log)
+raw_dest = os.getenv("DESTINATION_CHANNEL", "")
+if not raw_dest:
+    channel_url = os.getenv("CHANNEL_URL", "")
+    if channel_url:
+        raw_dest = "@" + channel_url.rstrip("/").split("/")[-1].lstrip("@")
+DESTINATION_CHANNEL = raw_dest
+
+MY_BOT_USERNAME = os.getenv("MY_BOT_USERNAME", "creditlog_bot").lstrip("@")
+BUTTON_LABEL = os.getenv("BUTTON_LABEL", "🛍️ Open item")
+
+# Resolve DB_PATH safely (supports local dev and Docker /data/ paths)
+db_env = os.getenv("DB_PATH", "store.db")
+if (ROOT_DIR / "store.db").exists():
+    DB_PATH = ROOT_DIR / "store.db"
+elif Path(db_env).exists():
+    DB_PATH = Path(db_env)
+else:
+    DB_PATH = ROOT_DIR / Path(db_env).name
+
+# Setup logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger("StockBroadcaster")
+
+def parse_source_chats(raw: str) -> List[str]:
+    """Cleans and splits comma-separated source channels/bot usernames."""
+    chats = []
+    for item in raw.split(","):
+        cleaned = item.strip()
+        if not cleaned:
+            continue
+        if (cleaned.startswith("-") and cleaned[1:].isdigit()) or cleaned.isdigit():
+            chats.append(int(cleaned))
+        else:
+            chats.append(cleaned)
+    return chats
+
+def find_store_product_id(product_name: str) -> Optional[int]:
+    """Finds matching product ID in store.db to generate direct ?start=p_<id> deep links."""
+    if not DB_PATH.exists():
+        return None
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM products WHERE active = 1")
+        rows = cur.fetchall()
+        conn.close()
+
+        prod_lower = product_name.lower()
+        for pid, name in rows:
+            name_lower = name.lower()
+            if name_lower in prod_lower or prod_lower in name_lower:
+                return pid
+    except Exception as e:
+        logger.warning(f"Could not query store.db for product match: {e}")
+
+    return None
+
+def create_client() -> Optional[TelegramClient]:
+    """Creates a Telethon client using StringSession or persistent session file."""
+    if TelegramClient is None:
+        logger.warning("Telethon is not installed. Broadcaster cannot start.")
+        return None
+
+    if not API_ID or not API_HASH:
+        logger.info("Stock broadcaster disabled: TELEGRAM_API_ID or TELEGRAM_API_HASH not set.")
+        return None
+
+    if STRING_SESSION:
+        logger.info("Using Telethon StringSession from environment.")
+        return TelegramClient(StringSession(STRING_SESSION), int(API_ID), API_HASH)
+
+    # Use persistent session storage in DB_PATH directory (e.g. /data/ on Fly.io)
+    session_dir = DB_PATH.parent if DB_PATH.parent.exists() else BASE_DIR
+    session_target = str(session_dir / SESSION_NAME)
+    return TelegramClient(session_target, int(API_ID), API_HASH)
+
+async def start_broadcaster_task():
+    """Background task entry point for bot.py."""
+    client = create_client()
+    if client is None:
+        return
+
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            logger.warning(
+                "Stock broadcaster: Telegram session is not yet authorized. "
+                "Run 'python broadcaster/login_session.py' locally to generate your TELEGRAM_STRING_SESSION "
+                "and set it in Fly.io secrets or .env."
+            )
+            await client.disconnect()
+            return
+
+        sources = parse_source_chats(SOURCE_CHATS_RAW)
+        if sources:
+            logger.info(f"Stock broadcaster listening to: {sources}")
+        else:
+            logger.info("Stock broadcaster listening to all incoming chats.")
+
+        logger.info(f"Stock broadcaster publishing to: {DESTINATION_CHANNEL}")
+
+        pricing_engine = PricingEngine(BASE_DIR / "pricing_rules.json")
+        parser = MessageParser(pricing_engine)
+
+        filter_kwargs = {"chats": sources} if sources else {}
+
+        @client.on(events.NewMessage(**filter_kwargs))
+        async def handler(event):
+            raw_text = event.message.message or ""
+            if not raw_text:
+                return
+
+            result = parser.process_message(raw_text)
+            if not result:
+                return
+
+            logger.info("Detected new restock alert from supplier! Processing markup...")
+            for item in result["items"]:
+                logger.info(
+                    f"-> {item['name']}: Supplier Price = {item['old_price']} {item['currency']} "
+                    f"-> Your Price = {item['new_price']} {item['currency']}"
+                )
+
+            transformed_text = result["transformed_text"]
+            button_text = result.get("button_text") or BUTTON_LABEL
+
+            bot_url = f"https://t.me/{MY_BOT_USERNAME}"
+            if result["type"] == "single" and result["items"]:
+                item_name = result["items"][0]["name"]
+                matched_id = find_store_product_id(item_name)
+                if matched_id:
+                    bot_url = f"https://t.me/{MY_BOT_USERNAME}?start=p_{matched_id}"
+                    logger.info(f"Matched product in store.db: #{matched_id} -> {bot_url}")
+
+            buttons = [
+                [Button.url(button_text, bot_url)]
+            ]
+
+            if not DESTINATION_CHANNEL:
+                logger.warning("DESTINATION_CHANNEL not set. Transformed preview:\n" + transformed_text)
+                return
+
+            try:
+                await client.send_message(
+                    DESTINATION_CHANNEL,
+                    transformed_text,
+                    buttons=buttons,
+                    link_preview=False
+                )
+                logger.info(f"Successfully broadcasted restock to {DESTINATION_CHANNEL}!")
+            except Exception as e:
+                logger.error(f"Failed to post to destination channel: {e}")
+
+        logger.info("Stock broadcaster background service active.")
+        await client.run_until_disconnected()
+    except asyncio.CancelledError:
+        logger.info("Stock broadcaster task cancelled. Shutting down client...")
+    except Exception as e:
+        logger.error(f"Stock broadcaster encountered an unexpected error: {e}")
+    finally:
+        if client.is_connected():
+            await client.disconnect()
+
+async def main():
+    await start_broadcaster_task()
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,0 +1,116 @@
+import re
+from typing import Optional, Dict, Any, List
+from pricing import PricingEngine
+
+class MessageParser:
+    """Parses supplier broadcast messages, recalculates prices, and reconstructs the message."""
+
+    def __init__(self, pricing_engine: Optional[PricingEngine] = None):
+        self.pricing_engine = pricing_engine or PricingEngine()
+
+    def process_message(self, text: str) -> Optional[Dict[str, Any]]:
+        """
+        Processes an incoming supplier message.
+        Returns a dict with transformed text and metadata, or None if not a recognized restock alert.
+        """
+        if not text or "Restocked" not in text:
+            return None
+
+        # Check list format first (e.g. • Product — 0.89 USD)
+        if "•" in text or "—" in text:
+            result = self._process_list_format(text)
+            if result:
+                return result
+
+        # Fallback to single-item format (e.g. Price: 4.99 USD)
+        return self._process_single_item_format(text)
+
+    def _process_single_item_format(self, text: str) -> Optional[Dict[str, Any]]:
+        # Find price line: e.g. "💵 Price: 4.99 USD" or "Price: 4.99 USD"
+        price_match = re.search(r"(?:💵\s*)?Price:\s*([\d.]+)\s*([A-Za-z]+)", text, re.IGNORECASE)
+        if not price_match:
+            return None
+
+        base_price = float(price_match.group(1))
+        currency = price_match.group(2).upper()
+
+        # Extract product title (line between "Restocked!" and "Price:")
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        product_name = ""
+        for i, line in enumerate(lines):
+            if "restocked" in line.lower() and i + 1 < len(lines):
+                # Next line is usually the product title
+                candidate = lines[i + 1]
+                if "price:" not in candidate.lower():
+                    product_name = candidate
+                    break
+
+        if not product_name:
+            product_name = "Product"
+
+        new_price = self.pricing_engine.calculate_price(product_name, base_price)
+
+        # Replace price in original text while preserving format and emojis
+        old_price_str = price_match.group(0)
+        new_price_str = f"💵 Price: {new_price:.2f} {currency}"
+        transformed_text = text.replace(old_price_str, new_price_str)
+
+        return {
+            "type": "single",
+            "transformed_text": transformed_text,
+            "button_text": "🛍️ Open item",
+            "items": [
+                {
+                    "name": product_name,
+                    "old_price": base_price,
+                    "new_price": new_price,
+                    "currency": currency
+                }
+            ]
+        }
+
+    def _process_list_format(self, text: str) -> Optional[Dict[str, Any]]:
+        # Regex for lines like: • Muse AI Account 31B Tokens — 0.89 USD
+        bullet_pattern = re.compile(
+            r"([•\-\*]\s*)(.+?)\s*([—\-–])\s*([\d.]+)\s*([A-Za-z]+)",
+            re.IGNORECASE
+        )
+
+        matches = bullet_pattern.findall(text)
+        if not matches:
+            return None
+
+        transformed_text = text
+        items: List[Dict[str, Any]] = []
+
+        for bullet_prefix, name, dash, price_str, currency in matches:
+            base_price = float(price_str)
+            clean_name = name.strip()
+            curr = currency.strip().upper()
+
+            new_price = self.pricing_engine.calculate_price(clean_name, base_price)
+
+            old_line_match = f"{bullet_prefix}{name}{dash}{price_str} {currency}".strip()
+            # Construct updated line
+            new_line = f"{bullet_prefix}{clean_name} {dash} {new_price:.2f} {curr}"
+
+            # Replace line occurrence in text
+            pattern_to_replace = re.compile(
+                rf"{re.escape(bullet_prefix)}\s*{re.escape(name)}\s*{re.escape(dash)}\s*{re.escape(price_str)}\s*{re.escape(currency)}",
+                re.IGNORECASE
+            )
+            transformed_text = pattern_to_replace.sub(new_line, transformed_text, count=1)
+
+            items.append({
+                "name": clean_name,
+                "old_price": base_price,
+                "new_price": new_price,
+                "currency": curr
+            })
+
+        return {
+            "type": "list",
+            "transformed_text": transformed_text,
+            "button_text": "🛍️ Shop",
+            "items": items
+        }
