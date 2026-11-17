@@ -38,16 +38,20 @@ class MessageParser:
         base_price = float(price_match.group(1))
         currency = price_match.group(2).upper()
 
-        # Extract product title (line between "Restocked!" and "Price:")
+        # Extract product title (same line or between "Restocked!" and "Price:")
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         product_name = ""
         for i, line in enumerate(lines):
-            if "restock" in line.lower() and i + 1 < len(lines):
-                # Next line is usually the product title
-                candidate = lines[i + 1]
-                if "price:" not in candidate.lower():
-                    product_name = candidate
+            if "restock" in line.lower():
+                same_line = re.search(r"restock(?:ed)?(?:\s*alert)?\s*[:\-–—]\s*(.+)", line, re.IGNORECASE)
+                if same_line and same_line.group(1).strip() and "price:" not in same_line.group(1).lower():
+                    product_name = same_line.group(1).strip()
                     break
+                elif i + 1 < len(lines):
+                    candidate = lines[i + 1]
+                    if "price:" not in candidate.lower():
+                        product_name = candidate
+                        break
 
         if not product_name:
             product_name = "Product"
