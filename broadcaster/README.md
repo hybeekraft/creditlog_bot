@@ -74,7 +74,7 @@ fly secrets set TELEGRAM_STRING_SESSION="your_string_session"
 
 ## 💰 Configuring Markup Rules
 
-Edit [pricing_rules.json](file:///C:/Users/DELL/creditlog_bot/broadcaster/pricing_rules.json):
+Edit [pricing_rules.json](file:///C:/Users/DELL/creditlogbot/broadcaster/pricing_rules.json):
 
 ```json
 {
