@@ -55,6 +55,9 @@ MY_BOT_USERNAME = (
     or os.getenv("BOT_USERNAME")
     or "creditlogbot"
 ).strip().lstrip("@")
+if MY_BOT_USERNAME.lower() == "creditlog_bot":
+    MY_BOT_USERNAME = "creditlogbot"
+
 BUTTON_LABEL = os.getenv("BUTTON_LABEL", "🛍️ Open item")
 
 # Resolve DB_PATH safely (supports local dev and Docker /data/ paths)
@@ -92,17 +95,67 @@ def find_store_product_id(product_name: str) -> Optional[int]:
         return None
 
     try:
+        import re
+        def clean_words(s: str) -> List[str]:
+            cleaned = re.sub(r'[^a-zA-Z0-9\s]', ' ', s).lower()
+            return [w for w in cleaned.split() if w]
+
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        cur.execute("SELECT id, name FROM products WHERE active = 1")
+        cur.execute("SELECT id, name, active FROM products")
         rows = cur.fetchall()
-        conn.close()
 
-        prod_lower = product_name.lower()
-        for pid, name in rows:
-            name_lower = name.lower()
-            if name_lower in prod_lower or prod_lower in name_lower:
-                return pid
+        q_words = clean_words(product_name)
+        q_set = set(q_words)
+        q_lower = ' '.join(q_words)
+
+        # 1. Direct substring in normalized text (active first, then inactive)
+        for active_target in (1, 0):
+            for pid, name, active in rows:
+                if active != active_target:
+                    continue
+                n_words = clean_words(name)
+                n_lower = ' '.join(n_words)
+                if n_lower and (n_lower in q_lower or q_lower in n_lower):
+                    if active == 0:
+                        cur.execute("UPDATE products SET active = 1, supplier_stock = 10 WHERE id = ?", (pid,))
+                        conn.commit()
+                    conn.close()
+                    return pid
+
+        # 2. Key brand match: first non-generic word of db name MUST be in query
+        GENERIC = {'api', 'account', 'redeem', 'credits', 'pack', 'plan', 'pro', 'month', 'months', 'year', 'years', '1m', '1y', '3m', '6m', '12m', '1', '2', '3', '6', '12', 'days', '7d', '28'}
+        best_match = None
+        best_score = 0.0
+
+        for active_target in (1, 0):
+            for pid, name, active in rows:
+                if active != active_target:
+                    continue
+                n_words = clean_words(name)
+                if not n_words:
+                    continue
+                brand_token = next((w for w in n_words if w not in GENERIC), n_words[0])
+                if brand_token not in q_set:
+                    continue
+                n_set = set(n_words)
+                common = q_set & n_set
+                score = len(common) / len(n_set)
+                if score > best_score and score >= 0.6:
+                    best_score = score
+                    best_match = (pid, active)
+            if best_match:
+                break
+
+        if best_match:
+            pid, active = best_match
+            if active == 0:
+                cur.execute("UPDATE products SET active = 1, supplier_stock = 10 WHERE id = ?", (pid,))
+                conn.commit()
+            conn.close()
+            return pid
+
+        conn.close()
     except Exception as e:
         logger.warning(f"Could not query store.db for product match: {e}")
 
@@ -294,13 +347,26 @@ async def start_broadcaster_task(aiogram_bot=None):
             transformed_text = result["transformed_text"]
             button_text = result.get("button_text") or BUTTON_LABEL
 
-            bot_url = f"https://t.me/{MY_BOT_USERNAME}"
+            active_bot_username = MY_BOT_USERNAME
+            if aiogram_bot is not None:
+                try:
+                    me = await aiogram_bot.get_me()
+                    if me and me.username:
+                        active_bot_username = me.username.lstrip("@")
+                except Exception:
+                    pass
+            if active_bot_username.lower() == "creditlog_bot":
+                active_bot_username = "creditlogbot"
+
+            bot_url = f"https://t.me/{active_bot_username}"
             if result["type"] == "single" and result["items"]:
                 item_name = result["items"][0]["name"]
                 matched_id = find_store_product_id(item_name)
                 if matched_id:
-                    bot_url = f"https://t.me/{MY_BOT_USERNAME}?start=p_{matched_id}"
+                    bot_url = f"https://t.me/{active_bot_username}?start=p_{matched_id}"
                     logger.info(f"Matched product in store.db: #{matched_id} -> {bot_url}")
+            elif result["type"] == "list":
+                button_text = "🛍️ Open Store"
 
             buttons = [
                 [Button.url(button_text, bot_url)]

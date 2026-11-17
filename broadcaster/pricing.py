@@ -1,15 +1,15 @@
 import json
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 
 DEFAULT_RULES_FILE = Path(__file__).parent / "pricing_rules.json"
 
 class PricingEngine:
     """Calculates updated prices using Decimal arithmetic and configurable rules."""
 
-    def __init__(self, config_path: Path = DEFAULT_RULES_FILE):
-        self.config_path = config_path
+    def __init__(self, config_path: Union[Path, str] = DEFAULT_RULES_FILE):
+        self.config_path = Path(config_path)
         self.rules = self.load_rules()
 
     def load_rules(self) -> Dict[str, Any]:
