@@ -50,7 +50,11 @@ if not raw_dest:
         raw_dest = "@" + channel_url.rstrip("/").split("/")[-1].lstrip("@")
 DESTINATION_CHANNEL = raw_dest
 
-MY_BOT_USERNAME = os.getenv("MY_BOT_USERNAME", "creditlog_bot").lstrip("@")
+MY_BOT_USERNAME = (
+    os.getenv("MY_BOT_USERNAME")
+    or os.getenv("BOT_USERNAME")
+    or "creditlogbot"
+).strip().lstrip("@")
 BUTTON_LABEL = os.getenv("BUTTON_LABEL", "🛍️ Open item")
 
 # Resolve DB_PATH safely (supports local dev and Docker /data/ paths)

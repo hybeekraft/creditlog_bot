@@ -1,6 +1,6 @@
 # Creditlog Bot - Stock Broadcaster & Price Transformer
 
-Automated Telegram listener and price transformer companion for `creditlog_bot`. It monitors restock announcements from supplier channels or 1-on-1 supplier bots, extracts products and wholesale prices, applies custom price rules (fixed or percentage), matches items with your local [`store.db`](file:///C:/Users/DELL/creditlog_bot/store.db), and broadcasts them to your channel with an inline purchase button deep-linking directly to that product in `@creditlog_bot`.
+Automated Telegram listener and price transformer companion for `creditlog_bot`. It monitors restock announcements from supplier channels or 1-on-1 supplier bots, extracts products and wholesale prices, applies custom price rules (fixed or percentage), matches items with your local [`store.db`](file:///C:/Users/DELL/creditlog_bot/store.db), and broadcasts them to your channel with an inline purchase button deep-linking directly to that product in `@creditlogbot`.
 
 ---
 
@@ -30,7 +30,7 @@ creditlog_bot/
 1. **Automatic Product Deep-Linking:**
    * When a restock alert arrives, `broadcaster.py` searches your active catalog in [`store.db`](file:///C:/Users/DELL/creditlog_bot/store.db).
    * If a matching product is found (e.g. `ChatGPT Plus`, `Airtable Team`, `CapCut Pro`), the broadcast button automatically deep-links to:
-     `https://t.me/creditlog_bot?start=p_<product_id>`
+     `https://t.me/creditlogbot?start=p_<product_id>`
    * When customers click the button, your bot instantly opens that exact product's purchase screen!
 2. **Shared Configuration:**
    * Automatically inherits `CHANNEL_URL` (e.g. `@credit_log`) and bot settings from your root `.env` without duplicate configuration.
