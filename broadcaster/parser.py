@@ -17,7 +17,7 @@ class MessageParser:
         Processes an incoming supplier message.
         Returns a dict with transformed text and metadata, or None if not a recognized restock alert.
         """
-        if not text or "Restocked" not in text:
+        if not text or "restock" not in text.lower():
             return None
 
         # Check list format first (e.g. • Product — 0.89 USD)
@@ -42,7 +42,7 @@ class MessageParser:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         product_name = ""
         for i, line in enumerate(lines):
-            if "restocked" in line.lower() and i + 1 < len(lines):
+            if "restock" in line.lower() and i + 1 < len(lines):
                 # Next line is usually the product title
                 candidate = lines[i + 1]
                 if "price:" not in candidate.lower():
@@ -57,7 +57,7 @@ class MessageParser:
         # Replace price in original text while preserving format and emojis
         old_price_str = price_match.group(0)
         new_price_str = f"💵 Price: {new_price:.2f} {currency}"
-        transformed_text = text.replace(old_price_str, new_price_str)
+        transformed_text = text.replace(old_price_str, new_price_str, 1)
 
         return {
             "type": "single",

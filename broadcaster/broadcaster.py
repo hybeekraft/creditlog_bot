@@ -34,10 +34,10 @@ except ImportError:
     from pricing import PricingEngine
 
 # Configuration
-API_ID = os.getenv("TELEGRAM_API_ID")
-API_HASH = os.getenv("TELEGRAM_API_HASH")
-STRING_SESSION = os.getenv("TELEGRAM_STRING_SESSION", "").strip()
-SESSION_NAME = os.getenv("SESSION_NAME", "stock_broadcaster")
+API_ID = os.getenv("TELEGRAM_API_ID", "").strip().strip('"\'')
+API_HASH = os.getenv("TELEGRAM_API_HASH", "").strip().strip('"\'')
+STRING_SESSION = os.getenv("TELEGRAM_STRING_SESSION", "").strip().strip('"\'')
+SESSION_NAME = os.getenv("SESSION_NAME", "stock_broadcaster").strip()
 
 # Source channels/bots to listen to (comma-separated, e.g. "@supplier_channel,@supplier_bot")
 SOURCE_CHATS_RAW = os.getenv("SOURCE_CHATS", "")
@@ -59,6 +59,7 @@ if MY_BOT_USERNAME.lower() in ("creditlog_bot", "credilog_bot", "creditlog"):
     MY_BOT_USERNAME = "creditlogbot"
 
 BUTTON_LABEL = os.getenv("BUTTON_LABEL", "🛍️ Open item")
+BROADCAST_TO_USERS = os.getenv("BROADCAST_TO_USERS", "true").lower() in ("true", "1", "yes")
 
 # Resolve DB_PATH safely (supports local dev and Docker /data/ paths)
 db_env = os.getenv("DB_PATH", "store.db")
@@ -94,6 +95,7 @@ def find_store_product_id(product_name: str) -> Optional[int]:
     if not DB_PATH.exists():
         return None
 
+    conn = None
     try:
         import re
         def clean_words(s: str) -> List[str]:
@@ -120,7 +122,6 @@ def find_store_product_id(product_name: str) -> Optional[int]:
                     if active == 0:
                         cur.execute("UPDATE products SET active = 1, supplier_stock = 10 WHERE id = ?", (pid,))
                         conn.commit()
-                    conn.close()
                     return pid
 
         # 2. Key brand match: first non-generic word of db name MUST be in query
@@ -152,12 +153,13 @@ def find_store_product_id(product_name: str) -> Optional[int]:
             if active == 0:
                 cur.execute("UPDATE products SET active = 1, supplier_stock = 10 WHERE id = ?", (pid,))
                 conn.commit()
-            conn.close()
             return pid
 
-        conn.close()
     except Exception as e:
         logger.warning(f"Could not query store.db for product match: {e}")
+    finally:
+        if conn:
+            conn.close()
 
     return None
 
@@ -167,31 +169,45 @@ def create_client() -> Optional[TelegramClient]:
         logger.warning("Telethon is not installed. Broadcaster cannot start.")
         return None
 
-    if not API_ID or not API_HASH:
+    api_id_val = os.getenv("TELEGRAM_API_ID", API_ID or "")
+    api_id_clean = str(api_id_val).strip().strip('"\'')
+    api_hash_clean = str(os.getenv("TELEGRAM_API_HASH", API_HASH or "")).strip().strip('"\'')
+
+    if not api_id_clean or not api_hash_clean:
         logger.info("Stock broadcaster disabled: TELEGRAM_API_ID or TELEGRAM_API_HASH not set.")
         return None
 
-    if STRING_SESSION:
+    try:
+        api_id_int = int(api_id_clean)
+    except ValueError:
+        logger.error(f"Invalid TELEGRAM_API_ID: '{api_id_clean}' is not an integer.")
+        return None
+
+    string_session_val = os.getenv("TELEGRAM_STRING_SESSION", STRING_SESSION or "").strip().strip('"\'')
+    if string_session_val:
         logger.info("Using Telethon StringSession from environment.")
-        return TelegramClient(StringSession(STRING_SESSION), int(API_ID), API_HASH)
+        return TelegramClient(StringSession(string_session_val), api_id_int, api_hash_clean)
 
     # Use persistent session storage in DB_PATH directory (e.g. /data/ on Fly.io)
     session_dir = DB_PATH.parent if DB_PATH.parent.exists() else BASE_DIR
     session_target = str(session_dir / SESSION_NAME)
-    return TelegramClient(session_target, int(API_ID), API_HASH)
+    return TelegramClient(session_target, api_id_int, api_hash_clean)
 
 async def broadcast_to_bot_users(text: str, button_text: str, bot_url: str, aiogram_bot=None):
     """Broadcasts restock alert to all registered bot users in store.db."""
     if not DB_PATH.exists():
         return
 
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
         users = [row[0] for row in conn.execute("SELECT id FROM users").fetchall()]
-        conn.close()
     except Exception as e:
         logger.warning(f"Could not load users from store.db: {e}")
         return
+    finally:
+        if conn:
+            conn.close()
 
     if not users:
         return
@@ -385,16 +401,14 @@ async def start_broadcaster_task(aiogram_bot=None):
             else:
                 logger.warning("DESTINATION_CHANNEL not set. Transformed preview:\n" + transformed_text)
 
-            # Also broadcast directly to registered store bot users
-            try:
-                await broadcast_to_bot_users(
+            # Also broadcast directly to registered store bot users in the background
+            if BROADCAST_TO_USERS:
+                asyncio.create_task(broadcast_to_bot_users(
                     text=transformed_text,
                     button_text=button_text,
                     bot_url=bot_url,
                     aiogram_bot=aiogram_bot
-                )
-            except Exception as e:
-                logger.error(f"Failed to broadcast to bot users: {e}")
+                ))
 
         logger.info("Stock broadcaster background service active.")
         await client.run_until_disconnected()
@@ -403,8 +417,11 @@ async def start_broadcaster_task(aiogram_bot=None):
     except Exception as e:
         logger.error(f"Stock broadcaster encountered an unexpected error: {e}")
     finally:
-        if client.is_connected():
-            await client.disconnect()
+        try:
+            if client and hasattr(client, "is_connected") and client.is_connected():
+                await client.disconnect()
+        except Exception:
+            pass
 
 async def main():
     await start_broadcaster_task()

@@ -39,7 +39,7 @@ def main():
         print("API_ID and API_HASH are required.")
         sys.exit(1)
 
-    with TelegramClient(StringSession(), int(api_id_env), api_hash_env) as client:
+    with TelegramClient(StringSession(), int(api_id_env.strip(' "\'')), api_hash_env.strip(' "\'')) as client:
         session_str = client.session.save()
         print("\n" + "=" * 60)
         print("LOGIN SUCCESSFUL!")

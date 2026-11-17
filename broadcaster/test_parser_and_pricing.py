@@ -71,5 +71,25 @@ class TestParserAndPricing(unittest.TestCase):
         result = self.parser.process_message(raw_msg)
         self.assertIsNone(result)
 
+    def test_lowercase_and_alert_restock_variations(self):
+        # Case 1: lowercase "restocked!"
+        raw_lower = (
+            "⚡ restocked!\n\n"
+            "ChatGPT Plus 1M Apple Pay\n\n"
+            "💵 Price: 4.99 USD\n\n"
+            "⚡ Instant delivery after payment"
+        )
+        res_lower = self.parser.process_message(raw_lower)
+        self.assertIsNotNone(res_lower, "Lowercase 'restocked!' should be recognized")
+
+        # Case 2: "RESTOCK ALERT"
+        raw_alert = (
+            "🚨 RESTOCK ALERT:\n\n"
+            "Airtable Team 12 Months\n\n"
+            "💵 Price: 10.00 USD"
+        )
+        res_alert = self.parser.process_message(raw_alert)
+        self.assertIsNotNone(res_alert, "Uppercase 'RESTOCK ALERT' should be recognized")
+
 if __name__ == "__main__":
     unittest.main()

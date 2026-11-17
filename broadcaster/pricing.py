@@ -13,13 +13,17 @@ class PricingEngine:
         self.rules = self.load_rules()
 
     def load_rules(self) -> Dict[str, Any]:
+        default = {
+            "default_rule": {"type": "percentage", "value": 30.0},
+            "custom_rules": []
+        }
         if not self.config_path.exists():
-            return {
-                "default_rule": {"type": "percentage", "value": 30.0},
-                "custom_rules": []
-            }
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            return default
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return default
 
     def calculate_price(self, product_name: str, base_price: float) -> float:
         """Finds matching rule (keyword or default) and applies price adjustment."""
