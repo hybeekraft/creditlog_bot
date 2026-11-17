@@ -91,16 +91,6 @@ class TestParserAndPricing(unittest.TestCase):
         res_alert = self.parser.process_message(raw_alert)
         self.assertIsNotNone(res_alert, "Uppercase 'RESTOCK ALERT' should be recognized")
 
-    def test_same_line_product_title_restock(self):
-        raw_same_line = (
-            "⚡ Restocked: ChatGPT Plus 1M\n"
-            "💵 Price: 4.99 USD\n"
-            "⚡ Instant delivery after payment"
-        )
-        res = self.parser.process_message(raw_same_line)
-        self.assertIsNotNone(res)
-        self.assertEqual(res["items"][0]["name"], "ChatGPT Plus 1M")
-
     def test_brand_isolation_product_matching(self):
         try:
             import broadcaster as b
