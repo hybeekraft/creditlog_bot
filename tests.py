@@ -2075,6 +2075,54 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Broadcast completed", m.answer.call_args[0][0])
         bot.db.execute("DELETE FROM users WHERE id=11001")
 
+    async def test_admin_broadcaster_pause_and_play(self):
+        m = AsyncMock()
+        cmd = AsyncMock()
+
+        # 1. Start enabled
+        bot.set_setting("broadcaster_enabled", "1")
+        self.assertTrue(bot.is_broadcaster_enabled())
+
+        # 2. Pause via admin_pause_broadcaster
+        await bot.admin_pause_broadcaster(m, cmd)
+        self.assertFalse(bot.is_broadcaster_enabled())
+        self.assertIn("Paused", m.answer.call_args[0][0])
+
+        # 3. Status shows paused
+        cmd.args = "status"
+        await bot.admin_broadcast(m, cmd)
+        self.assertIn("Paused", m.answer.call_args[0][0])
+
+        # 4. Resume via admin_play_broadcaster
+        await bot.admin_play_broadcaster(m, cmd)
+        self.assertTrue(bot.is_broadcaster_enabled())
+        self.assertIn("Resumed", m.answer.call_args[0][0])
+
+        # 5. Empty args shows status
+        cmd.args = None
+        await bot.admin_broadcast(m, cmd)
+        self.assertIn("Active", m.answer.call_args[0][0])
+
+        # 6. Pause via /broadcast pause arg
+        cmd.args = "pause"
+        await bot.admin_broadcast(m, cmd)
+        self.assertFalse(bot.is_broadcaster_enabled())
+        self.assertIn("Paused", m.answer.call_args[0][0])
+
+        # 7. Resume via /broadcast play arg
+        cmd.args = "play"
+        await bot.admin_broadcast(m, cmd)
+        self.assertTrue(bot.is_broadcaster_enabled())
+        self.assertIn("Resumed", m.answer.call_args[0][0])
+
+        # 8. Toggle via /broadcast toggle arg
+        cmd.args = "toggle"
+        await bot.admin_broadcast(m, cmd)
+        self.assertFalse(bot.is_broadcaster_enabled())
+        cmd.args = "toggle"
+        await bot.admin_broadcast(m, cmd)
+        self.assertTrue(bot.is_broadcaster_enabled())
+
     async def test_admin_mode_fulfillment(self):
         m = AsyncMock()
         cmd = AsyncMock()

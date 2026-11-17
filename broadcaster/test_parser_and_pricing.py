@@ -121,5 +121,35 @@ class TestParserAndPricing(unittest.TestCase):
         finally:
             tmp_path.unlink(missing_ok=True)
 
+    def test_broadcaster_pause_and_play(self):
+        try:
+            import broadcaster as b
+        except ImportError:
+            from broadcaster import broadcaster as b
+        import sqlite3, tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        try:
+            orig_db_path = b.DB_PATH
+            b.DB_PATH = tmp_path
+            try:
+                # 1. Defaults to enabled when settings table doesn't exist
+                self.assertTrue(b.is_broadcaster_enabled())
+
+                # 2. Pause broadcaster
+                b.set_broadcaster_enabled(False)
+                self.assertFalse(b.is_broadcaster_enabled())
+
+                # 3. Resume (play) broadcaster
+                b.set_broadcaster_enabled(True)
+                self.assertTrue(b.is_broadcaster_enabled())
+            finally:
+                b.DB_PATH = orig_db_path
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
 if __name__ == "__main__":
     unittest.main()

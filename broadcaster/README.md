@@ -124,3 +124,18 @@ python -m unittest discover -s broadcaster -p "test_*.py"
 python broadcaster/broadcaster.py
 ```
 *(On first launch, enter your phone number and Telegram verification code to authenticate the listener session).*
+
+---
+
+## ⏸️ Play & Pause Broadcaster Controls
+
+You can pause and resume automated supplier restock broadcasting at any time directly through admin commands in `@creditlogbot`:
+
+### Admin Telegram Commands:
+* `/broadcast pause` or `/broadcastpause` — Pauses automated restock announcements. Incoming supplier posts will be ignored while paused.
+* `/broadcast play` or `/broadcastplay` — Resumes automated restock broadcasting. Incoming supplier posts will be marked up and published immediately.
+* `/broadcast status` or `/broadcast` — View whether the broadcaster is currently 🟢 **Active** or ⏸️ **Paused**, and review control commands.
+* `/broadcast <text>` — Sends a manual broadcast message to all registered store buyers.
+
+### Environment Variable / Local Flag:
+You can also pause the broadcaster on boot by setting `BROADCASTER_ENABLED=false` in your `.env` or Fly.io secrets.

@@ -299,6 +299,11 @@ def is_bachs_enabled() -> bool:
     return get_setting("bachs_enabled", "1") not in ("0", "false", "paused", "off")
 
 
+def is_broadcaster_enabled() -> bool:
+    """Check if automated stock broadcaster is enabled (not paused)."""
+    return get_setting("broadcaster_enabled", "1") not in ("0", "false", "paused", "off")
+
+
 def is_bachs_configured() -> bool:
     """Check if Bachs is set up and active."""
     if not is_bachs_enabled():
@@ -3444,7 +3449,9 @@ def render_admin_help() -> Tuple[str, InlineKeyboardMarkup]:
         "/addstock &lt;product_id&gt; &lt;item&gt;  (manual items, 1 per line)\n"
         "/refund &lt;order_id&gt;\n"
         "/stats - View sales stats\n"
-        "/broadcast &lt;text&gt; - Broadcast message\n"
+        "/broadcast &lt;text&gt; - Broadcast message to buyers\n"
+        "/broadcast [play|pause] - Play or pause automated stock broadcaster\n"
+        "/broadcastplay / /broadcastpause - Play/resume or pause automated restock broadcasts\n"
         "/backup - Download fresh database backup (.db)\n"
         "/export - Download updated products Excel (.xlsx)\n"
         "/setrate [rate_ngn] - View or update USD to NGN exchange rate\n"
@@ -4282,10 +4289,56 @@ async def admin_stats(m: Message):
     )
 
 
+@dp.message(Command("broadcastpause", "pausebroadcast"), is_admin)
+async def admin_pause_broadcaster(m: Message, command: CommandObject = None):
+    set_setting("broadcaster_enabled", "0")
+    await m.answer(
+        "⏸️ <b>Stock Broadcaster Paused!</b>\n\n"
+        "Automated restock broadcasts to channel and buyers are now paused.\n"
+        "Incoming supplier restock alerts will be ignored while paused.\n\n"
+        "<i>To resume broadcasts at any time, run <code>/broadcast play</code> or <code>/broadcastplay</code>.</i>"
+    )
+
+
+@dp.message(Command("broadcastplay", "playbroadcast"), is_admin)
+async def admin_play_broadcaster(m: Message, command: CommandObject = None):
+    set_setting("broadcaster_enabled", "1")
+    await m.answer(
+        "▶️ <b>Stock Broadcaster Resumed!</b>\n\n"
+        "Automated restock broadcasts are now active.\n"
+        "Incoming supplier restock alerts will be transformed and posted automatically.\n\n"
+        "<i>To pause broadcasts at any time, run <code>/broadcast pause</code> or <code>/broadcastpause</code>.</i>"
+    )
+
+
 @dp.message(Command("broadcast"), is_admin)
 async def admin_broadcast(m: Message, command: CommandObject = None):
-    if not command or not command.args:
-        return await m.answer("Usage: /broadcast <text>")
+    raw_args = (command.args or "").strip() if command else ""
+    args_lower = raw_args.lower()
+
+    if args_lower in ("pause", "stop", "hold", "freeze"):
+        return await admin_pause_broadcaster(m, command)
+
+    if args_lower in ("play", "start", "resume", "enable", "on", "unpause"):
+        return await admin_play_broadcaster(m, command)
+
+    if args_lower == "toggle":
+        if is_broadcaster_enabled():
+            return await admin_pause_broadcaster(m, command)
+        else:
+            return await admin_play_broadcaster(m, command)
+
+    if not raw_args or args_lower in ("status", "info", "check"):
+        status_text = "🟢 <b>Active</b>" if is_broadcaster_enabled() else "⏸️ <b>Paused</b>"
+        return await m.answer(
+            f"📢 <b>Stock Broadcaster Status:</b> {status_text}\n\n"
+            f"<b>Controls:</b>\n"
+            f"• <code>/broadcast pause</code> or <code>/broadcastpause</code> - Pause automated restock broadcasts\n"
+            f"• <code>/broadcast play</code> or <code>/broadcastplay</code> - Resume automated restock broadcasts\n\n"
+            f"<b>Manual Broadcast:</b>\n"
+            f"• <code>/broadcast &lt;text&gt;</code> - Send message to all registered store buyers"
+        )
+
     sent = 0
     failed = 0
     for u in db.execute("SELECT id FROM users").fetchall():
@@ -5279,6 +5332,8 @@ async def main():
             BotCommand(command="bank", description="View Bank Transfer details"),
             BotCommand(command="fsub", description="Manage Force-Subscribe"),
             BotCommand(command="broadcast", description="Broadcast message to buyers"),
+            BotCommand(command="broadcastplay", description="Play/resume automated stock broadcasts"),
+            BotCommand(command="broadcastpause", description="Pause automated stock broadcasts"),
         ]
         for aid in ADMIN_IDS:
             try:

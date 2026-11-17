@@ -90,6 +90,54 @@ def parse_source_chats(raw: str) -> List[str]:
             chats.append(cleaned)
     return chats
 
+def is_broadcaster_enabled() -> bool:
+    """Checks whether the automated stock broadcaster is active or paused."""
+    env_val = os.getenv("BROADCASTER_ENABLED", "true").lower()
+    if env_val in ("0", "false", "pause", "paused", "off"):
+        return False
+
+    if not DB_PATH.exists():
+        return True
+
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM settings WHERE key='broadcaster_enabled'")
+        row = cur.fetchone()
+        if row and str(row[0]).strip().lower() in ("0", "false", "pause", "paused", "off"):
+            return False
+    except Exception as e:
+        logger.debug(f"Could not read broadcaster_enabled from database: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+    return True
+
+def set_broadcaster_enabled(enabled: bool) -> None:
+    """Persists broadcaster active/paused status in store.db settings."""
+    if not DB_PATH.exists():
+        return
+
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
+        val = "1" if enabled else "0"
+        cur.execute(
+            "INSERT INTO settings(key, value) VALUES('broadcaster_enabled', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (val,)
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"Could not save broadcaster_enabled setting: {e}")
+    finally:
+        if conn:
+            conn.close()
+
 def find_store_product_id(product_name: str) -> Optional[int]:
     """Finds matching product ID in store.db to generate direct ?start=p_<id> deep links."""
     if not DB_PATH.exists():
@@ -351,6 +399,10 @@ async def start_broadcaster_task(aiogram_bot=None):
         async def handler(event):
             raw_text = event.message.message or ""
             if not raw_text:
+                return
+
+            if not is_broadcaster_enabled():
+                logger.info("Stock broadcaster is currently paused. Skipping incoming restock alert.")
                 return
 
             result = parser.process_message(raw_text)
