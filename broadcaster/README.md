@@ -1,13 +1,13 @@
 # Creditlog Bot - Stock Broadcaster & Price Transformer
 
-Automated Telegram listener and price transformer companion for `creditlog_bot`. It monitors restock announcements from supplier channels or 1-on-1 supplier bots, extracts products and wholesale prices, applies custom price rules (fixed or percentage), matches items with your local [`store.db`](file:///C:/Users/DELL/creditlog_bot/store.db), and broadcasts them to your channel with an inline purchase button deep-linking directly to that product in `@creditlogbot`.
+Automated Telegram listener and price transformer companion for `creditlogbot`. It monitors restock announcements from supplier channels or 1-on-1 supplier bots, extracts products and wholesale prices, applies custom price rules (fixed or percentage), matches items with your local [`store.db`](file:///C:/Users/DELL/creditlogbot/store.db), and broadcasts them to your channel with an inline purchase button deep-linking directly to that product in `@creditlogbot`.
 
 ---
 
 ## 📁 Directory Structure
 
 ```
-creditlog_bot/
+creditlogbot/
 ├── broadcaster/
 │   ├── pricing_rules.json        # Your custom markup rules (fixed or percentage)
 │   ├── pricing.py                # High-precision Decimal pricing engine
@@ -18,17 +18,17 @@ creditlog_bot/
 │   ├── requirements.txt          # Broadcaster dependencies (telethon, python-dotenv)
 │   ├── .env.example              # Credentials template
 │   └── README.md
-├── bot.py                        # Main creditlog_bot store
+├── bot.py                        # Main creditlogbot store
 ├── store.db                      # SQLite catalog & orders database
 └── .env                          # Root store configuration
 ```
 
 ---
 
-## ⚡ Integration Features with `creditlog_bot`
+## ⚡ Integration Features with `creditlogbot`
 
 1. **Automatic Product Deep-Linking:**
-   * When a restock alert arrives, `broadcaster.py` searches your active catalog in [`store.db`](file:///C:/Users/DELL/creditlog_bot/store.db).
+   * When a restock alert arrives, `broadcaster.py` searches your active catalog in [`store.db`](file:///C:/Users/DELL/creditlogbot/store.db).
    * If a matching product is found (e.g. `ChatGPT Plus`, `Airtable Team`, `CapCut Pro`), the broadcast button automatically deep-links to:
      `https://t.me/creditlogbot?start=p_<product_id>`
    * When customers click the button, your bot instantly opens that exact product's purchase screen!
@@ -43,13 +43,13 @@ creditlog_bot/
 ```bash
 pip install telethon python-dotenv
 ```
-*(Or inside your venv: `C:\Users\DELL\creditlog_bot\.venv\Scripts\pip.exe install telethon`)*
+*(Or inside your venv: `C:\Users\DELL\creditlogbot\.venv\Scripts\pip.exe install telethon`)*
 
 ### 2. Configure Telegram API Credentials
 1. Visit [my.telegram.org](https://my.telegram.org) and log in with your Telegram account.
 2. Go to **API development tools** and create an app (Title: `StockBroadcaster`).
 3. Copy your `api_id` and `api_hash`.
-4. Copy [.env.example](file:///C:/Users/DELL/creditlog_bot/broadcaster/.env.example) to `.env` inside `creditlog_bot/broadcaster/`:
+4. Copy [.env.example](file:///C:/Users/DELL/creditlogbot/broadcaster/.env.example) to `.env` inside `creditlogbot/broadcaster/`:
    ```bash
    cp broadcaster/.env.example broadcaster/.env
    ```
