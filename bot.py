@@ -4333,10 +4333,10 @@ async def admin_broadcast(m: Message, command: CommandObject = None):
         return await m.answer(
             f"📢 <b>Stock Broadcaster Status:</b> {status_text}\n\n"
             f"<b>Controls:</b>\n"
-            f"• <code>/broadcast pause</code> or <code>/broadcastpause</code> - Pause automated restock broadcasts\n"
-            f"• <code>/broadcast play</code> or <code>/broadcastplay</code> - Resume automated restock broadcasts\n\n"
+            f"/broadcastpause or /broadcast pause - Pause automated restock broadcasts\n"
+            f"/broadcastplay or /broadcast play - Resume automated restock broadcasts\n\n"
             f"<b>Manual Broadcast:</b>\n"
-            f"• <code>/broadcast &lt;text&gt;</code> - Send message to all registered store buyers"
+            f"/broadcast &lt;text&gt; - Send message to all registered store buyers"
         )
 
     sent = 0
@@ -4753,10 +4753,10 @@ async def admin_setbachs(m: Message, command: CommandObject = None):
             f"• <b>Currency:</b> <code>{curr}</code>\n"
             f"• <b>Base URL:</b> <code>{get_bachs_base_url()}</code>\n\n"
             f"<b>Controls:</b>\n"
-            f"• <code>/bachspause</code> or <code>/bachs pause</code> - Pause Bachs payments\n"
-            f"• <code>/bachsplay</code> or <code>/bachs play</code> - Resume Bachs payments\n"
-            f"• <code>/bachscurrency USD|NGN</code> or <code>/bachs currency USD|NGN</code> - Set billing currency\n"
-            f"• <code>/setbachs &lt;api_key&gt;</code> - Update API key\n\n"
+            f"/bachspause or /bachs pause - Pause Bachs payments\n"
+            f"/bachsplay or /bachs play - Resume Bachs payments\n"
+            f"/bachscurrency USD|NGN or /bachs currency USD|NGN - Set billing currency\n"
+            f"/setbachs &lt;api_key&gt; - Update API key\n\n"
             f"<i>Get your API key (sk_live_... or sk_sandbox_...) from your dashboard at https://app.bachs.io</i>"
         )
 
@@ -4766,12 +4766,12 @@ async def admin_setbachs(m: Message, command: CommandObject = None):
         return await m.answer(
             "⚠️ <b>Unknown Bachs command option.</b>\n\n"
             "<b>Available Bachs commands:</b>\n"
-            "• <code>/bachs</code> - View status\n"
-            "• <code>/bachs pause</code> - Pause Bachs checkouts\n"
-            "• <code>/bachs play</code> - Resume Bachs checkouts\n"
-            "• <code>/bachs currency USD|NGN</code> - Change currency\n"
-            "• <code>/setbachs &lt;api_key&gt;</code> - Update Bachs API key\n"
-            "• <code>/delbachs</code> - Disable Bachs gateway"
+            "/bachs - View status\n"
+            "/bachspause or /bachs pause - Pause Bachs checkouts\n"
+            "/bachsplay or /bachs play - Resume Bachs checkouts\n"
+            "/bachscurrency USD|NGN - Change currency\n"
+            "/setbachs &lt;api_key&gt; - Update Bachs API key\n"
+            "/delbachs - Disable Bachs gateway"
         )
     set_setting("bachs_api_key", raw_args)
     set_setting("bachs_enabled", "1")
