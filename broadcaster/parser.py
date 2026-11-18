@@ -76,24 +76,31 @@ class MessageParser:
         new_price_str = f"{icon_prefix}Price: {new_price:.2f} {currency}"
         transformed_text = text.replace(old_price_str, new_price_str, 1)
 
-        # Also recalculate any bulk pricing tiers in the message
-        bulk_pattern = re.compile(
+        # Omit bulk pricing section and tiers so broadcast matches standard single-unit format
+        bulk_header_pattern = re.compile(r"(?:📦\s*)?(?:bulk\s*price|wholesale)", re.IGNORECASE)
+        bulk_bullet_pattern = re.compile(
             r"^([•\-\*]\s*)(.+?)\s*([—\-–:])\s*([\d.]+)\s*([A-Za-z]+)(.*)$",
             re.IGNORECASE
         )
-        transformed_lines = []
+        cleaned_lines = []
+        in_bulk_section = False
         for line in transformed_text.splitlines():
-            bulk_match = bulk_pattern.match(line.strip())
-            if bulk_match:
-                bullet_prefix, tier_desc, sep, old_bulk_price_str, b_curr, suffix = bulk_match.groups()
-                try:
-                    old_bulk_price = float(old_bulk_price_str)
-                    new_bulk_price = self.pricing_engine.calculate_price(product_name, old_bulk_price)
-                    line = f"{bullet_prefix}{tier_desc} {sep} {new_bulk_price:.2f} {b_curr.upper()}{suffix}"
-                except ValueError:
-                    pass
-            transformed_lines.append(line)
-        transformed_text = "\n".join(transformed_lines)
+            stripped = line.strip()
+            if bulk_header_pattern.search(stripped):
+                in_bulk_section = True
+                continue
+
+            if in_bulk_section:
+                if not stripped or bulk_bullet_pattern.match(stripped):
+                    continue
+                in_bulk_section = False
+
+            if bulk_bullet_pattern.match(stripped) and re.search(r"\d+\+?\s*(?:pcs|acc|unit|item|x\b)|each|per\b", stripped, re.IGNORECASE):
+                continue
+
+            cleaned_lines.append(line)
+
+        transformed_text = re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned_lines)).strip()
 
         return {
             "type": "single",
