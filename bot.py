@@ -616,6 +616,16 @@ def migrate_db():
         resequence_product_ids(db)
         set_setting("products_resequenced_v1", "1")
 
+    # Seed missing retail catalog SKUs from supplier shop
+    if get_setting("retail_skus_seeded_v1") != "1":
+        try:
+            from retail_catalog import seed_retail_catalog
+            seed_retail_catalog(db)
+            resequence_product_ids(db)
+            set_setting("retail_skus_seeded_v1", "1")
+        except Exception as e:
+            logger.warning(f"Retail SKUs seeding skipped: {e}")
+
     # Seed default featured products if not yet configured
     if get_setting("featured_products", None) is None:
         init_ids = []

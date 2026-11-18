@@ -4371,6 +4371,15 @@ class TestAuditBugFixes(unittest.IsolatedAsyncioTestCase):
             await bot.admin_setmargin(m, cmd_margin)
             mock_refresh.assert_called()
 
+    async def test_retail_catalog_seeding_and_idempotency(self):
+        from retail_catalog import seed_retail_catalog, RETAIL_CATALOG_ITEMS
+        self.assertGreater(len(RETAIL_CATALOG_ITEMS), 50)
+        # Calling seed_retail_catalog should be safe and idempotent
+        inserted = seed_retail_catalog(bot.db)
+        # Second run must insert 0 duplicates
+        inserted_again = seed_retail_catalog(bot.db)
+        self.assertEqual(inserted_again, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
