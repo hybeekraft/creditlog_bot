@@ -109,6 +109,32 @@ class TestParserAndPricing(unittest.TestCase):
         self.assertIn("🆕 New product", res["transformed_text"])
         self.assertIn("📦 Available now", res["transformed_text"])
 
+    def test_single_item_with_bulk_prices(self):
+        # Single product restock containing volume/bulk discount bullet tiers
+        raw_msg = (
+            "🔥 Restocked!\n\n"
+            "Ⓜ️ Muse AI Account 1B Tokens\n\n"
+            "💵 Price: 0.30 USD\n\n"
+            "📦 Bulk prices:\n"
+            "• 5+ pcs — 0.25 USD each\n"
+            "• 10+ pcs — 0.22 USD each\n"
+            "• 25+ pcs — 0.20 USD each\n\n"
+            "⚡ Instant delivery after payment\n"
+            "⌛ Limited stock available"
+        )
+        res = self.parser.process_message(raw_msg)
+        self.assertIsNotNone(res)
+        self.assertEqual(res["type"], "single")
+        self.assertEqual(res["items"][0]["name"], "Ⓜ️ Muse AI Account 1B Tokens")
+        # 0.30 * 1.50 = 0.45 USD (Muse AI 50% markup rule)
+        self.assertEqual(res["items"][0]["new_price"], 0.45)
+        self.assertIn("💵 Price: 0.45 USD", res["transformed_text"])
+        # Bulk price lines should also be marked up by 50%:
+        # 0.25 * 1.50 = 0.38, 0.22 * 1.50 = 0.33, 0.20 * 1.50 = 0.30
+        self.assertIn("• 5+ pcs — 0.38 USD each", res["transformed_text"])
+        self.assertIn("• 10+ pcs — 0.33 USD each", res["transformed_text"])
+        self.assertIn("• 25+ pcs — 0.30 USD each", res["transformed_text"])
+
     def test_brand_isolation_product_matching(self):
         try:
             from broadcaster import broadcaster as b

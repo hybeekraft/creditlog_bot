@@ -20,18 +20,23 @@ class MessageParser:
         if not text:
             return None
 
-        # Check list format first (e.g. • Product — 0.89 USD)
+        # Check single-item format first (e.g. Price: 0.30 USD, even if it has bulk price bullets)
+        if re.search(r"(?:💵\s*)?Price\s*:\s*[\d.]+", text, re.IGNORECASE):
+            result = self._process_single_item_format(text)
+            if result:
+                return result
+
+        # Check list format (e.g. multi-product catalog: • Product A — 0.89 USD)
         if "•" in text or "—" in text:
             result = self._process_list_format(text)
             if result:
                 return result
 
-        # Fallback to single-item format (e.g. Price: 4.99 USD)
-        return self._process_single_item_format(text)
+        return None
 
     def _process_single_item_format(self, text: str) -> Optional[Dict[str, Any]]:
         # Find price line: e.g. "💵 Price: 4.99 USD" or "Price: 4.99 USD"
-        price_match = re.search(r"(?:💵\s*)?Price:\s*([\d.]+)\s*([A-Za-z]+)", text, re.IGNORECASE)
+        price_match = re.search(r"(?:💵\s*)?Price\s*:\s*([\d.]+)\s*([A-Za-z]+)", text, re.IGNORECASE)
         if not price_match:
             return None
 
@@ -41,7 +46,7 @@ class MessageParser:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         price_idx = -1
         for i, line in enumerate(lines):
-            if re.search(r"Price:\s*[\d.]+", line, re.IGNORECASE):
+            if re.search(r"Price\s*:\s*[\d.]+", line, re.IGNORECASE):
                 price_idx = i
                 break
 
@@ -70,6 +75,25 @@ class MessageParser:
         icon_prefix = "💵 " if has_dollar_icon else ""
         new_price_str = f"{icon_prefix}Price: {new_price:.2f} {currency}"
         transformed_text = text.replace(old_price_str, new_price_str, 1)
+
+        # Also recalculate any bulk pricing tiers in the message
+        bulk_pattern = re.compile(
+            r"^([•\-\*]\s*)(.+?)\s*([—\-–:])\s*([\d.]+)\s*([A-Za-z]+)(.*)$",
+            re.IGNORECASE
+        )
+        transformed_lines = []
+        for line in transformed_text.splitlines():
+            bulk_match = bulk_pattern.match(line.strip())
+            if bulk_match:
+                bullet_prefix, tier_desc, sep, old_bulk_price_str, b_curr, suffix = bulk_match.groups()
+                try:
+                    old_bulk_price = float(old_bulk_price_str)
+                    new_bulk_price = self.pricing_engine.calculate_price(product_name, old_bulk_price)
+                    line = f"{bullet_prefix}{tier_desc} {sep} {new_bulk_price:.2f} {b_curr.upper()}{suffix}"
+                except ValueError:
+                    pass
+            transformed_lines.append(line)
+        transformed_text = "\n".join(transformed_lines)
 
         return {
             "type": "single",
