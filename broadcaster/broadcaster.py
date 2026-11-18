@@ -269,9 +269,11 @@ async def broadcast_to_bot_users(text: str, button_text: str, bot_url: str, aiog
     if aiogram_bot is not None:
         try:
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-            markup = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=button_text, url=bot_url)]
-            ])
+            try:
+                btn = InlineKeyboardButton(text=button_text, url=bot_url, style="success")
+            except TypeError:
+                btn = InlineKeyboardButton(text=button_text, url=bot_url)
+            markup = InlineKeyboardMarkup(inline_keyboard=[[btn]])
             sent = 0
             for uid in users:
                 try:
@@ -293,7 +295,7 @@ async def broadcast_to_bot_users(text: str, button_text: str, bot_url: str, aiog
         import aiohttp
         api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         payload_markup = {
-            "inline_keyboard": [[{"text": button_text, "url": bot_url}]]
+            "inline_keyboard": [[{"text": button_text, "url": bot_url, "style": "success"}]]
         }
         sent = 0
         async with aiohttp.ClientSession() as session:
@@ -320,11 +322,13 @@ async def send_channel_broadcast(chat_id: str, text: str, button_text: str, bot_
     if aiogram_bot is not None:
         try:
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-            markup = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=button_text, url=bot_url)]
-            ])
+            try:
+                btn = InlineKeyboardButton(text=button_text, url=bot_url, style="success")
+            except TypeError:
+                btn = InlineKeyboardButton(text=button_text, url=bot_url)
+            markup = InlineKeyboardMarkup(inline_keyboard=[[btn]])
             await aiogram_bot.send_message(chat_id, text, reply_markup=markup, parse_mode=None)
-            logger.info(f"Successfully broadcasted to {chat_id} via Bot with inline button!")
+            logger.info(f"Successfully broadcasted to {chat_id} via Bot with green inline button!")
             return
         except Exception as e:
             logger.warning(f"Could not send to channel via aiogram_bot: {e}. Trying Bot API fallback...")
@@ -339,13 +343,13 @@ async def send_channel_broadcast(chat_id: str, text: str, button_text: str, bot_
                 "chat_id": chat_id,
                 "text": text,
                 "reply_markup": {
-                    "inline_keyboard": [[{"text": button_text, "url": bot_url}]]
+                    "inline_keyboard": [[{"text": button_text, "url": bot_url, "style": "success"}]]
                 }
             }
             async with aiohttp.ClientSession() as session:
                 async with session.post(api_url, json=payload, timeout=10) as resp:
                     if resp.status == 200:
-                        logger.info(f"Successfully broadcasted to {chat_id} via Bot API with inline button!")
+                        logger.info(f"Successfully broadcasted to {chat_id} via Bot API with green inline button!")
                         return
                     else:
                         err_text = await resp.text()
