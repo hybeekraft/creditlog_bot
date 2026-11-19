@@ -200,3 +200,39 @@ class PricingEngine:
             final_dec = base_dec
 
         return float(final_dec.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+    def calculate_margin_price(self, product_name: str, base_price: float) -> float:
+        """
+        Calculates a price applying percentage markup (ideal for bulk tiers).
+        Uses SKU-specific margin, store profit margin, or ruleset percentage.
+        """
+        base_dec = Decimal(str(base_price))
+        margin_pct = None
+
+        p = self.find_store_product(product_name)
+        if p:
+            if p.get("margin") is not None:
+                margin_pct = Decimal(str(p["margin"]))
+            elif p.get("fixed_price") == 1 and p.get("price") and p.get("supplier_price"):
+                cost = Decimal(str(p["supplier_price"]))
+                if cost > 0:
+                    margin_pct = ((Decimal(str(p["price"])) - cost) / cost) * Decimal("100")
+
+        if margin_pct is None and self.db_path and self.db_path.exists():
+            margin_pct = Decimal(str(self.get_store_margin()))
+
+        if margin_pct is None:
+            rule = self.rules.get("default_rule", {"type": "percentage", "value": 45.0})
+            product_lower = product_name.lower()
+            for custom in self.rules.get("custom_rules", []):
+                if custom.get("keyword", "").lower() in product_lower:
+                    rule = custom
+                    break
+            if rule.get("type") == "percentage":
+                margin_pct = Decimal(str(rule.get("value", 45.0)))
+            else:
+                margin_pct = Decimal(str(self.get_store_margin()))
+
+        multiplier = Decimal("1") + (margin_pct / Decimal("100"))
+        final_dec = base_dec * multiplier
+        return float(final_dec.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))

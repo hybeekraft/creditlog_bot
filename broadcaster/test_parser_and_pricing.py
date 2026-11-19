@@ -110,7 +110,7 @@ class TestParserAndPricing(unittest.TestCase):
         self.assertIn("📦 Available now", res["transformed_text"])
 
     def test_single_item_with_bulk_prices(self):
-        # When supplier includes bulk pricing tiers, omit the bulk section so it broadcasts as single unit
+        # When supplier includes bulk pricing tiers, keep the bulk section and recalculate tiers
         raw_msg = (
             "🔥 Restocked!\n\n"
             "Ⓜ️ Muse AI Account 1B Tokens\n\n"
@@ -129,11 +129,11 @@ class TestParserAndPricing(unittest.TestCase):
         # 0.30 * 1.50 = 0.45 USD (Muse AI 50% markup rule)
         self.assertEqual(res["items"][0]["new_price"], 0.45)
         self.assertIn("💵 Price: 0.45 USD", res["transformed_text"])
-        # Bulk price section and bullet lines should be omitted
-        self.assertNotIn("Bulk prices", res["transformed_text"])
-        self.assertNotIn("5+ pcs", res["transformed_text"])
-        self.assertNotIn("10+ pcs", res["transformed_text"])
-        self.assertNotIn("25+ pcs", res["transformed_text"])
+        # Bulk price section and bullet lines should be preserved with recalculated prices
+        self.assertIn("📦 Bulk prices:", res["transformed_text"])
+        self.assertIn("• 5+ pcs — 0.38 USD each", res["transformed_text"])
+        self.assertIn("• 10+ pcs — 0.33 USD each", res["transformed_text"])
+        self.assertIn("• 25+ pcs — 0.30 USD each", res["transformed_text"])
         # Footer lines should be preserved
         self.assertIn("⚡ Instant delivery after payment", res["transformed_text"])
         self.assertIn("⌛ Limited stock available", res["transformed_text"])
@@ -526,7 +526,7 @@ class TestParserAndPricing(unittest.TestCase):
         self.assertIn("Muse AI 31B Gmail Stable", res1["transformed_text"])
         self.assertIn("💵 Price:", res1["transformed_text"])
 
-        # 2. Screenshot 2: Restocked with bulk prices
+        # 2. Screenshot 2: Restocked with bulk prices recalculated with profit margin
         img2_msg = (
             "🔥 Restocked!\n\n"
             "🌊 Muse AI Account 1B Tokens\n\n"
@@ -541,9 +541,11 @@ class TestParserAndPricing(unittest.TestCase):
         res2 = self.parser.process_message(img2_msg)
         self.assertIsNotNone(res2)
         self.assertEqual(res2["type"], "single")
-        # Bulk prices must be stripped out completely
-        self.assertNotIn("Bulk prices", res2["transformed_text"])
-        self.assertNotIn("• 5+ pcs", res2["transformed_text"])
+        # Bulk prices must be preserved and recalculated with profit margin (50% rule: 0.38, 0.33, 0.30)
+        self.assertIn("📦 Bulk prices:", res2["transformed_text"])
+        self.assertIn("• 5+ pcs — 0.38 USD each", res2["transformed_text"])
+        self.assertIn("• 10+ pcs — 0.33 USD each", res2["transformed_text"])
+        self.assertIn("• 25+ pcs — 0.30 USD each", res2["transformed_text"])
         self.assertIn("🔥 Restocked!", res2["transformed_text"])
         self.assertIn("⚡ Instant delivery after payment", res2["transformed_text"])
         self.assertIn("⌛ Limited stock available", res2["transformed_text"])

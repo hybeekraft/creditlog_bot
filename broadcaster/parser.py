@@ -82,31 +82,49 @@ class MessageParser:
         new_price_str = f"{icon_prefix}Price: {new_price:.2f} {currency}"
         transformed_text = text.replace(old_price_str, new_price_str, 1)
 
-        # Omit bulk pricing section and tiers so broadcast matches standard single-unit format
+        # Recalculate bulk pricing section tiers using the active profit margin
         bulk_header_pattern = re.compile(r"(?:📦\s*)?(?:bulk\s*price|wholesale)", re.IGNORECASE)
         bulk_bullet_pattern = re.compile(
-            r"^([•\-\*]\s*)(.+?)\s*([—\-–:])\s*([\d.]+)\s*([A-Za-z]+)(.*)$",
+            r"^([•\-\*]\s*)(.+?)\s*([—\-–:])\s*(?:([\$₦€£])\s*)?([\d.]+)\s*([A-Za-z]+)?(.*)$",
             re.IGNORECASE
         )
-        cleaned_lines = []
+        processed_lines = []
         in_bulk_section = False
         for line in transformed_text.splitlines():
             stripped = line.strip()
             if bulk_header_pattern.search(stripped):
                 in_bulk_section = True
+                processed_lines.append(line)
                 continue
 
-            if in_bulk_section:
-                if not stripped or bulk_bullet_pattern.match(stripped):
-                    continue
+            m_tier = bulk_bullet_pattern.match(stripped)
+            is_bulk_bullet = bool(
+                m_tier and (
+                    in_bulk_section or
+                    re.search(r"\d+\+?\s*(?:pcs|acc|unit|item|x\b)|each|per\b", m_tier.group(2) + (m_tier.group(7) or ""), re.IGNORECASE)
+                )
+            )
+
+            if is_bulk_bullet:
+                prefix, tier_label, sep, curr_sym, price_str, curr_code, suffix = m_tier.groups()
+                old_tier_price = float(price_str)
+                new_tier_price = self.pricing_engine.calculate_margin_price(product_name, old_tier_price)
+
+                curr_part = f"{curr_sym} " if curr_sym else ""
+                price_part = f"{new_tier_price:.2f}"
+                if curr_code:
+                    price_part += f" {curr_code}"
+
+                new_line = f"{prefix}{tier_label} {sep} {curr_part}{price_part}{suffix or ''}"
+                processed_lines.append(new_line)
+                continue
+
+            if in_bulk_section and stripped and not m_tier:
                 in_bulk_section = False
 
-            if bulk_bullet_pattern.match(stripped) and re.search(r"\d+\+?\s*(?:pcs|acc|unit|item|x\b)|each|per\b", stripped, re.IGNORECASE):
-                continue
+            processed_lines.append(line)
 
-            cleaned_lines.append(line)
-
-        transformed_text = re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned_lines)).strip()
+        transformed_text = re.sub(r"\n{3,}", "\n\n", "\n".join(processed_lines)).strip()
 
         return {
             "type": "single",
