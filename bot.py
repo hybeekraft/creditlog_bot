@@ -507,7 +507,7 @@ def reload_categories():
 CATEGORY_KEYWORDS = (
     (("codex", "astra"), "Codex API"),
     (("chatgpt", "gpt", "openai"), "ChatGPT"),
-    (("gemini",), "Gemini"),
+    (("gemini", "antigravity", "argon", "hydrogen"), "Gemini"),
     (("grok",), "Grok"),
     (("claude", "anthropic"), "Claude"),
     (("kimi", "moonshot"), "Kimi"),
@@ -544,7 +544,7 @@ PRODUCT_ICON_KEYWORDS = (
     (("prime video", "prime", "apple tv"), "📺"),
     (("fallout", "game pass", "xbox"), "🎮"),
     (("avast", "mcafee"), "🛡️"),
-    (("gamma", "wink", "gemini"), "✨"),
+    (("gamma", "wink", "gemini", "antigravity", "argon", "hydrogen"), "✨"),
     (("framer", "magic patterns", "mobbin", "supercut", "krea", "leonardo", "figma", "openart"), "🎨"),
     (("n8n",), "⚙️"),
     (("brain.fm",), "🎵"),

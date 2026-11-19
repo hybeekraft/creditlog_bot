@@ -65,7 +65,7 @@ EXCEL_CATEGORY_KEYWORDS = (
     (("codex",), "Codex API"),
     (("chatgpt",), "ChatGPT"),
     (("claude",), "Claude"),
-    (("gemini", "google"), "Gemini"),
+    (("gemini", "google", "antigravity", "argon", "hydrogen"), "Gemini"),
     (("vpn", "proxy"), "VPN & Security"),
     (("canva", "adobe", "capcut", "midjourney"), "Creative & Design"),
     (("office", "microsoft", "windows"), "Productivity & Office"),
