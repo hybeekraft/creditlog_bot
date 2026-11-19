@@ -21,32 +21,38 @@ class MessageParser:
             return None
 
         # Check single-item format first (e.g. Price: 0.30 USD, even if it has bulk price bullets)
-        if re.search(r"(?:💵\s*)?Price\s*:\s*[\d.]+", text, re.IGNORECASE):
+        if re.search(r"(?:💵\s*)?Price\s*:\s*(?:[\$₦€£]\s*)?[\d.]+", text, re.IGNORECASE):
             result = self._process_single_item_format(text)
             if result:
                 return result
 
-        # Check list format (e.g. multi-product catalog: • Product A — 0.89 USD)
-        if "•" in text or "—" in text:
-            result = self._process_list_format(text)
-            if result:
-                return result
+        # Check list format (e.g. multi-product catalog: • Product A — 0.89 USD or - Product A - 0.89 USD)
+        result = self._process_list_format(text)
+        if result:
+            return result
 
         return None
 
     def _process_single_item_format(self, text: str) -> Optional[Dict[str, Any]]:
-        # Find price line: e.g. "💵 Price: 4.99 USD" or "Price: 4.99 USD"
-        price_match = re.search(r"(?:💵\s*)?Price\s*:\s*([\d.]+)\s*([A-Za-z]+)", text, re.IGNORECASE)
+        # Find price line: e.g. "💵 Price: 4.99 USD", "Price: $4.99", or "Price: 4.99"
+        price_match = re.search(
+            r"(?:💵\s*)?Price\s*:\s*(?:([\$₦€£])\s*)?([\d.]+)\s*([A-Za-z]+|[\$₦€£])?",
+            text,
+            re.IGNORECASE
+        )
         if not price_match:
             return None
 
-        base_price = float(price_match.group(1))
-        currency = price_match.group(2).upper()
+        sym_pre, price_val_str, sym_post = price_match.groups()
+        base_price = float(price_val_str)
+        curr_raw = (sym_post or sym_pre or "USD").strip().upper()
+        curr_map = {"$": "USD", "₦": "NGN", "€": "EUR", "£": "GBP"}
+        currency = curr_map.get(curr_raw, curr_raw if curr_raw.isalpha() else "USD")
 
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         price_idx = -1
         for i, line in enumerate(lines):
-            if re.search(r"Price\s*:\s*[\d.]+", line, re.IGNORECASE):
+            if re.search(r"Price\s*:\s*(?:[\$₦€£]\s*)?[\d.]+", line, re.IGNORECASE):
                 price_idx = i
                 break
 
@@ -117,9 +123,9 @@ class MessageParser:
         }
 
     def _process_list_format(self, text: str) -> Optional[Dict[str, Any]]:
-        # Regex for lines like: • Muse AI Account 31B Tokens — 0.89 USD
+        # Regex for lines like: • Muse AI Account 31B Tokens — 0.89 USD or - Item - $0.89
         bullet_pattern = re.compile(
-            r"([•\-\*]\s*)(.+?)\s*([—\-–])\s*([\d.]+)\s*([A-Za-z]+)",
+            r"([•\-\*]\s*)(.+?)\s*([—\-–:])\s*(?:([\$₦€£])\s*)?([\d.]+)\s*([A-Za-z]+|[\$₦€£])?",
             re.IGNORECASE
         )
 
@@ -129,21 +135,22 @@ class MessageParser:
 
         transformed_text = text
         items: List[Dict[str, Any]] = []
+        curr_map = {"$": "USD", "₦": "NGN", "€": "EUR", "£": "GBP"}
 
-        for bullet_prefix, name, dash, price_str, currency in matches:
+        for bullet_prefix, name, dash, sym_pre, price_str, sym_post in matches:
             base_price = float(price_str)
             clean_name = name.strip()
-            curr = currency.strip().upper()
+            curr_raw = (sym_post or sym_pre or "USD").strip().upper()
+            curr = curr_map.get(curr_raw, curr_raw if curr_raw.isalpha() else "USD")
 
             new_price = self.pricing_engine.calculate_price(clean_name, base_price)
 
-            old_line_match = f"{bullet_prefix}{name}{dash}{price_str} {currency}".strip()
-            # Construct updated line
             new_line = f"{bullet_prefix}{clean_name} {dash} {new_price:.2f} {curr}"
 
-            # Replace line occurrence in text
+            sym_pre_escaped = rf"(?:{re.escape(sym_pre)}\s*)?" if sym_pre else r"(?:[\$₦€£]\s*)?"
+            sym_post_escaped = rf"(?:\s*{re.escape(sym_post)})?" if sym_post else r"(?:\s*[A-Za-z]+|\s*[\$₦€£])?"
             pattern_to_replace = re.compile(
-                rf"{re.escape(bullet_prefix)}\s*{re.escape(name)}\s*{re.escape(dash)}\s*{re.escape(price_str)}\s*{re.escape(currency)}",
+                rf"{re.escape(bullet_prefix)}\s*{re.escape(name)}\s*{re.escape(dash)}\s*{sym_pre_escaped}{re.escape(price_str)}{sym_post_escaped}",
                 re.IGNORECASE
             )
             transformed_text = pattern_to_replace.sub(new_line, transformed_text, count=1)

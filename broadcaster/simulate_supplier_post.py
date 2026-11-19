@@ -3,9 +3,14 @@ Utility script to test message parsing, price calculations, and store.db deep li
 without needing a live Telegram connection.
 """
 from pathlib import Path
-from parser import MessageParser
-from pricing import PricingEngine
-from broadcaster import find_store_product_id, MY_BOT_USERNAME
+try:
+    from .parser import MessageParser
+    from .pricing import PricingEngine
+    from .broadcaster import find_store_product_id, MY_BOT_USERNAME, DB_PATH
+except ImportError:
+    from parser import MessageParser
+    from pricing import PricingEngine
+    from broadcaster import find_store_product_id, MY_BOT_USERNAME, DB_PATH
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -43,7 +48,7 @@ These products are available again:
 • Muse AI Account 31B Tokens — 0.89 USD"""
 
 def test_samples():
-    pricing_engine = PricingEngine(BASE_DIR / "pricing_rules.json")
+    pricing_engine = PricingEngine(BASE_DIR / "pricing_rules.json", db_path=DB_PATH)
     parser = MessageParser(pricing_engine)
 
     samples = [

@@ -291,10 +291,10 @@ def seed_retail_catalog(db_conn):
     # Lazy import to avoid circular dependency
     from bot import detect_category
     
-    # Map normalized name to existing row id
-    rows = cur.execute("SELECT id, name FROM products").fetchall()
+    # Map normalized name to existing row id and margin/fixed_price state
+    rows = cur.execute("SELECT id, name, margin, fixed_price FROM products").fetchall()
     existing_by_norm = {
-        re.sub(r'[^a-z0-9]', '', r[1].lower()): r[0]
+        re.sub(r'[^a-z0-9]', '', r[1].lower()): (r[0], r[2], r[3])
         for r in rows
     }
     
@@ -310,15 +310,26 @@ def seed_retail_catalog(db_conn):
         sp_id = f"renqis_retail_{idx}"
         
         if norm in existing_by_norm:
-            pid = existing_by_norm[norm]
-            # Update supplier price and stock if not fixed price
-            cur.execute("""
-                UPDATE products 
-                SET supplier_price = ?,
-                    supplier_stock = ?,
-                    category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
-                WHERE id = ? AND fixed_price = 0
-            """, (cost_cents, supplier_stock, cat, pid))
+            pid, item_margin, is_fixed = existing_by_norm[norm]
+            if not is_fixed:
+                margin_val = item_margin if (item_margin is not None) else 45
+                retail_cents = max(100, int(round(cost_cents * (1 + margin_val / 100))))
+                cur.execute("""
+                    UPDATE products 
+                    SET price = ?,
+                        supplier_price = ?,
+                        supplier_stock = ?,
+                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
+                    WHERE id = ? AND fixed_price = 0
+                """, (retail_cents, cost_cents, supplier_stock, cat, pid))
+            else:
+                cur.execute("""
+                    UPDATE products 
+                    SET supplier_price = ?,
+                        supplier_stock = ?,
+                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
+                    WHERE id = ?
+                """, (cost_cents, supplier_stock, cat, pid))
             updated += 1
             continue
             
@@ -336,7 +347,7 @@ def seed_retail_catalog(db_conn):
             ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'renqis_retail', ?, 'manual', 45, 0)
         """, (name, desc, price_cents, sp_id, cost_cents, active, cat, supplier_stock))
         
-        existing_by_norm[norm] = cur.lastrowid
+        existing_by_norm[norm] = (cur.lastrowid, 45, 0)
         inserted += 1
         
     db_conn.commit()

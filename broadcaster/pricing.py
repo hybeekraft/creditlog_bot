@@ -14,7 +14,7 @@ class PricingEngine:
     def __init__(self, config_path: Union[Path, str] = DEFAULT_RULES_FILE, db_path: Optional[Union[Path, str]] = None):
         self.config_path = Path(config_path)
         self.rules = self.load_rules()
-        self.db_path = Path(db_path) if (db_path and Path(db_path).exists()) else None
+        self.db_path = Path(db_path) if db_path else None
 
     def load_rules(self) -> Dict[str, Any]:
         default = {
@@ -81,7 +81,21 @@ class PricingEngine:
 
             GENERIC = {'api', 'account', 'redeem', 'credits', 'pack', 'plan', 'pro', 'month', 'months', 'year', 'years', '1m', '1y', '3m', '6m', '12m', '1', '2', '3', '6', '12', 'days', '7d', '28'}
 
-            # 1. Direct or substring match (active first, then inactive)
+            # 1. Exact match pass (active first, then inactive)
+            for active_target in (1, 0):
+                for row in rows:
+                    pid, name, active, price, fixed_price, margin, supplier_price = row
+                    if active != active_target:
+                        continue
+                    n_words = clean_words(name)
+                    if ' '.join(n_words) == q_lower:
+                        return {
+                            "id": pid, "name": name, "price": price,
+                            "fixed_price": fixed_price, "margin": margin,
+                            "supplier_price": supplier_price
+                        }
+
+            # 2. Substring pass in normalized text (active first, then inactive)
             for active_target in (1, 0):
                 for row in rows:
                     pid, name, active, price, fixed_price, margin, supplier_price = row
@@ -92,7 +106,7 @@ class PricingEngine:
                     if not n_lower:
                         continue
                     brand_token = next((w for w in n_words if w not in GENERIC), n_words[0] if n_words else "")
-                    if n_lower == q_lower or (brand_token and brand_token in q_set and (n_lower in q_lower or q_lower in n_lower)):
+                    if brand_token and brand_token in q_set and (n_lower in q_lower or q_lower in n_lower):
                         return {
                             "id": pid, "name": name, "price": price,
                             "fixed_price": fixed_price, "margin": margin,

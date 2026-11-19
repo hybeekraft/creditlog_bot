@@ -63,10 +63,16 @@ BROADCAST_TO_USERS = os.getenv("BROADCAST_TO_USERS", "true").lower() in ("true",
 
 # Resolve DB_PATH safely (supports local dev and Docker /data/ paths)
 db_env = os.getenv("DB_PATH", "store.db")
-if (ROOT_DIR / "store.db").exists():
+if db_env == ":memory:":
+    DB_PATH = Path(":memory:")
+elif db_env == "/data/store.db" and sys.platform == "win32" and not os.path.exists("/.dockerenv"):
     DB_PATH = ROOT_DIR / "store.db"
-elif Path(db_env).exists():
+elif os.path.isabs(db_env):
     DB_PATH = Path(db_env)
+elif (ROOT_DIR / db_env).exists():
+    DB_PATH = ROOT_DIR / db_env
+elif (ROOT_DIR / "store.db").exists():
+    DB_PATH = ROOT_DIR / "store.db"
 else:
     DB_PATH = ROOT_DIR / Path(db_env).name
 
@@ -138,8 +144,20 @@ def set_broadcaster_enabled(enabled: bool) -> None:
         if conn:
             conn.close()
 
-def find_store_product_id(product_name: str) -> Optional[int]:
-    """Finds matching product ID in store.db to generate direct ?start=p_<id> deep links."""
+def sync_product_from_broadcast(
+    product_name: str,
+    cost_usd: float = 0.0,
+    new_price_usd: Optional[float] = None
+) -> Optional[int]:
+    """
+    Synchronizes broadcast restock/price information with store.db:
+    1. Looks up product by name using exact, substring, or brand-token matching.
+    2. Updates supplier_price = cost_cents, active = 1, supplier_stock = 10.
+    3. If fixed_price == 0: updates retail selling price to match store/product margin.
+    4. If fixed_price == 1: preserves user-locked retail price and updates effective margin.
+    5. If product is not found in store.db, auto-creates it under the appropriate category.
+    Returns the matched or newly created product ID.
+    """
     if not DB_PATH.exists():
         return None
 
@@ -152,8 +170,16 @@ def find_store_product_id(product_name: str) -> Optional[int]:
 
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        cur.execute("SELECT id, name, active FROM products")
-        rows = cur.fetchall()
+        cur.execute("PRAGMA table_info(products)")
+        cols = {row[1] for row in cur.fetchall()}
+        has_pricing = "price" in cols
+
+        if has_pricing:
+            cur.execute("SELECT id, name, active, price, fixed_price, margin, supplier_price FROM products")
+            rows = cur.fetchall()
+        else:
+            cur.execute("SELECT id, name, active FROM products")
+            rows = [(r[0], r[1], r[2], 0, 0, 0, 0) for r in cur.fetchall()]
 
         q_words = clean_words(product_name)
         q_set = set(q_words)
@@ -161,59 +187,129 @@ def find_store_product_id(product_name: str) -> Optional[int]:
 
         GENERIC = {'api', 'account', 'redeem', 'credits', 'pack', 'plan', 'pro', 'month', 'months', 'year', 'years', '1m', '1y', '3m', '6m', '12m', '1', '2', '3', '6', '12', 'days', '7d', '28'}
 
-        # 1. Direct substring in normalized text (active first, then inactive)
+        matched_row = None
+
+        # 1. Exact match pass: exact normalized text match active first, then inactive
         for active_target in (1, 0):
-            for pid, name, active in rows:
+            for row in rows:
+                pid, name, active, price, fixed_price, margin, supplier_price = row
                 if active != active_target:
                     continue
                 n_words = clean_words(name)
-                n_lower = ' '.join(n_words)
-                if not n_lower:
-                    continue
-                brand_token = next((w for w in n_words if w not in GENERIC), n_words[0] if n_words else "")
-                if n_lower == q_lower or (brand_token and brand_token in q_set and (n_lower in q_lower or q_lower in n_lower)):
-                    if active == 0:
-                        cur.execute("UPDATE products SET active = 1, supplier_stock = 10 WHERE id = ?", (pid,))
-                        conn.commit()
-                    return pid
-
-        # 2. Key brand match: first non-generic word of db name MUST be in query
-        best_match = None
-        best_score = 0.0
-
-        for active_target in (1, 0):
-            for pid, name, active in rows:
-                if active != active_target:
-                    continue
-                n_words = clean_words(name)
-                if not n_words:
-                    continue
-                brand_token = next((w for w in n_words if w not in GENERIC), n_words[0])
-                if brand_token not in q_set:
-                    continue
-                n_set = set(n_words)
-                common = q_set & n_set
-                score = len(common) / len(n_set)
-                if score > best_score and score >= 0.6:
-                    best_score = score
-                    best_match = (pid, active)
-            if best_match:
+                if ' '.join(n_words) == q_lower:
+                    matched_row = row
+                    break
+            if matched_row:
                 break
 
-        if best_match:
-            pid, active = best_match
-            if active == 0:
+        # 2. Substring pass in normalized text (active first, then inactive)
+        if not matched_row:
+            for active_target in (1, 0):
+                for row in rows:
+                    pid, name, active, price, fixed_price, margin, supplier_price = row
+                    if active != active_target:
+                        continue
+                    n_words = clean_words(name)
+                    n_lower = ' '.join(n_words)
+                    if not n_lower:
+                        continue
+                    brand_token = next((w for w in n_words if w not in GENERIC), n_words[0] if n_words else "")
+                    if brand_token and brand_token in q_set and (n_lower in q_lower or q_lower in n_lower):
+                        matched_row = row
+                        break
+                if matched_row:
+                    break
+
+        # 3. Key brand match: first non-generic word of db name MUST be in query
+        if not matched_row:
+            best_match = None
+            best_score = 0.0
+            for active_target in (1, 0):
+                for row in rows:
+                    pid, name, active, price, fixed_price, margin, supplier_price = row
+                    if active != active_target:
+                        continue
+                    n_words = clean_words(name)
+                    if not n_words:
+                        continue
+                    brand_token = next((w for w in n_words if w not in GENERIC), n_words[0])
+                    if brand_token not in q_set:
+                        continue
+                    n_set = set(n_words)
+                    common = q_set & n_set
+                    score = len(common) / len(n_set)
+                    if score > best_score and score >= 0.6:
+                        best_score = score
+                        best_match = row
+                if best_match:
+                    matched_row = best_match
+                    break
+
+        cost_cents = int(round(cost_usd * 100)) if (cost_usd is not None and cost_usd > 0) else None
+
+        if matched_row:
+            pid, name, active, price, fixed_price, margin, supplier_price = matched_row
+            if has_pricing and cost_cents is not None and cost_cents > 0:
+                if fixed_price == 1:
+                    eff_margin = int(round(((price - cost_cents) / cost_cents) * 100)) if (price and price > 0) else (margin or 45)
+                    cur.execute(
+                        "UPDATE products SET supplier_price = ?, margin = ?, active = 1, supplier_stock = 10 WHERE id = ?",
+                        (cost_cents, eff_margin, pid)
+                    )
+                else:
+                    if new_price_usd is not None and new_price_usd > 0:
+                        retail_cents = int(round(new_price_usd * 100))
+                    else:
+                        m_val = margin if margin is not None else 45
+                        retail_cents = int(round(cost_cents * (1 + m_val / 100.0)))
+                    cur.execute(
+                        "UPDATE products SET price = ?, supplier_price = ?, active = 1, supplier_stock = 10 WHERE id = ?",
+                        (retail_cents, cost_cents, pid)
+                    )
+            else:
                 cur.execute("UPDATE products SET active = 1, supplier_stock = 10 WHERE id = ?", (pid,))
-                conn.commit()
+
+            conn.commit()
+            logger.info(f"Broadcast sync updated SKU #{pid} ({name}): active=1, stock=10, cost={cost_cents}c")
             return pid
 
+        # 4. If product not found in store.db and has valid cost, auto-create it
+        if cost_cents is not None and cost_cents > 0:
+            clean_name = re.sub(r'^[^\w\d]+', '', product_name).strip() or product_name.strip()
+            cat = "AI Tools"
+            try:
+                from retail_catalog import detect_category
+                cat = detect_category(clean_name)
+            except Exception:
+                pass
+
+            if new_price_usd is not None and new_price_usd > 0:
+                retail_cents = int(round(new_price_usd * 100))
+            else:
+                retail_cents = int(round(cost_cents * 1.45))
+
+            desc = f"{clean_name}\n\nManual fulfillment by Store Admin within minutes."
+            cur.execute("""
+                INSERT INTO products (
+                    name, description, price, active, supplier_price, margin, category, supplier, supplier_stock, delivery_type, fixed_price
+                ) VALUES (?, ?, ?, 1, ?, 45, ?, 'default', 10, 'manual', 0)
+            """, (clean_name, desc, retail_cents, cost_cents, cat))
+            conn.commit()
+            new_id = cur.lastrowid
+            logger.info(f"Broadcast sync created NEW SKU #{new_id} ({clean_name}) under category '{cat}' at {retail_cents}c")
+            return new_id
+
     except Exception as e:
-        logger.warning(f"Could not query store.db for product match: {e}")
+        logger.warning(f"Could not sync product in store.db: {e}")
     finally:
         if conn:
             conn.close()
 
     return None
+
+def find_store_product_id(product_name: str) -> Optional[int]:
+    """Finds matching product ID in store.db to generate direct ?start=p_<id> deep links."""
+    return sync_product_from_broadcast(product_name)
 
 def create_client() -> Optional[TelegramClient]:
     """Creates a Telethon client using StringSession or persistent session file."""
@@ -318,6 +414,12 @@ async def broadcast_to_bot_users(text: str, button_text: str, bot_url: str, aiog
 
 async def send_channel_broadcast(chat_id: str, text: str, button_text: str, bot_url: str, telethon_client, aiogram_bot=None):
     """Sends restock post to channel using Bot API with inline buttons (or user fallback)."""
+    target = str(chat_id).strip()
+    if (target.startswith("-") and target[1:].isdigit()) or target.isdigit():
+        target_chat = int(target)
+    else:
+        target_chat = target
+
     # 1. Primary: Use aiogram_bot so Telegram renders native inline keyboard buttons
     if aiogram_bot is not None:
         try:
@@ -327,8 +429,8 @@ async def send_channel_broadcast(chat_id: str, text: str, button_text: str, bot_
             except TypeError:
                 btn = InlineKeyboardButton(text=button_text, url=bot_url)
             markup = InlineKeyboardMarkup(inline_keyboard=[[btn]])
-            await aiogram_bot.send_message(chat_id, text, reply_markup=markup, parse_mode=None)
-            logger.info(f"Successfully broadcasted to {chat_id} via Bot with green inline button!")
+            await aiogram_bot.send_message(target_chat, text, reply_markup=markup, parse_mode=None)
+            logger.info(f"Successfully broadcasted to {target_chat} via Bot with green inline button!")
             return
         except Exception as e:
             logger.warning(f"Could not send to channel via aiogram_bot: {e}. Trying Bot API fallback...")
@@ -340,7 +442,7 @@ async def send_channel_broadcast(chat_id: str, text: str, button_text: str, bot_
             import aiohttp
             api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
             payload = {
-                "chat_id": chat_id,
+                "chat_id": target_chat,
                 "text": text,
                 "reply_markup": {
                     "inline_keyboard": [[{"text": button_text, "url": bot_url, "style": "success"}]]
@@ -349,7 +451,7 @@ async def send_channel_broadcast(chat_id: str, text: str, button_text: str, bot_
             async with aiohttp.ClientSession() as session:
                 async with session.post(api_url, json=payload, timeout=10) as resp:
                     if resp.status == 200:
-                        logger.info(f"Successfully broadcasted to {chat_id} via Bot API with green inline button!")
+                        logger.info(f"Successfully broadcasted to {target_chat} via Bot API with green inline button!")
                         return
                     else:
                         err_text = await resp.text()
@@ -360,14 +462,14 @@ async def send_channel_broadcast(chat_id: str, text: str, button_text: str, bot_
     # 3. Fallback: Telethon user client
     try:
         await telethon_client.send_message(
-            chat_id,
+            target_chat,
             text,
             buttons=[Button.url(button_text, bot_url)] if Button else None,
             link_preview=False
         )
-        logger.info(f"Broadcasted to {chat_id} via Telethon user client.")
+        logger.info(f"Broadcasted to {target_chat} via Telethon user client.")
     except Exception as e:
-        logger.error(f"Failed to post to {chat_id} via Telethon: {e}")
+        logger.error(f"Failed to post to {target_chat} via Telethon: {e}")
 
 async def start_broadcaster_task(aiogram_bot=None):
     """Background task entry point for bot.py."""
@@ -436,13 +538,24 @@ async def start_broadcaster_task(aiogram_bot=None):
 
             bot_url = f"https://t.me/{active_bot_username}"
             if result["type"] == "single" and result["items"]:
-                item_name = result["items"][0]["name"]
-                matched_id = find_store_product_id(item_name)
+                item = result["items"][0]
+                item_name = item["name"]
+                matched_id = sync_product_from_broadcast(
+                    product_name=item_name,
+                    cost_usd=item.get("old_price", 0.0),
+                    new_price_usd=item.get("new_price")
+                )
                 if matched_id:
                     bot_url = f"https://t.me/{active_bot_username}?start=p_{matched_id}"
-                    logger.info(f"Matched product in store.db: #{matched_id} -> {bot_url}")
+                    logger.info(f"Matched & synced product in store.db: #{matched_id} -> {bot_url}")
             elif result["type"] == "list":
                 button_text = "🛍️ Open Store"
+                for item in result.get("items", []):
+                    sync_product_from_broadcast(
+                        product_name=item["name"],
+                        cost_usd=item.get("old_price", 0.0),
+                        new_price_usd=item.get("new_price")
+                    )
 
             buttons = [
                 [Button.url(button_text, bot_url)]
