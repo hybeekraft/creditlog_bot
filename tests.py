@@ -4373,12 +4373,36 @@ class TestAuditBugFixes(unittest.IsolatedAsyncioTestCase):
 
     async def test_retail_catalog_seeding_and_idempotency(self):
         from retail_catalog import seed_retail_catalog, RETAIL_CATALOG_ITEMS
-        self.assertGreater(len(RETAIL_CATALOG_ITEMS), 50)
+        self.assertGreaterEqual(len(RETAIL_CATALOG_ITEMS), 270)
         # Calling seed_retail_catalog should be safe and idempotent
         inserted = seed_retail_catalog(bot.db)
         # Second run must insert 0 duplicates
         inserted_again = seed_retail_catalog(bot.db)
         self.assertEqual(inserted_again, 0)
+
+    async def test_category_management_commands(self):
+        m = AsyncMock()
+        m.from_user.id = 123456
+
+        # 1. List categories
+        await bot.admin_list_categories(m)
+        self.assertTrue(m.answer.called)
+        list_output = m.answer.call_args[0][0]
+        self.assertIn("Store Categories", list_output)
+
+        # 2. Add category
+        cmd_add = AsyncMock()
+        cmd_add.args = "TestBrand 🎯"
+        await bot.admin_add_category(m, cmd_add)
+        self.assertTrue(any("TestBrand" in str(arg) for arg in m.answer.call_args[0]))
+        self.assertIn("testbrand", bot.CAT_BY_KEY)
+
+        # 3. Del category
+        cmd_del = AsyncMock()
+        cmd_del.args = "testbrand"
+        await bot.admin_del_category(m, cmd_del)
+        self.assertTrue(any("removed" in str(arg).lower() for arg in m.answer.call_args[0]))
+        self.assertNotIn("testbrand", bot.CAT_BY_KEY)
 
 
 if __name__ == "__main__":

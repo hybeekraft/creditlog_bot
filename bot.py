@@ -433,8 +433,8 @@ async def check_supplier_balance_sufficient(sup_client: ResellerClient, cost_usd
         log.warning("Could not check supplier balance: %s", e)
         return False, 0.0
 
-# Store categories and icons
-CATEGORIES = [
+# Default store categories and icons (matching supplier retail bot layout)
+DEFAULT_CATEGORIES = [
     ("chatgpt", "ChatGPT", "✳️"),
     ("gemini", "Gemini", "✨"),
     ("grok", "Grok", "𝕏"),
@@ -445,7 +445,7 @@ CATEGORIES = [
     ("elevenlabs", "ElevenLabs", "⏸️"),
     ("ai_tools", "AI Tools", "⚡"),
     ("qwen", "Qwen API", "🟣"),
-    ("deepseek", "DeepSeek AI", "🐳"),
+    ("deepseek", "DeepSeek", "🐳"),
     ("cursor", "Cursor API", "⬛"),
     ("adobe", "Adobe", "🅰️"),
     ("autodesk", "Autodesk", "📐"),
@@ -459,9 +459,49 @@ CATEGORIES = [
     ("games", "Games", "🎮"),
     ("social", "Social", "💼"),
     ("discord", "Discord", "👾"),
+    ("muse_ai", "Muse AI", "Ⓜ️"),
+    ("lovable", "Lovable", "❤️"),
+    ("capcut", "CapCut", "✂️"),
 ]
+CATEGORIES = list(DEFAULT_CATEGORIES)
 CAT_BY_KEY = {k: (name, icon) for k, name, icon in CATEGORIES}
 CAT_KEY_BY_NAME = {name.lower(): k for k, name, icon in CATEGORIES}
+
+
+def reload_categories():
+    """Reload categories from database table if present, else seed defaults."""
+    global CATEGORIES, CAT_BY_KEY, CAT_KEY_BY_NAME
+    try:
+        if db:
+            cur = db.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS categories (
+                    key TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    icon TEXT NOT NULL,
+                    sort_order INTEGER DEFAULT 0
+                )
+            """)
+            rows = cur.execute("SELECT key, name, icon FROM categories ORDER BY sort_order ASC, rowid ASC").fetchall()
+            if not rows:
+                for idx, (k, n, ic) in enumerate(DEFAULT_CATEGORIES):
+                    cur.execute(
+                        "INSERT OR IGNORE INTO categories (key, name, icon, sort_order) VALUES (?, ?, ?, ?)",
+                        (k, n, ic, idx)
+                    )
+                db.commit()
+                rows = cur.execute("SELECT key, name, icon FROM categories ORDER BY sort_order ASC, rowid ASC").fetchall()
+
+            if rows:
+                CATEGORIES.clear()
+                for r in rows:
+                    CATEGORIES.append((r["key"], r["name"], r["icon"]))
+                CAT_BY_KEY.clear()
+                CAT_BY_KEY.update({k: (name, icon) for k, name, icon in CATEGORIES})
+                CAT_KEY_BY_NAME.clear()
+                CAT_KEY_BY_NAME.update({name.lower(): k for k, name, icon in CATEGORIES})
+    except Exception as e:
+        logger.warning(f"Could not load categories table: {e}")
 
 
 CATEGORY_KEYWORDS = (
@@ -471,21 +511,24 @@ CATEGORY_KEYWORDS = (
     (("grok",), "Grok"),
     (("claude", "anthropic"), "Claude"),
     (("kimi", "moonshot"), "Kimi"),
-    (("sora", "runway", "pika", "kling", "luma", "video ai", "capcut"), "Video AI"),
+    (("capcut",), "CapCut"),
+    (("muse ai", "muse"), "Muse AI"),
+    (("lovable", "loveable"), "Lovable"),
+    (("sora", "runway", "pika", "kling", "luma", "video ai", "heygen", "veo", "higgsfield", "pixverse", "seedance"), "Video AI"),
     (("elevenlabs", "eleven"), "ElevenLabs"),
     (("qwen", "tongyi"), "Qwen API"),
-    (("deepseek",), "DeepSeek AI"),
+    (("deepseek",), "DeepSeek"),
     (("cursor",), "Cursor API"),
     (("adobe", "photoshop", "illustrator"), "Adobe"),
     (("autodesk", "autocad", "revit", "3ds max", "maya"), "Autodesk"),
-    (("canva", "figma", "freepik", "envato", "design"), "Design"),
-    (("office", "windows", "microsoft", "o365", "excel", "word", "zoom", "notion"), "Office"),
-    (("duolingo", "coursera", "udemy", "education", "chegg", "quizlet", "cambly"), "Education"),
-    (("netflix", "disney", "hbo", "prime video", "streaming", "hulu", "crunchyroll", "youtube"), "Streaming"),
-    (("spotify", "apple music", "tidal", "deezer", "music"), "Music"),
+    (("canva", "figma", "freepik", "envato", "design", "midjourney", "krea", "picsart", "gamma", "mobbin", "leonardo", "flux", "openart"), "Design"),
+    (("office", "windows", "microsoft", "o365", "excel", "word", "zoom", "notion", "ilovepdf", "icloud"), "Office"),
+    (("duolingo", "coursera", "udemy", "education", "chegg", "quizlet", "cambly", "grammarly", "quillbot", "scribd", "jetbrains", "student", "kiro"), "Education"),
+    (("netflix", "disney", "hbo", "prime video", "prime", "streaming", "hulu", "crunchyroll", "youtube"), "Streaming"),
+    (("suno", "udio", "spotify", "apple music", "tidal", "deezer", "music", "pocket fm"), "Music"),
     (("vpn", "nordvpn", "expressvpn", "surfshark", "mullvad", "hma", "proton", "windscribe"), "VPN"),
-    (("security", "antivirus", "malwarebytes", "kaspersky", "eset"), "Security"),
-    (("steam", "playstation", "xbox", "nintendo", "game", "roblox"), "Games"),
+    (("security", "antivirus", "malwarebytes", "kaspersky", "eset", "mcafee", "avast"), "Security"),
+    (("steam", "playstation", "xbox", "nintendo", "game", "roblox", "fallout"), "Games"),
     (("twitter", "x.com", "instagram", "tiktok", "facebook", "linkedin", "social"), "Social"),
     (("discord", "nitro", "decor", "gifting"), "Discord"),
 )
@@ -551,12 +594,17 @@ def get_products_for_category(key: str) -> list[sqlite3.Row]:
     cat_name, _ = CAT_BY_KEY.get(key, ("AI Tools", "⚡"))
     all_prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
     matched = []
+    target_names = {cat_name.lower(), key.lower()}
+    if cat_name.lower() == "deepseek":
+        target_names.add("deepseek ai")
+    elif cat_name.lower() == "deepseek ai":
+        target_names.add("deepseek")
     for p in all_prods:
-        p_cat = (p["category"] or "").strip()
-        if p_cat.lower() == cat_name.lower() or p_cat.lower() == key.lower():
+        p_cat = (p["category"] or "").strip().lower()
+        if p_cat in target_names:
             matched.append(p)
-        elif not p_cat or p_cat == "AI Tools":
-            if detect_category(p["name"]).lower() == cat_name.lower():
+        elif not p_cat or p_cat == "ai tools":
+            if detect_category(p["name"]).lower() in target_names:
                 matched.append(p)
     return matched
 
@@ -611,17 +659,21 @@ def migrate_db():
         );
     """)
 
+    # Reload store categories from database
+    reload_categories()
+
     # One-time safe product ID resequencing to clean 1..N
     if get_setting("products_resequenced_v1") != "1":
         resequence_product_ids(db)
         set_setting("products_resequenced_v1", "1")
 
-    # Seed missing retail catalog SKUs from supplier shop
-    if get_setting("retail_skus_seeded_v1") != "1":
+    # Seed all retail catalog SKUs from supplier shop (~277 products across 19 pages)
+    if get_setting("retail_skus_seeded_v2") != "1":
         try:
             from retail_catalog import seed_retail_catalog
             seed_retail_catalog(db)
             resequence_product_ids(db)
+            set_setting("retail_skus_seeded_v2", "1")
             set_setting("retail_skus_seeded_v1", "1")
         except Exception as e:
             logger.warning(f"Retail SKUs seeding skipped: {e}")
@@ -3480,6 +3532,10 @@ def render_admin_help() -> Tuple[str, InlineKeyboardMarkup]:
         "/setemoji &lt;key&gt; [emoji] - Set official brand custom emoji ID\n"
         "/emojis - View configured brand custom emojis\n"
         "/delemoji &lt;key&gt; - Remove custom emoji\n\n"
+        "📂 <b>Category Management</b>\n"
+        "/categories - View all store categories & item counts\n"
+        "/addcategory &lt;name&gt; [icon] - Add or update a category\n"
+        "/delcategory &lt;key_or_name&gt; - Remove a category\n\n"
         "🌐 <b>Supplier Catalog (Automated)</b>\n"
         "/supplier - Supplier balance & account info\n"
         "/mode [auto|manual|instant] - View or switch Model A / Model B\n"
@@ -3704,6 +3760,114 @@ async def admin_del_emoji(m: Message, command: CommandObject = None):
     key = args.lower()
     db.execute("DELETE FROM custom_emojis WHERE key=?", (key,))
     await m.answer(f"Custom emoji for <b>{esc(key)}</b> removed.")
+
+
+@dp.message(Command("addcategory"), is_admin)
+async def admin_add_category(m: Message, command: CommandObject = None):
+    args = (command.args or "").strip() if command else ""
+    if not args:
+        return await m.answer(
+            "<b>Usage:</b> <code>/addcategory &lt;name&gt; [icon]</code>\n"
+            "<b>Or:</b> <code>/addcategory &lt;key&gt; &lt;name&gt; &lt;icon&gt;</code>\n\n"
+            "<b>Examples:</b>\n"
+            "• <code>/addcategory Midjourney 🎨</code>\n"
+            "• <code>/addcategory prompt_base PromptBase 💡</code>"
+        )
+
+    parts = args.split()
+    if len(parts) >= 3 and re.match(r'^[a-z0-9_]+$', parts[0]):
+        key = parts[0].lower()
+        icon = parts[-1]
+        name = " ".join(parts[1:-1])
+    elif len(parts) >= 2:
+        last = parts[-1]
+        if len(last) <= 4 and not last.isalnum():
+            icon = last
+            name = " ".join(parts[:-1])
+        else:
+            name = " ".join(parts)
+            icon = "📦"
+        key = re.sub(r'[^a-z0-9_]', '', name.lower().replace(" ", "_"))
+    else:
+        name = parts[0]
+        key = re.sub(r'[^a-z0-9_]', '', name.lower().replace(" ", "_"))
+        icon = "📦"
+
+    if not key:
+        return await m.answer("⚠️ Could not generate a valid key for this category.")
+
+    try:
+        max_order_row = db.execute("SELECT MAX(sort_order) FROM categories").fetchone()
+        next_order = (max_order_row[0] + 1) if max_order_row and max_order_row[0] is not None else len(CATEGORIES)
+        db.execute("""
+            INSERT INTO categories (key, name, icon, sort_order)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET name=excluded.name, icon=excluded.icon
+        """, (key, name, icon, next_order))
+        db.commit()
+        reload_categories()
+        await m.answer(
+            f"✅ <b>Category added / updated:</b>\n\n"
+            f"• <b>Name:</b> {esc(name)}\n"
+            f"• <b>Key:</b> <code>{esc(key)}</code>\n"
+            f"• <b>Icon:</b> {icon}\n\n"
+            f"<i>Total active categories: {len(CATEGORIES)}</i>"
+        )
+    except Exception as e:
+        await m.answer(f"❌ Failed to save category: {esc(str(e))}")
+
+
+@dp.message(Command("delcategory", "removecategory", "deletecategory"), is_admin)
+async def admin_del_category(m: Message, command: CommandObject = None):
+    args = (command.args or "").strip() if command else ""
+    if not args:
+        return await m.answer(
+            "<b>Usage:</b> <code>/delcategory &lt;key_or_name&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "• <code>/delcategory midjourney</code>\n"
+            "• <code>/delcategory Midjourney</code>"
+        )
+
+    target = args.lower()
+    matched_key = None
+    matched_name = None
+    for k, n, ic in CATEGORIES:
+        if k.lower() == target or n.lower() == target:
+            matched_key = k
+            matched_name = n
+            break
+
+    if not matched_key:
+        return await m.answer(f"⚠️ Category matching <b>{esc(args)}</b> not found.")
+
+    try:
+        db.execute("DELETE FROM categories WHERE key = ?", (matched_key,))
+        db.commit()
+        reload_categories()
+        await m.answer(
+            f"🗑️ <b>Category removed:</b> {esc(matched_name)} (<code>{esc(matched_key)}</code>)\n\n"
+            f"<i>Remaining categories: {len(CATEGORIES)}</i>"
+        )
+    except Exception as e:
+        await m.answer(f"❌ Failed to remove category: {esc(str(e))}")
+
+
+@dp.message(Command("categories", "listcategories"), is_admin)
+async def admin_list_categories(m: Message):
+    reload_categories()
+    lines = [
+        f"📂 <b>Store Categories ({len(CATEGORIES)} Total)</b>:\n",
+    ]
+    for idx, (k, n, ic) in enumerate(CATEGORIES, start=1):
+        prods = get_products_for_category(k)
+        lines.append(f"{idx}. {ic} <b>{esc(n)}</b> (<code>{esc(k)}</code>) — {len(prods)} products")
+
+    lines.append(
+        "\n💡 <i>Commands:</i>\n"
+        "• <code>/addcategory &lt;name&gt; [icon]</code> to add or update a category\n"
+        "• <code>/delcategory &lt;key_or_name&gt;</code> to remove a category"
+    )
+    await m.answer("\n".join(lines))
 
 
 def chunk_lines(lines: List[str], max_chars: int = 3500) -> List[str]:
@@ -5107,6 +5271,14 @@ async def admin_supplier_sync(m: Message, command: CommandObject = None):
 
     total_added, total_updated, total_items, errors = await perform_supplier_sync(target_suppliers, markup, purge_delisted=purge_delisted)
 
+    # Sync supplier retail bot catalog items as well
+    try:
+        from retail_catalog import seed_retail_catalog
+        retail_added = seed_retail_catalog(db)
+        total_added += retail_added
+    except Exception as e:
+        logger.warning(f"Retail SKUs sync in /s_sync skipped: {e}")
+
     # Group products by status
     all_prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
     in_stock_auto = []
@@ -5328,6 +5500,9 @@ async def main():
             BotCommand(command="export", description="Download updated products Excel (.xlsx)"),
             BotCommand(command="stats", description="View store sales stats"),
             BotCommand(command="products", description="List products & margins"),
+            BotCommand(command="categories", description="View & manage store categories"),
+            BotCommand(command="addcategory", description="Add or update a store category"),
+            BotCommand(command="delcategory", description="Remove a store category"),
             BotCommand(command="clearprices", description="Clear manual price overrides"),
             BotCommand(command="clearcache", description="Clear cached products & sync from supplier API"),
             BotCommand(command="s_products", description="List supplier products"),
