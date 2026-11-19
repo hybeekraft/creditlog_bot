@@ -198,5 +198,67 @@ class TestParserAndPricing(unittest.TestCase):
         finally:
             tmp_path.unlink(missing_ok=True)
 
+    def test_broadcaster_respects_store_db_pricing(self):
+        import sqlite3, tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        try:
+            conn = sqlite3.connect(tmp_path)
+            c = conn.cursor()
+            c.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
+            c.execute("INSERT INTO settings (key, value) VALUES ('profit_margin', '50')")
+            c.execute("""
+                CREATE TABLE products (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT,
+                    active INTEGER,
+                    price INTEGER,
+                    fixed_price INTEGER,
+                    margin INTEGER,
+                    supplier_price INTEGER
+                )
+            """)
+            # SKU 1: Locked fixed price at $15.00 via /setprice
+            c.execute("INSERT INTO products VALUES (1, 'ChatGPT Plus 1M Apple Pay', 1, 1500, 1, 173, 550)")
+            # SKU 2: Custom margin at 60% via /setmargin
+            c.execute("INSERT INTO products VALUES (2, 'Custom Margin SKU', 1, 800, 0, 60, 500)")
+            # SKU 3: Standard SKU without overrides (uses store margin 50%)
+            c.execute("INSERT INTO products VALUES (3, 'Standard Margin SKU', 1, 750, 0, NULL, 500)")
+            conn.commit()
+            conn.close()
+
+            engine = PricingEngine(db_path=tmp_path)
+            parser = MessageParser(engine)
+
+            # 1. Fixed price SKU: supplier announces $5.50, broadcast should announce locked $15.00
+            msg_1 = "🔥 Restocked!\n\nChatGPT Plus 1M Apple Pay\n\n💵 Price: 5.50 USD"
+            res_1 = parser.process_message(msg_1)
+            self.assertEqual(res_1["items"][0]["new_price"], 15.00)
+            self.assertIn("💵 Price: 15.00 USD", res_1["transformed_text"])
+
+            # 2. Custom margin SKU: supplier announces $10.00, broadcast applies 60% -> $16.00
+            msg_2 = "🔥 Restocked!\n\nCustom Margin SKU\n\n💵 Price: 10.00 USD"
+            res_2 = parser.process_message(msg_2)
+            self.assertEqual(res_2["items"][0]["new_price"], 16.00)
+            self.assertIn("💵 Price: 16.00 USD", res_2["transformed_text"])
+
+            # 3. Standard SKU: supplier announces $10.00, broadcast applies store sync margin 50% -> $15.00
+            msg_3 = "🔥 Restocked!\n\nStandard Margin SKU\n\n💵 Price: 10.00 USD"
+            res_3 = parser.process_message(msg_3)
+            self.assertEqual(res_3["items"][0]["new_price"], 15.00)
+            self.assertIn("💵 Price: 15.00 USD", res_3["transformed_text"])
+
+            # 4. Brand new SKU not in DB: applies store sync margin 50% (20.00 * 1.50 = 30.00)
+            msg_4 = "🔥 Restocked!\n\nUnlisted Future SKU\n\n💵 Price: 20.00 USD"
+            res_4 = parser.process_message(msg_4)
+            self.assertEqual(res_4["items"][0]["new_price"], 30.00)
+            self.assertIn("💵 Price: 30.00 USD", res_4["transformed_text"])
+
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
 if __name__ == "__main__":
     unittest.main()

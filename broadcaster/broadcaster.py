@@ -394,7 +394,7 @@ async def start_broadcaster_task(aiogram_bot=None):
 
         logger.info(f"Stock broadcaster publishing to: {DESTINATION_CHANNEL}")
 
-        pricing_engine = PricingEngine(BASE_DIR / "pricing_rules.json")
+        pricing_engine = PricingEngine(BASE_DIR / "pricing_rules.json", db_path=DB_PATH)
         parser = MessageParser(pricing_engine)
 
         filter_kwargs = {"chats": sources} if sources else {}
