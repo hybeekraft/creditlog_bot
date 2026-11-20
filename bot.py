@@ -669,15 +669,16 @@ def migrate_db():
         set_setting("products_resequenced_v1", "1")
 
     # Seed all retail catalog SKUs from supplier shop (~277 products across 19 pages)
-    if get_setting("retail_skus_seeded_v2") != "1":
+    if get_setting("retail_skus_details_synced_v3") != "1":
         try:
-            from retail_catalog import seed_retail_catalog
-            seed_retail_catalog(db)
+            from retail_catalog import sync_retail_catalog_details, seed_retail_catalog
+            sync_retail_catalog_details(db)
             resequence_product_ids(db)
+            set_setting("retail_skus_details_synced_v3", "1")
             set_setting("retail_skus_seeded_v2", "1")
             set_setting("retail_skus_seeded_v1", "1")
         except Exception as e:
-            logger.warning(f"Retail SKUs seeding skipped: {e}")
+            logger.warning(f"Retail details sync skipped: {e}")
 
     # Seed default featured products if not yet configured
     if get_setting("featured_products", None) is None:
@@ -3512,6 +3513,7 @@ def render_admin_help() -> Tuple[str, InlineKeyboardMarkup]:
         "/setprice &lt;product_id&gt; &lt;price&gt; [currency] (e.g. /setprice 1 15000 NGN or $12.50)\n"
         "/clearprices [product_id] - Clear manual price overrides & reset to dynamic supplier pricing\n"
         "/clearcache - Clear all cached products & sync totally from supplier API\n"
+        "/sync_retail - Sync retail catalog descriptions and stock from supplier scraper data\n"
         "/setmargin &lt;product_id&gt; &lt;margin_%&gt; (e.g. /setmargin 1 60%)\n"
         "/toggle &lt;product_id&gt;  (activate/deactivate)\n"
         "/addstock &lt;product_id&gt; &lt;item&gt;  (manual items, 1 per line)\n"
@@ -5359,6 +5361,13 @@ async def admin_clearcache(m: Message, command: CommandObject = None):
 
     total_added, total_updated, total_items, errors = await perform_supplier_sync(purge_delisted=True)
 
+    try:
+        from retail_catalog import seed_retail_catalog
+        seed_retail_catalog(db)
+        resequence_product_ids(db)
+    except Exception as e:
+        logger.warning(f"Retail SKUs re-seed skipped: {e}")
+
     trigger_catalog_refresh()
 
     admin_curr = get_user_currency(m.from_user.id)
@@ -5374,6 +5383,25 @@ async def admin_clearcache(m: Message, command: CommandObject = None):
         f"• Active In-Stock in Shop: <b>{active_count}</b> / <b>{total_count}</b>\n"
         f"• Currency: <b>{admin_curr}</b>{err_text}"
     )
+
+
+@dp.message(Command("sync_retail"), is_admin)
+async def admin_sync_retail(m: Message, command: CommandObject = None):
+    """Sync retail catalog rich descriptions and live stock from retail_catalog_details.json."""
+    status_msg = await m.answer("⏳ <i>Syncing retail catalog from retail_catalog_details.json...</i>")
+    try:
+        from retail_catalog import sync_retail_catalog_details
+        updated, inserted = sync_retail_catalog_details(db)
+        resequence_product_ids(db)
+        trigger_catalog_refresh()
+        await status_msg.edit_text(
+            f"✅ <b>Retail Catalog Synced Successfully!</b>\n\n"
+            f"• <b>Updated:</b> {updated} products (full descriptions & live stock)\n"
+            f"• <b>Inserted:</b> {inserted} new products\n"
+            f"• <b>Resequenced:</b> Clean 1..N IDs maintained."
+        )
+    except Exception as e:
+        await status_msg.edit_text(f"❌ <b>Sync failed:</b> {e}")
 
 
 @dp.message(Command("s_link"), is_admin)
@@ -5511,6 +5539,7 @@ async def main():
             BotCommand(command="delcategory", description="Remove a store category"),
             BotCommand(command="clearprices", description="Clear manual price overrides"),
             BotCommand(command="clearcache", description="Clear cached products & sync from supplier API"),
+            BotCommand(command="sync_retail", description="Sync retail catalog descriptions & stock"),
             BotCommand(command="s_products", description="List supplier products"),
             BotCommand(command="s_sync", description="Sync supplier catalog"),
             BotCommand(command="s_orders", description="Recent supplier orders"),

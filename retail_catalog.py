@@ -1,5 +1,7 @@
 """Supplier retail catalog items missing from automated reseller API feed."""
 
+import json
+import os
 import re
 
 # (name, cost_usd, is_in_stock)
@@ -284,8 +286,95 @@ RETAIL_CATALOG_ITEMS = [
 ]
 
 
+def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
+    """Sync rich scraped descriptions, prices, and live stock from retail_catalog_details.json."""
+    if json_path is None:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        json_path = os.path.join(base_dir, "retail_catalog_details.json")
+
+    if not os.path.exists(json_path):
+        return 0, 0
+
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return 0, 0
+
+    from bot import detect_category
+    cur = db_conn.cursor()
+
+    rows = cur.execute("SELECT id, name, margin, fixed_price FROM products").fetchall()
+    by_norm = {}
+    for r in rows:
+        pid = r[0] if isinstance(r, tuple) else r["id"]
+        pname = r[1] if isinstance(r, tuple) else r["name"]
+        pmargin = r[2] if isinstance(r, tuple) else r["margin"]
+        pfixed = r[3] if isinstance(r, tuple) else r["fixed_price"]
+        norm = re.sub(r'[^a-z0-9]', '', str(pname).lower())
+        by_norm[norm] = (pid, pmargin if pmargin is not None else 45, pfixed)
+
+    updated = 0
+    inserted = 0
+    for norm_k, item in data.items():
+        name = item.get("item_name") or norm_k
+        desc = item.get("description") or ""
+        cost_usd = item.get("price_usd")
+        stock = item.get("stock", 0)
+        active = 1 if stock > 0 else 0
+        cat = detect_category(name)
+
+        if norm_k in by_norm:
+            pid, margin_val, is_fixed = by_norm[norm_k]
+            if cost_usd is not None and not is_fixed:
+                cost_cents = int(round(cost_usd * 100))
+                retail_cents = max(100, int(round(cost_cents * (1 + margin_val / 100.0))))
+                cur.execute("""
+                    UPDATE products
+                    SET description = ?,
+                        supplier_stock = ?,
+                        active = ?,
+                        supplier_price = ?,
+                        price = ?,
+                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
+                    WHERE id = ?
+                """, (desc, stock, active, cost_cents, retail_cents, cat, pid))
+            else:
+                cur.execute("""
+                    UPDATE products
+                    SET description = ?,
+                        supplier_stock = ?,
+                        active = ?,
+                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
+                    WHERE id = ?
+                """, (desc, stock, active, cat, pid))
+            updated += 1
+        else:
+            cost_cents = int(round((cost_usd or 0.0) * 100))
+            retail_cents = max(100, int(round(cost_cents * 1.45)))
+            cur.execute("""
+                INSERT INTO products (
+                    name, description, price, supplier_product_id, supplier_price,
+                    auto_fulfill, active, category, supplier, supplier_stock,
+                    delivery_type, margin, fixed_price
+                ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'renqis_retail', ?, 'manual', 45, 0)
+            """, (name, desc, retail_cents, f"renqis_retail_{norm_k}", cost_cents, active, cat, stock))
+            inserted += 1
+            by_norm[norm_k] = (cur.lastrowid, 45, 0)
+
+    db_conn.commit()
+    return updated, inserted
+
+
 def seed_retail_catalog(db_conn):
     """Seed retail catalog products into database or update pricing/stock."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    json_path = os.path.join(base_dir, "retail_catalog_details.json")
+    if os.path.exists(json_path):
+        updated, inserted = sync_retail_catalog_details(db_conn, json_path=json_path)
+        if updated > 0 or inserted > 0:
+            return inserted
+
     cur = db_conn.cursor()
     
     # Lazy import to avoid circular dependency
