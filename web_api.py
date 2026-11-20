@@ -309,7 +309,43 @@ def _supplier_vendor_list(service):
             for name, client in registry.list_suppliers().items()]
 
 
+class ServiceWrapper:
+    """Provides dictionary-like subscription access for module or object targets."""
+    def __init__(self, target):
+        self._target = target
+
+    def __getitem__(self, item):
+        if isinstance(self._target, dict):
+            return self._target[item]
+        if hasattr(self._target, item):
+            return getattr(self._target, item)
+        raise KeyError(item)
+
+    def __setitem__(self, key, value):
+        if isinstance(self._target, dict):
+            self._target[key] = value
+        else:
+            setattr(self._target, key, value)
+
+    def __getattr__(self, item):
+        if isinstance(self._target, dict):
+            return self._target.get(item)
+        return getattr(self._target, item)
+
+    def get(self, key, default=None):
+        if isinstance(self._target, dict):
+            return self._target.get(key, default)
+        return getattr(self._target, key, default)
+
+    def __contains__(self, key):
+        if isinstance(self._target, dict):
+            return key in self._target
+        return hasattr(self._target, key)
+
+
 def register_web_routes(app, service):
+    if not isinstance(service, dict):
+        service = ServiceWrapper(service)
     _migrate_schema(service)
     stored_suppliers = _supplier_configs(service)
     if stored_suppliers:
