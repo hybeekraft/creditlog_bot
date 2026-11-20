@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 
 from reseller import ResellerClient, ResellerAPIError, SupplierRegistry
 import onchain
+from web_api import register_web_routes, TELEGRAM_BOT_KEY
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -1530,7 +1531,8 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
             stock_line = "🔴 <b>Out of stock</b>"
             has_stock = False
         else:
-            stock_line = "🟡 <b>Manual / Assisted Delivery</b>\n<i>⚡ Credentials or setup link delivered via support after payment</i>"
+            stock_info = f" (📦 {sup_stock} pcs in stock)" if sup_stock is not None else ""
+            stock_line = f"🟡 <b>Manual / Assisted Delivery</b>{stock_info}\n<i>⚡ Credentials or setup link delivered via support after payment</i>"
             has_stock = True
     else:
         stock_line = "🔴 <b>Out of stock</b>"
@@ -2051,7 +2053,9 @@ async def initialize_bachs_transaction(
     product_name: str,
     customer_email: Optional[str] = None,
     uid: Optional[int] = None,
-    qty: int = 1
+    qty: int = 1,
+    success_url_override: Optional[str] = None,
+    cancel_url_override: Optional[str] = None
 ) -> Tuple[bool, dict]:
     """Initialize a Bachs checkout session for an order."""
     key = get_bachs_key()
@@ -2077,8 +2081,8 @@ async def initialize_bachs_transaction(
     ).strip().lstrip("@")
 
     tg_url = f"https://t.me/{bot_username}?start=order_{order_id}"
-    success_url = callback_url or tg_url
-    cancel_url = callback_url or tg_url
+    success_url = success_url_override or callback_url or tg_url
+    cancel_url = cancel_url_override or callback_url or tg_url
 
     headers = {
         "Authorization": f"Bearer {key}",
@@ -5458,6 +5462,8 @@ async def main():
     except Exception:
         pass
     app = web.Application()
+    register_web_routes(app, sys.modules[__name__])
+    app[TELEGRAM_BOT_KEY] = bot
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
     runner = web.AppRunner(app)
     await runner.setup()
