@@ -3,6 +3,7 @@ import sys
 import asyncio
 import logging
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 from dotenv import load_dotenv
@@ -471,130 +472,298 @@ async def send_channel_broadcast(chat_id: str, text: str, button_text: str, bot_
     except Exception as e:
         logger.error(f"Failed to post to {target_chat} via Telethon: {e}")
 
-async def start_broadcaster_task(aiogram_bot=None):
-    """Background task entry point for bot.py."""
-    client = create_client()
-    if client is None:
+def init_broadcaster_db():
+    """Ensure broadcaster_processed_messages table exists in store.db."""
+    if not DB_PATH.exists() and str(DB_PATH) != ":memory:":
         return
-
+    conn = None
     try:
-        await client.connect()
-        if not await client.is_user_authorized():
-            logger.warning(
-                "Stock broadcaster: Telegram session is not yet authorized. "
-                "Run 'python broadcaster/login_session.py' locally to generate your TELEGRAM_STRING_SESSION "
-                "and set it in Fly.io secrets or .env."
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS broadcaster_processed_messages (
+                msg_id INTEGER PRIMARY KEY,
+                source_id TEXT,
+                processed_at TEXT
             )
-            await client.disconnect()
-            return
-
-        sources = parse_source_chats(SOURCE_CHATS_RAW)
-        if sources:
-            logger.info(f"Stock broadcaster listening to: {sources}")
-        else:
-            logger.info("Stock broadcaster listening to all incoming chats.")
-
-        logger.info(f"Stock broadcaster publishing to: {DESTINATION_CHANNEL}")
-
-        pricing_engine = PricingEngine(BASE_DIR / "pricing_rules.json", db_path=DB_PATH)
-        parser = MessageParser(pricing_engine)
-
-        filter_kwargs = {"chats": sources} if sources else {}
-
-        @client.on(events.NewMessage(**filter_kwargs))
-        async def handler(event):
-            raw_text = event.message.message or ""
-            if not raw_text:
-                return
-
-            if not is_broadcaster_enabled():
-                logger.info("Stock broadcaster is currently paused. Skipping incoming restock alert.")
-                return
-
-            result = parser.process_message(raw_text)
-            if not result:
-                return
-
-            logger.info("Detected new restock alert from supplier! Processing markup...")
-            for item in result["items"]:
-                logger.info(
-                    f"-> {item['name']}: Supplier Price = {item['old_price']} {item['currency']} "
-                    f"-> Your Price = {item['new_price']} {item['currency']}"
-                )
-
-            transformed_text = result["transformed_text"]
-            button_text = result.get("button_text") or BUTTON_LABEL
-
-            active_bot_username = MY_BOT_USERNAME
-            if aiogram_bot is not None:
-                try:
-                    me = await aiogram_bot.get_me()
-                    if me and me.username:
-                        active_bot_username = me.username.lstrip("@")
-                except Exception:
-                    pass
-            if active_bot_username.lower() in ("creditlog_bot", "credilog_bot", "creditlog"):
-                active_bot_username = "creditlogbot"
-
-            bot_url = f"https://t.me/{active_bot_username}"
-            if result["type"] == "single" and result["items"]:
-                item = result["items"][0]
-                item_name = item["name"]
-                matched_id = sync_product_from_broadcast(
-                    product_name=item_name,
-                    cost_usd=item.get("old_price", 0.0),
-                    new_price_usd=item.get("new_price")
-                )
-                if matched_id:
-                    bot_url = f"https://t.me/{active_bot_username}?start=p_{matched_id}"
-                    logger.info(f"Matched & synced product in store.db: #{matched_id} -> {bot_url}")
-            elif result["type"] == "list":
-                button_text = "🛍️ Open Store"
-                for item in result.get("items", []):
-                    sync_product_from_broadcast(
-                        product_name=item["name"],
-                        cost_usd=item.get("old_price", 0.0),
-                        new_price_usd=item.get("new_price")
-                    )
-
-            buttons = [
-                [Button.url(button_text, bot_url)]
-            ]
-
-            # 1. Broadcast to channel with inline button
-            if DESTINATION_CHANNEL:
-                await send_channel_broadcast(
-                    chat_id=DESTINATION_CHANNEL,
-                    text=transformed_text,
-                    button_text=button_text,
-                    bot_url=bot_url,
-                    telethon_client=client,
-                    aiogram_bot=aiogram_bot
-                )
-            else:
-                logger.warning("DESTINATION_CHANNEL not set. Transformed preview:\n" + transformed_text)
-
-            # Also broadcast directly to registered store bot users in the background
-            if BROADCAST_TO_USERS:
-                asyncio.create_task(broadcast_to_bot_users(
-                    text=transformed_text,
-                    button_text=button_text,
-                    bot_url=bot_url,
-                    aiogram_bot=aiogram_bot
-                ))
-
-        logger.info("Stock broadcaster background service active.")
-        await client.run_until_disconnected()
-    except asyncio.CancelledError:
-        logger.info("Stock broadcaster task cancelled. Shutting down client...")
+        """)
+        conn.commit()
     except Exception as e:
-        logger.error(f"Stock broadcaster encountered an unexpected error: {e}")
+        logger.warning(f"Could not init broadcaster_processed_messages table: {e}")
     finally:
+        if conn:
+            conn.close()
+
+def is_message_processed(msg_id: int) -> bool:
+    """Checks whether a supplier message ID was already transformed and broadcasted."""
+    if not DB_PATH.exists() and str(DB_PATH) != ":memory:":
+        return False
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute("SELECT 1 FROM broadcaster_processed_messages WHERE msg_id = ?", (msg_id,)).fetchone()
+        return bool(row)
+    except Exception:
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def mark_message_processed(msg_id: int, source_id: str = ""):
+    """Marks a message ID as processed in store.db to guarantee zero duplicates."""
+    if not DB_PATH.exists() and str(DB_PATH) != ":memory:":
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "INSERT OR IGNORE INTO broadcaster_processed_messages (msg_id, source_id, processed_at) VALUES (?, ?, ?)",
+            (msg_id, str(source_id), datetime.now(timezone.utc).isoformat())
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"Could not mark message #{msg_id} processed: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+async def process_and_broadcast_message(
+    telethon_client: TelegramClient,
+    parser: MessageParser,
+    aiogram_bot,
+    msg_id: int,
+    raw_text: str,
+    source_id: str = ""
+) -> bool:
+    """
+    Transforms supplier restock text, syncs store.db catalog, and posts to channel & bot users.
+    Returns True if an alert was parsed and broadcasted, False otherwise.
+    """
+    if not raw_text or not raw_text.strip():
+        return False
+
+    if is_message_processed(msg_id):
+        logger.debug(f"Message #{msg_id} already processed. Skipping duplicate.")
+        return False
+
+    if not is_broadcaster_enabled():
+        logger.info("Stock broadcaster is currently paused. Skipping incoming restock alert.")
+        return False
+
+    result = parser.process_message(raw_text)
+    if not result:
+        return False
+
+    logger.info(f"Processing restock alert (msg #{msg_id} from {source_id})...")
+    for item in result["items"]:
+        logger.info(
+            f"-> {item['name']}: Supplier Price = {item['old_price']} {item['currency']} "
+            f"-> Your Price = {item['new_price']} {item['currency']}"
+        )
+
+    transformed_text = result["transformed_text"]
+    button_text = result.get("button_text") or BUTTON_LABEL
+
+    active_bot_username = MY_BOT_USERNAME
+    if aiogram_bot is not None:
         try:
-            if client and hasattr(client, "is_connected") and client.is_connected():
-                await client.disconnect()
+            me = await aiogram_bot.get_me()
+            if me and me.username:
+                active_bot_username = me.username.lstrip("@")
         except Exception:
             pass
+    if active_bot_username.lower() in ("creditlog_bot", "credilog_bot", "creditlog"):
+        active_bot_username = "creditlogbot"
+
+    bot_url = f"https://t.me/{active_bot_username}"
+    if result["type"] == "single" and result["items"]:
+        item = result["items"][0]
+        item_name = item["name"]
+        matched_id = sync_product_from_broadcast(
+            product_name=item_name,
+            cost_usd=item.get("old_price", 0.0),
+            new_price_usd=item.get("new_price")
+        )
+        if matched_id:
+            bot_url = f"https://t.me/{active_bot_username}?start=p_{matched_id}"
+            logger.info(f"Matched & synced product in store.db: #{matched_id} -> {bot_url}")
+    elif result["type"] == "list":
+        button_text = "🛍️ Open Store"
+        for item in result.get("items", []):
+            sync_product_from_broadcast(
+                product_name=item["name"],
+                cost_usd=item.get("old_price", 0.0),
+                new_price_usd=item.get("new_price")
+            )
+
+    # 1. Broadcast to channel with inline button
+    if DESTINATION_CHANNEL:
+        await send_channel_broadcast(
+            chat_id=DESTINATION_CHANNEL,
+            text=transformed_text,
+            button_text=button_text,
+            bot_url=bot_url,
+            telethon_client=telethon_client,
+            aiogram_bot=aiogram_bot
+        )
+    else:
+        logger.warning("DESTINATION_CHANNEL not set. Transformed preview:\n" + transformed_text)
+
+    # 2. Also broadcast directly to registered store bot users in the background
+    if BROADCAST_TO_USERS:
+        asyncio.create_task(broadcast_to_bot_users(
+            text=transformed_text,
+            button_text=button_text,
+            bot_url=bot_url,
+            aiogram_bot=aiogram_bot
+        ))
+
+    mark_message_processed(msg_id, source_id)
+    return True
+
+async def catch_up_recent_broadcasts(client, parser, aiogram_bot, sources, limit: int = 15):
+    """
+    Scans the last `limit` messages from each configured source chat.
+    Processes any supplier restock alert that arrived while offline or reconnecting.
+    Processes messages in chronological order (oldest first).
+    """
+    logger.info("Running catch-up scan on recent supplier messages...")
+    for source in sources:
+        try:
+            entity = await client.get_entity(source)
+            msgs = []
+            now = datetime.now(timezone.utc)
+            async for m in client.iter_messages(entity, limit=limit):
+                if not m or not (m.message or m.text):
+                    continue
+                # Skip messages older than 48 hours to avoid stale historical spam
+                if m.date and (now - m.date).total_seconds() > 172800:
+                    continue
+                if not is_message_processed(m.id):
+                    msgs.append(m)
+
+            if msgs:
+                logger.info(f"Found {len(msgs)} unprocessed recent message(s) from {source}.")
+                # Reverse to process oldest first (chronological order)
+                msgs.reverse()
+                for m in msgs:
+                    try:
+                        raw = m.message or m.text or ""
+                        success = await process_and_broadcast_message(
+                            telethon_client=client,
+                            parser=parser,
+                            aiogram_bot=aiogram_bot,
+                            msg_id=m.id,
+                            raw_text=raw,
+                            source_id=str(source)
+                        )
+                        if success:
+                            await asyncio.sleep(1.5)
+                    except Exception as ex:
+                        logger.warning(f"Error during catch-up for msg #{m.id}: {ex}")
+            else:
+                logger.info(f"All recent messages from {source} are already up to date.")
+        except Exception as e:
+            logger.warning(f"Could not run catch-up scan for source {source}: {e}")
+
+async def catch_up_watchdog(client, parser, aiogram_bot, sources, interval_secs: int = 300):
+    """Periodic watchdog that scans for any supplier messages missed during push glitches."""
+    while True:
+        try:
+            await asyncio.sleep(interval_secs)
+            if client and hasattr(client, "is_connected") and client.is_connected() and is_broadcaster_enabled():
+                await catch_up_recent_broadcasts(client, parser, aiogram_bot, sources, limit=5)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"Broadcaster watchdog error: {e}")
+
+async def start_broadcaster_task(aiogram_bot=None):
+    """
+    Background task entry point for bot.py.
+    Runs with auto-reconnect supervisor to ensure resilient 24/7 operation.
+    """
+    init_broadcaster_db()
+    reconnect_delay = 5
+
+    while True:
+        client = None
+        watchdog_task = None
+        try:
+            client = create_client()
+            if client is None:
+                logger.info("Telethon client not configured. Stock broadcaster exiting.")
+                return
+
+            await client.connect()
+            if not await client.is_user_authorized():
+                logger.warning(
+                    "Stock broadcaster: Telegram session is not yet authorized. "
+                    "Run 'python broadcaster/login_session.py' locally to generate your TELEGRAM_STRING_SESSION "
+                    "and set it in Fly.io secrets or .env."
+                )
+                await client.disconnect()
+                return
+
+            sources = parse_source_chats(SOURCE_CHATS_RAW)
+            if sources:
+                logger.info(f"Stock broadcaster listening to: {sources}")
+            else:
+                logger.info("Stock broadcaster listening to all incoming chats.")
+
+            logger.info(f"Stock broadcaster publishing to: {DESTINATION_CHANNEL}")
+
+            pricing_engine = PricingEngine(BASE_DIR / "pricing_rules.json", db_path=DB_PATH)
+            parser = MessageParser(pricing_engine)
+
+            filter_kwargs = {"chats": sources} if sources else {}
+
+            @client.on(events.NewMessage(**filter_kwargs))
+            async def handler(event):
+                try:
+                    raw_text = event.message.message or event.message.text or ""
+                    msg_id = getattr(event.message, "id", None) or getattr(event, "id", None)
+                    if not msg_id:
+                        return
+                    await process_and_broadcast_message(
+                        telethon_client=client,
+                        parser=parser,
+                        aiogram_bot=aiogram_bot,
+                        msg_id=msg_id,
+                        raw_text=raw_text,
+                        source_id=str(event.chat_id)
+                    )
+                except Exception as ex:
+                    logger.exception(f"Unhandled error in stock broadcaster event handler: {ex}")
+
+            logger.info("Stock broadcaster background service active.")
+            reconnect_delay = 5
+
+            # Catch up on any supplier alerts received while offline / in past hours
+            if sources:
+                await catch_up_recent_broadcasts(client, parser, aiogram_bot, sources, limit=15)
+                watchdog_task = asyncio.create_task(
+                    catch_up_watchdog(client, parser, aiogram_bot, sources, interval_secs=300)
+                )
+
+            await client.run_until_disconnected()
+            logger.warning("Telethon client disconnected. Reconnecting in %ds...", reconnect_delay)
+
+        except asyncio.CancelledError:
+            logger.info("Stock broadcaster task cancelled. Shutting down client...")
+            break
+        except Exception as e:
+            logger.error(f"Stock broadcaster error: {e}. Reconnecting in {reconnect_delay}s...")
+        finally:
+            if watchdog_task and not watchdog_task.done():
+                watchdog_task.cancel()
+            try:
+                if client and hasattr(client, "is_connected") and client.is_connected():
+                    await client.disconnect()
+            except Exception:
+                pass
+
+        await asyncio.sleep(reconnect_delay)
+        reconnect_delay = min(reconnect_delay * 2, 60)
 
 async def main():
     await start_broadcaster_task()

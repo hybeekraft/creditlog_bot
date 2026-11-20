@@ -143,8 +143,8 @@ class MessageParser:
     def _process_list_format(self, text: str) -> Optional[Dict[str, Any]]:
         # Regex for lines like: • Muse AI Account 31B Tokens — 0.89 USD or - Item - $0.89
         bullet_pattern = re.compile(
-            r"([•\-\*]\s*)(.+?)\s*([—\-–:])\s*(?:([\$₦€£])\s*)?([\d.]+)\s*([A-Za-z]+|[\$₦€£])?",
-            re.IGNORECASE
+            r"^([•\-\*]\s*)(.+?)\s*([—–\-:])\s*(?:\*\*)?(?:([\$₦€£])\s*)?([\d.]+)\s*([A-Za-z]+|[\$₦€£])?(?:\*\*)?\s*$",
+            re.IGNORECASE | re.MULTILINE
         )
 
         matches = bullet_pattern.findall(text)
