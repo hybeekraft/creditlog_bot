@@ -3514,6 +3514,7 @@ def render_admin_help() -> Tuple[str, InlineKeyboardMarkup]:
         "/clearprices [product_id] - Clear manual price overrides & reset to dynamic supplier pricing\n"
         "/clearcache - Clear all cached products & sync totally from supplier API\n"
         "/sync_retail - Sync retail catalog descriptions and stock from supplier scraper data\n"
+        "/crawl_retail - Crawl live supplier bot to discover new SKUs and refresh stock\n"
         "/setmargin &lt;product_id&gt; &lt;margin_%&gt; (e.g. /setmargin 1 60%)\n"
         "/toggle &lt;product_id&gt;  (activate/deactivate)\n"
         "/addstock &lt;product_id&gt; &lt;item&gt;  (manual items, 1 per line)\n"
@@ -5404,6 +5405,50 @@ async def admin_sync_retail(m: Message, command: CommandObject = None):
         await status_msg.edit_text(f"❌ <b>Sync failed:</b> {e}")
 
 
+_crawler_lock = asyncio.Lock()
+
+
+@dp.message(Command("crawl_retail"), is_admin)
+async def admin_crawl_retail(m: Message, command: CommandObject = None):
+    """Scrapes all pages from the supplier retail bot, discovers new SKUs and updates live stock."""
+    if _crawler_lock.locked():
+        return await m.answer("⚠️ <b>A retail catalog crawl is already in progress.</b> Please wait for it to finish.")
+
+    status_msg = await m.answer("⏳ <b>Starting Retail Catalog Crawler...</b>\n\nConnecting to supplier bot and scanning catalog pages...")
+
+    async def progress_update(page: int, total: int, text: str):
+        try:
+            if page == 1 or page % 4 == 0 or page == total:
+                await status_msg.edit_text(
+                    f"⏳ <b>Retail Catalog Crawler Running...</b>\n\n"
+                    f"• <b>Progress:</b> Page {page}/{total}\n"
+                    f"• <i>{esc(text)}</i>"
+                )
+        except Exception:
+            pass
+
+    async with _crawler_lock:
+        try:
+            from crawl_retail_details import run_retail_crawler
+            res = await run_retail_crawler(db_path=DB_PATH, progress_cb=progress_update)
+
+            if res.get("success"):
+                resequence_product_ids(db)
+                trigger_catalog_refresh()
+                await status_msg.edit_text(
+                    f"✅ <b>Retail Catalog Crawl Complete!</b>\n\n"
+                    f"• <b>Pages Scanned:</b> {res.get('pages_scanned', 19)}\n"
+                    f"• <b>Total Products in Catalog:</b> {res.get('total_scraped', 0)}\n"
+                    f"• <b>New Products Added:</b> {res.get('new_items', 0)}\n"
+                    f"• <b>Products Updated:</b> {res.get('updated_items', 0)}\n"
+                    f"• <b>Status:</b> All rich descriptions and stock counts are live!"
+                )
+            else:
+                await status_msg.edit_text(f"❌ <b>Crawl failed:</b> {esc(res.get('error', 'Unknown error'))}")
+        except Exception as e:
+            await status_msg.edit_text(f"❌ <b>Crawler encountered an error:</b> {esc(str(e))}")
+
+
 @dp.message(Command("s_link"), is_admin)
 async def admin_supplier_link(m: Message, command: CommandObject = None):
     try:
@@ -5480,6 +5525,45 @@ async def periodic_supplier_sync(interval_sec: int = 600):
             log.warning("Periodic supplier sync encountered error: %s", e)
 
 
+async def periodic_retail_crawler_task(aiogram_bot: Bot):
+    """Background task to periodically crawl supplier retail bot for new products and live stock."""
+    # Delay initial crawl by 5 minutes after startup to allow primary services to boot
+    await asyncio.sleep(300)
+    while True:
+        try:
+            if get_setting("auto_crawler_enabled", "1") not in ("0", "false", "paused", "off"):
+                log.info("Starting scheduled retail catalog crawl...")
+                from crawl_retail_details import run_retail_crawler
+                res = await run_retail_crawler(db_path=DB_PATH)
+                if res.get("success"):
+                    resequence_product_ids(db)
+                    trigger_catalog_refresh()
+                    new_items = res.get("new_items", 0)
+                    log.info(
+                        "Scheduled retail crawl finished: %d total, %d new, %d updated",
+                        res.get("total_scraped", 0),
+                        new_items,
+                        res.get("updated_items", 0)
+                    )
+                    if new_items > 0:
+                        for aid in ADMIN_IDS:
+                            try:
+                                await aiogram_bot.send_message(
+                                    aid,
+                                    f"📢 <b>Auto-Crawler Alert:</b> Found <b>{new_items} new retail SKU(s)</b> from supplier!\n"
+                                    f"Total catalog: <b>{res.get('total_scraped', 0)} products</b>."
+                                )
+                            except Exception:
+                                pass
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.warning("Periodic retail crawler encountered error: %s", e)
+
+        interval_hours = float(get_setting("crawler_interval_hours", "12"))
+        await asyncio.sleep(max(3600, int(interval_hours * 3600)))
+
+
 # Main entrypoint
 async def main():
     bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -5514,6 +5598,12 @@ async def main():
     except Exception as e:
         log.info("Stock broadcaster could not be initialized: %s", e)
 
+    crawler_task = None
+    try:
+        crawler_task = asyncio.create_task(periodic_retail_crawler_task(aiogram_bot=bot))
+    except Exception as e:
+        log.info("Periodic retail crawler could not be initialized: %s", e)
+
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_my_commands([
@@ -5540,6 +5630,7 @@ async def main():
             BotCommand(command="clearprices", description="Clear manual price overrides"),
             BotCommand(command="clearcache", description="Clear cached products & sync from supplier API"),
             BotCommand(command="sync_retail", description="Sync retail catalog descriptions & stock"),
+            BotCommand(command="crawl_retail", description="Crawl supplier bot for new SKUs & live stock"),
             BotCommand(command="s_products", description="List supplier products"),
             BotCommand(command="s_sync", description="Sync supplier catalog"),
             BotCommand(command="s_orders", description="Recent supplier orders"),
@@ -5569,6 +5660,8 @@ async def main():
         sync_task.cancel()
         if broadcaster_task:
             broadcaster_task.cancel()
+        if crawler_task:
+            crawler_task.cancel()
         try:
             await sync_task
         except asyncio.CancelledError:
@@ -5576,6 +5669,11 @@ async def main():
         if broadcaster_task:
             try:
                 await broadcaster_task
+            except asyncio.CancelledError:
+                pass
+        if crawler_task:
+            try:
+                await crawler_task
             except asyncio.CancelledError:
                 pass
         await supplier_registry.close_all()
