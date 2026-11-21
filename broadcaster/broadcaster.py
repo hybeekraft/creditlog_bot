@@ -549,6 +549,12 @@ async def process_and_broadcast_message(
         logger.info("Stock broadcaster is currently paused. Skipping incoming restock alert.")
         return False
 
+    # Strictly reject sensitive/private chats, order receipts, and bot cards before parsing
+    if MessageParser.is_sensitive_or_private(raw_text):
+        logger.warning(f"Message #{msg_id} from {source_id} rejected: contains sensitive/private interaction content.")
+        mark_message_processed(msg_id, source_id)
+        return False
+
     result = parser.process_message(raw_text)
     if not result:
         return False
@@ -620,7 +626,7 @@ async def process_and_broadcast_message(
     mark_message_processed(msg_id, source_id)
     return True
 
-async def catch_up_recent_broadcasts(client, parser, aiogram_bot, sources, limit: int = 15):
+async def catch_up_recent_broadcasts(client, parser, aiogram_bot, sources, limit: int = 15, my_user_id: Optional[int] = None):
     """
     Scans the last `limit` messages from each configured source chat.
     Processes any supplier restock alert that arrived while offline or reconnecting.
@@ -634,6 +640,11 @@ async def catch_up_recent_broadcasts(client, parser, aiogram_bot, sources, limit
             now = datetime.now(timezone.utc)
             async for m in client.iter_messages(entity, limit=limit):
                 if not m or not (m.message or m.text):
+                    continue
+                # Strictly skip outgoing messages sent by the user account
+                if getattr(m, "out", False):
+                    continue
+                if my_user_id and getattr(m, "sender_id", None) == my_user_id:
                     continue
                 # Skip messages older than 48 hours to avoid stale historical spam
                 if m.date and (now - m.date).total_seconds() > 172800:
@@ -665,13 +676,13 @@ async def catch_up_recent_broadcasts(client, parser, aiogram_bot, sources, limit
         except Exception as e:
             logger.warning(f"Could not run catch-up scan for source {source}: {e}")
 
-async def catch_up_watchdog(client, parser, aiogram_bot, sources, interval_secs: int = 300):
+async def catch_up_watchdog(client, parser, aiogram_bot, sources, interval_secs: int = 300, my_user_id: Optional[int] = None):
     """Periodic watchdog that scans for any supplier messages missed during push glitches."""
     while True:
         try:
             await asyncio.sleep(interval_secs)
             if client and hasattr(client, "is_connected") and client.is_connected() and is_broadcaster_enabled():
-                await catch_up_recent_broadcasts(client, parser, aiogram_bot, sources, limit=5)
+                await catch_up_recent_broadcasts(client, parser, aiogram_bot, sources, limit=5, my_user_id=my_user_id)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -704,6 +715,9 @@ async def start_broadcaster_task(aiogram_bot=None):
                 await client.disconnect()
                 return
 
+            client_me = await client.get_me()
+            my_user_id = client_me.id if client_me else None
+
             sources = parse_source_chats(SOURCE_CHATS_RAW)
             if sources:
                 logger.info(f"Stock broadcaster listening to: {sources}")
@@ -717,9 +731,18 @@ async def start_broadcaster_task(aiogram_bot=None):
 
             filter_kwargs = {"chats": sources} if sources else {}
 
-            @client.on(events.NewMessage(**filter_kwargs))
+            @client.on(events.NewMessage(incoming=True, **filter_kwargs))
             async def handler(event):
                 try:
+                    # Strictly ignore outgoing messages or user-authored messages
+                    if getattr(event, "out", False) or getattr(event.message, "out", False):
+                        logger.debug("Skipping outgoing message sent by user.")
+                        return
+
+                    if my_user_id and event.sender_id == my_user_id:
+                        logger.debug("Skipping message sent by own user account.")
+                        return
+
                     raw_text = event.message.message or event.message.text or ""
                     msg_id = getattr(event.message, "id", None) or getattr(event, "id", None)
                     if not msg_id:
@@ -740,9 +763,9 @@ async def start_broadcaster_task(aiogram_bot=None):
 
             # Catch up on any supplier alerts received while offline / in past hours
             if sources:
-                await catch_up_recent_broadcasts(client, parser, aiogram_bot, sources, limit=15)
+                await catch_up_recent_broadcasts(client, parser, aiogram_bot, sources, limit=15, my_user_id=my_user_id)
                 watchdog_task = asyncio.create_task(
-                    catch_up_watchdog(client, parser, aiogram_bot, sources, interval_secs=300)
+                    catch_up_watchdog(client, parser, aiogram_bot, sources, interval_secs=300, my_user_id=my_user_id)
                 )
 
             await client.run_until_disconnected()

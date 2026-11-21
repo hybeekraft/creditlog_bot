@@ -550,5 +550,58 @@ class TestParserAndPricing(unittest.TestCase):
         self.assertIn("⚡ Instant delivery after payment", res2["transformed_text"])
         self.assertIn("⌛ Limited stock available", res2["transformed_text"])
 
+    def test_reject_sensitive_order_placed(self):
+        order_msg = (
+            "✅ Order placed successfully!\n"
+            "➖➖➖➖➖➖➖➖➖➖➖➖\n"
+            "📃 Item: 100$ API Claude 30D\n"
+            "📦 Qty: 1\n"
+            "💰 Total: 2.5 USD\n"
+            "💡 Order: 1213700628786815303\n"
+            "🕐 Time: 2026-11-21T22:56:01.560803+00:00\n"
+            "👤 Buyer: @hybeekraft (1569053301)\n"
+            "➖➖➖➖➖➖➖➖➖➖➖➖\n"
+            "🔑 Value:\n"
+            "`38843cda6b6481cc2c2af66d2883d8b1`"
+        )
+        self.assertTrue(self.parser.is_sensitive_or_private(order_msg))
+        self.assertIsNone(self.parser.process_message(order_msg))
+
+    def test_reject_product_detail_view_card(self):
+        item_card = (
+            "😺 **Item:** ChatGPT Plus 1M Apple Pay\n\n"
+            "📝 **Description:** Item: ChatGPT Plus 1M Apple Pay\n\n"
+            "Description: ready-made ChatGPT account.\n\n"
+            "Delivery format: Email | Password | 2FA\n"
+            "Payment method: Apple Pay\n\n"
+            "LOGIN INSTRUCTION\n"
+            "1. Open the ChatGPT website or app.\n"
+            "2. Enter the email and password.\n\n"
+            "💵 **Price:** 5.99 USD\n"
+            "❤️ **In stock:** 6 pcs"
+        )
+        self.assertTrue(self.parser.is_sensitive_or_private(item_card))
+        self.assertIsNone(self.parser.process_message(item_card))
+
+    def test_reject_balance_update_and_topup(self):
+        balance_msg = (
+            "✅ **Balance updated successfully**\n\n"
+            "💳 **Credited**\n"
+            "**2.50 USD**\n\n"
+            "💳 **Current balance**\n"
+            "**2.71 USD**\n\n"
+            "**Payment method:** Binance Pay"
+        )
+        self.assertTrue(self.parser.is_sensitive_or_private(balance_msg))
+        self.assertIsNone(self.parser.process_message(balance_msg))
+
+    def test_reject_casual_chat_without_broadcast_markers(self):
+        chat_msg = "Hello bro, can you give me a discount? Price: 5.00 USD"
+        self.assertIsNone(self.parser.process_message(chat_msg))
+
+    def test_reject_plain_single_bullet_without_announcement(self):
+        single_bullet = "• Check this account — 5.00 USD"
+        self.assertIsNone(self.parser.process_message(single_bullet))
+
 if __name__ == "__main__":
     unittest.main()
