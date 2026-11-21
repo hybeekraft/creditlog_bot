@@ -17,6 +17,7 @@ import ssl
 import time
 from email.message import EmailMessage
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import quote
 
 from aiohttp import web
@@ -418,6 +419,26 @@ def register_web_routes(app, service):
                      totalUsd=usd_total, totalNgn=ngn_total, currency=currency,
                      formattedPrice=f"${usd_total:.2f}" if currency == "USD" else f"₦{ngn_total:,}")
 
+    async def inventory_reserve(req):
+        try:
+            body = await req.json()
+            product_id = int(body.get("productId"))
+            quantity = int(body.get("quantity", 1))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return _json(400, success=False, message="Valid product and quantity are required.")
+        row = service["db"].execute("SELECT * FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
+        if not row:
+            return _json(404, success=False, message="Product not found or unavailable.")
+        available, count = service["check_product_stock_available"](row, quantity)
+        if not available:
+            return _json(409, success=False, message=f"Only {count} units are available.")
+        expires_at = int(time.time() * 1000) + 15 * 60 * 1000
+        token = secrets.token_hex(16)
+        return _json(200, success=True, reservationToken=token, expiresAt=expires_at, availableStock=count)
+
+    async def inventory_release(req):
+        return _json(200, success=True, message="Reservation released.")
+
     async def create_order(req):
         try:
             body = await req.json()
@@ -753,6 +774,42 @@ def register_web_routes(app, service):
             return error
         rows = service["db"].execute("SELECT * FROM web_audit_logs ORDER BY id DESC LIMIT 500").fetchall()
         return _json(200, success=True, count=len(rows), logs=[dict(row) for row in rows])
+
+    async def admin_upload_logo(req):
+        claims, error = _require_admin(req, "admin", "manager")
+        if error:
+            return error
+        try:
+            body = await req.json()
+            data = str(body.get("data", "")).strip()
+            file_name = str(body.get("fileName", "brand-logo")).strip()
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return _json(400, success=False, message="Invalid upload request.")
+        if not data:
+            return _json(400, success=False, message="Missing base64 logo data.")
+        match = re.match(r"^data:image/([a-zA-Z0-9\+\-\.]+);base64,(.+)$", data)
+        ext = "png"
+        base64_str = data
+        if match:
+            raw_mime = match.group(1).lower()
+            if "svg" in raw_mime:
+                ext = "svg"
+            elif "jpeg" in raw_mime or "jpg" in raw_mime:
+                ext = "jpg"
+            elif "webp" in raw_mime:
+                ext = "webp"
+            base64_str = match.group(2)
+        clean_base = re.sub(r"[^a-z0-9_-]", "-", file_name.split(".")[0].lower())[:40] or "logo"
+        target_name = f"logo-{int(time.time() * 1000)}-{clean_base}.{ext}"
+        icons_dir = Path(r"C:\Users\DELL\creditlog\assets\icons")
+        icons_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            (icons_dir / target_name).write_bytes(base64.b64decode(base64_str))
+        except Exception:
+            return _json(500, success=False, message="Failed to write logo file.")
+        relative_url = f"assets/icons/{target_name}"
+        _log(service, claims["sub"], "Upload Logo", target_name)
+        return _json(200, success=True, message="Logo uploaded successfully.", url=relative_url, fileName=target_name)
 
     async def admin_product_create(req):
         claims, error = _require_admin(req, "admin", "manager")
@@ -1480,11 +1537,14 @@ def register_web_routes(app, service):
     app.router.add_get("/api/admin/reseller/sync/status", admin_supplier_sync_status)
     app.router.add_post("/api/admin/reseller/test-order", admin_supplier_test_order)
     app.router.add_post("/api/admin/clear-cache", admin_clear_cache)
+    app.router.add_post("/api/admin/upload-logo", admin_upload_logo)
 
     app.router.add_get("/api/products", products)
     app.router.add_get("/api/products/{product_id}", product_detail)
     app.router.add_post("/api/orders/quote", quote)
     app.router.add_post("/api/orders/create", create_order)
+    app.router.add_post("/api/inventory/reserve", inventory_reserve)
+    app.router.add_post("/api/inventory/release", inventory_release)
     app.router.add_get("/api/orders/track", track_order)
     app.router.add_post("/api/orders/{order_id}/payment-reference", submit_payment_reference)
     app.router.add_post("/api/payment/verify", payment_verify)
