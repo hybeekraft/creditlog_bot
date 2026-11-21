@@ -718,6 +718,35 @@ def register_web_routes(app, service):
         return _json(200, success=True, total=service["db"].execute("SELECT COUNT(*) FROM orders").fetchone()[0],
                      limit=limit, offset=offset, orders=orders)
 
+    async def admin_supplier_orders(req):
+        claims, error = _require_admin(req, "admin", "manager")
+        if error:
+            return error
+        vendor_id = req.query.get("vendorId", "").strip()
+        client = service["supplier_registry"].get(vendor_id) if vendor_id else service["supplier_registry"].get()
+        if not client:
+            return _json(404, success=False, message="Supplier is not configured.")
+        try:
+            orders = await client.get_orders()
+        except Exception:
+            return _json(502, success=False, message="Supplier order history is unavailable.")
+        fields = {
+            "orderCode": ("orderCode", "order_code", "id"),
+            "product": ("productId", "product_id", "product_name", "productName"),
+            "amount": ("price", "cost", "amount"),
+            "quantity": ("quantity", "qty"),
+            "status": ("status", "state"),
+            "createdAt": ("createdAt", "created_at", "date", "created"),
+        }
+        items = []
+        for order in (orders if isinstance(orders, list) else [])[:100]:
+            if not isinstance(order, dict):
+                continue
+            items.append({key: next((order[name] for name in aliases if order.get(name) is not None), "")
+                          for key, aliases in fields.items()})
+        return _json(200, success=True, supplier=vendor_id or service["supplier_registry"].default_name(),
+                     count=len(items), orders=items)
+
     async def admin_logs(req):
         claims, error = _require_admin(req, "admin", "manager")
         if error:
@@ -1463,5 +1492,6 @@ def register_web_routes(app, service):
     app.router.add_post("/api/admin/login", login)
     app.router.add_get("/api/admin/inventory", admin_inventory)
     app.router.add_get("/api/admin/orders", admin_orders)
+    app.router.add_get("/api/admin/supplier/orders", admin_supplier_orders)
     app.router.add_get("/api/admin/logs", admin_logs)
 
