@@ -304,15 +304,18 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
     from bot import detect_category
     cur = db_conn.cursor()
 
-    rows = cur.execute("SELECT id, name, margin, fixed_price FROM products").fetchall()
+    rows = cur.execute("SELECT id, name, margin, fixed_price, supplier, auto_fulfill FROM products").fetchall()
     by_norm = {}
     for r in rows:
         pid = r[0] if isinstance(r, tuple) else r["id"]
         pname = r[1] if isinstance(r, tuple) else r["name"]
         pmargin = r[2] if isinstance(r, tuple) else r["margin"]
         pfixed = r[3] if isinstance(r, tuple) else r["fixed_price"]
+        psup = r[4] if isinstance(r, tuple) else (r["supplier"] if "supplier" in r.keys() else "default")
+        pauto = r[5] if isinstance(r, tuple) else (r["auto_fulfill"] if "auto_fulfill" in r.keys() else 0)
         norm = re.sub(r'[^a-z0-9]', '', str(pname).lower())
-        by_norm[norm] = (pid, pmargin if pmargin is not None else 45, pfixed)
+        if norm not in by_norm or (psup == 'default' or pauto):
+            by_norm[norm] = (pid, pmargin if pmargin is not None else 45, pfixed)
 
     updated = 0
     inserted = 0
@@ -381,11 +384,18 @@ def seed_retail_catalog(db_conn):
     from bot import detect_category
     
     # Map normalized name to existing row id and margin/fixed_price state
-    rows = cur.execute("SELECT id, name, margin, fixed_price FROM products").fetchall()
-    existing_by_norm = {
-        re.sub(r'[^a-z0-9]', '', r[1].lower()): (r[0], r[2], r[3])
-        for r in rows
-    }
+    rows = cur.execute("SELECT id, name, margin, fixed_price, supplier, auto_fulfill FROM products").fetchall()
+    existing_by_norm = {}
+    for r in rows:
+        pid = r[0] if isinstance(r, tuple) else r["id"]
+        pname = r[1] if isinstance(r, tuple) else r["name"]
+        pmargin = r[2] if isinstance(r, tuple) else r["margin"]
+        pfixed = r[3] if isinstance(r, tuple) else r["fixed_price"]
+        psup = r[4] if isinstance(r, tuple) else (r["supplier"] if "supplier" in r.keys() else "default")
+        pauto = r[5] if isinstance(r, tuple) else (r["auto_fulfill"] if "auto_fulfill" in r.keys() else 0)
+        norm = re.sub(r'[^a-z0-9]', '', str(pname).lower())
+        if norm not in existing_by_norm or (psup == 'default' or pauto):
+            existing_by_norm[norm] = (pid, pmargin, pfixed)
     
     inserted = 0
     updated = 0

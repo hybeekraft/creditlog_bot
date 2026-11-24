@@ -4405,6 +4405,111 @@ class TestAuditBugFixes(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("testbrand", bot.CAT_BY_KEY)
 
 
+class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
+    def test_parse_catalog_button(self):
+        from crawl_retail_details import parse_catalog_button
+
+        # In stock sample
+        b1 = "Gemini Plus 6 Months [No card] · $0.90 ✅"
+        p1 = parse_catalog_button(b1)
+        self.assertEqual(p1["name"], "Gemini Plus 6 Months [No card]")
+        self.assertEqual(p1["price_usd"], 0.90)
+        self.assertTrue(p1["is_in_stock"])
+        self.assertEqual(p1["stock"], 10)
+
+        # Out of stock sample
+        b2 = "Gemini Plus 12 Months · $1.30 ⛔"
+        p2 = parse_catalog_button(b2)
+        self.assertEqual(p2["name"], "Gemini Plus 12 Months")
+        self.assertEqual(p2["price_usd"], 1.30)
+        self.assertFalse(p2["is_in_stock"])
+        self.assertEqual(p2["stock"], 0)
+
+        # High price token pack sample
+        b3 = "Claude API 500M Tokens 6D · $23.00 ✅"
+        p3 = parse_catalog_button(b3)
+        self.assertEqual(p3["name"], "Claude API 500M Tokens 6D")
+        self.assertEqual(p3["price_usd"], 23.00)
+        self.assertTrue(p3["is_in_stock"])
+
+    def test_detect_category_gemini_google_ai(self):
+        self.assertEqual(bot.detect_category("Google AI Pro 12M CDK V2"), "Gemini")
+        self.assertEqual(bot.detect_category("AntiGravity Argon/Hydro 3M Solo FAM"), "Gemini")
+        self.assertEqual(bot.detect_category("Gemini Plus 6 Months [No card]"), "Gemini")
+        self.assertEqual(bot.detect_category("100$ API Claude 30D"), "Claude")
+
+    def test_deduplicate_products_in_db(self):
+        conn = sqlite3.connect(":memory:")
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE products (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                description TEXT,
+                price INTEGER,
+                supplier_price INTEGER,
+                auto_fulfill INTEGER,
+                active INTEGER,
+                supplier TEXT,
+                supplier_stock INTEGER,
+                margin INTEGER,
+                fixed_price INTEGER
+            )
+        """)
+        cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, product_id INTEGER)")
+
+        # Insert duplicate products: 1 auto-fulfill and 1 retail manual
+        cur.execute("""
+            INSERT INTO products VALUES (1, '100$ API Claude 30D', 'Short', 362, 250, 1, 1, 'default', 20, 45, 0)
+        """)
+        cur.execute("""
+            INSERT INTO products VALUES (2, '100$ API Claude 30D', 'Detailed rich description for 100$ Claude', 362, 250, 0, 1, 'renqis_retail', 10, 45, 0)
+        """)
+        cur.execute("INSERT INTO orders VALUES (10, 2)")
+        conn.commit()
+
+        deleted = bot.deduplicate_products_in_db(conn)
+        self.assertEqual(deleted, 1)
+
+        # Verify only 1 product remains (canonical ID 1) with rich description copied
+        remaining = cur.execute("SELECT id, name, description, supplier, auto_fulfill FROM products").fetchall()
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0][0], 1)
+        self.assertEqual(remaining[0][2], "Detailed rich description for 100$ Claude")
+        self.assertEqual(remaining[0][3], "default")
+        self.assertEqual(remaining[0][4], 1)
+
+        # Verify order FK updated from 2 to 1
+        order = cur.execute("SELECT product_id FROM orders WHERE id=10").fetchone()
+        self.assertEqual(order[0], 1)
+        conn.close()
+
+    def test_get_products_for_category_deduplication(self):
+        # Setup temporary mock rows in bot.db
+        orig_prods = bot.db.execute("SELECT * FROM products").fetchall()
+        try:
+            bot.db.execute("DELETE FROM products WHERE name LIKE 'Test Dup Item%'")
+            bot.db.execute("""
+                INSERT INTO products (name, price, category, active, auto_fulfill, supplier, supplier_stock)
+                VALUES ('Test Dup Item', 500, 'Claude', 1, 1, 'default', 10)
+            """)
+            bot.db.execute("""
+                INSERT INTO products (name, price, category, active, auto_fulfill, supplier, supplier_stock)
+                VALUES ('Test Dup Item', 500, 'Claude', 1, 0, 'renqis_retail', 10)
+            """)
+            bot.db.commit()
+
+            prods = bot.get_products_for_category("claude")
+            dup_matches = [p for p in prods if p["name"] == "Test Dup Item"]
+            # Deduplication should return exactly 1 instance, preferring default/auto_fulfill
+            self.assertEqual(len(dup_matches), 1)
+            self.assertEqual(dup_matches[0]["supplier"], "default")
+            self.assertEqual(dup_matches[0]["auto_fulfill"], 1)
+        finally:
+            bot.db.execute("DELETE FROM products WHERE name LIKE 'Test Dup Item%'")
+            bot.db.commit()
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -32,6 +32,7 @@ from web_api import register_web_routes, TELEGRAM_BOT_KEY
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("store")
+logger = log
 
 # Bot settings and environment
 TOKEN = os.environ.get("BOT_TOKEN", "").strip()
@@ -508,7 +509,7 @@ def reload_categories():
 CATEGORY_KEYWORDS = (
     (("codex", "astra"), "Codex API"),
     (("chatgpt", "gpt", "openai"), "ChatGPT"),
-    (("gemini", "antigravity", "argon", "hydrogen"), "Gemini"),
+    (("gemini", "antigravity", "argon", "hydrogen", "google ai", "google one", "google pro"), "Gemini"),
     (("grok",), "Grok"),
     (("claude", "anthropic"), "Claude"),
     (("kimi", "moonshot"), "Kimi"),
@@ -545,7 +546,7 @@ PRODUCT_ICON_KEYWORDS = (
     (("prime video", "prime", "apple tv"), "📺"),
     (("fallout", "game pass", "xbox"), "🎮"),
     (("avast", "mcafee"), "🛡️"),
-    (("gamma", "wink", "gemini", "antigravity", "argon", "hydrogen"), "✨"),
+    (("gamma", "wink", "gemini", "antigravity", "argon", "hydrogen", "google"), "✨"),
     (("framer", "magic patterns", "mobbin", "supercut", "krea", "leonardo", "figma", "openart"), "🎨"),
     (("n8n",), "⚙️"),
     (("brain.fm",), "🎵"),
@@ -607,7 +608,81 @@ def get_products_for_category(key: str) -> list[sqlite3.Row]:
         elif not p_cat or p_cat == "ai tools":
             if detect_category(p["name"]).lower() in target_names:
                 matched.append(p)
-    return matched
+
+    # Deduplicate by normalized name: prefer auto-fulfill / default, then active/in-stock, then lowest id
+    by_norm = {}
+    for p in matched:
+        norm = re.sub(r"[^a-z0-9]", "", p["name"].lower())
+        if norm not in by_norm:
+            by_norm[norm] = p
+        else:
+            prev = by_norm[norm]
+            prev_score = (2 if (prev["auto_fulfill"] or prev["supplier"] == "default") else 0) + (1 if prev["active"] else 0)
+            curr_score = (2 if (p["auto_fulfill"] or p["supplier"] == "default") else 0) + (1 if p["active"] else 0)
+            if curr_score > prev_score:
+                by_norm[norm] = p
+
+    seen_ids = {p["id"] for p in by_norm.values()}
+    return [p for p in matched if p["id"] in seen_ids]
+
+
+def deduplicate_products_in_db(conn):
+    """Finds and merges duplicate products in products table by normalized name."""
+    try:
+        cur = conn.cursor()
+        rows = cur.execute(
+            "SELECT id, name, description, price, supplier_price, auto_fulfill, active, supplier, supplier_stock FROM products ORDER BY id ASC"
+        ).fetchall()
+        groups = {}
+        for r in rows:
+            p_name = r[1] if isinstance(r, tuple) else r["name"]
+            norm = re.sub(r"[^a-z0-9]", "", str(p_name).lower())
+            groups.setdefault(norm, []).append(r)
+
+        deleted_count = 0
+        for norm, plist in groups.items():
+            if len(plist) <= 1:
+                continue
+
+            def _sort_key(p):
+                auto = p[5] if isinstance(p, tuple) else p["auto_fulfill"]
+                sup = p[7] if isinstance(p, tuple) else p["supplier"]
+                act = p[6] if isinstance(p, tuple) else p["active"]
+                pid = p[0] if isinstance(p, tuple) else p["id"]
+                # Prefer auto_fulfill / default, then active, then lowest ID
+                is_auto = 1 if (auto or sup == "default") else 0
+                is_act = 1 if act else 0
+                return (is_auto, is_act, -pid)
+
+            plist_sorted = sorted(plist, key=_sort_key, reverse=True)
+            canonical = plist_sorted[0]
+            duplicates = plist_sorted[1:]
+
+            canon_id = canonical[0] if isinstance(canonical, tuple) else canonical["id"]
+            best_desc = (canonical[2] if isinstance(canonical, tuple) else canonical["description"]) or ""
+
+            for d in duplicates:
+                d_desc = (d[2] if isinstance(d, tuple) else d["description"]) or ""
+                if len(d_desc) > len(best_desc):
+                    best_desc = d_desc
+
+            orig_canon_desc = (canonical[2] if isinstance(canonical, tuple) else canonical["description"]) or ""
+            if best_desc != orig_canon_desc:
+                cur.execute("UPDATE products SET description=? WHERE id=?", (best_desc, canon_id))
+
+            for d in duplicates:
+                dup_id = d[0] if isinstance(d, tuple) else d["id"]
+                cur.execute("UPDATE orders SET product_id=? WHERE product_id=?", (canon_id, dup_id))
+                cur.execute("DELETE FROM products WHERE id=?", (dup_id,))
+                deleted_count += 1
+
+        if deleted_count > 0:
+            conn.commit()
+            logger.info("Deduplicated database products: removed %d duplicate rows.", deleted_count)
+        return deleted_count
+    except Exception as e:
+        logger.warning(f"Error deduplicating products: {e}")
+        return 0
 
 
 def migrate_db():
@@ -679,6 +754,9 @@ def migrate_db():
             set_setting("retail_skus_seeded_v1", "1")
         except Exception as e:
             logger.warning(f"Retail details sync skipped: {e}")
+
+    # Clean up any duplicate products across suppliers
+    deduplicate_products_in_db(db)
 
     # Seed default featured products if not yet configured
     if get_setting("featured_products", None) is None:
@@ -5283,6 +5361,7 @@ async def admin_supplier_sync(m: Message, command: CommandObject = None):
         from retail_catalog import seed_retail_catalog
         retail_added = seed_retail_catalog(db)
         total_added += retail_added
+        deduplicate_products_in_db(db)
     except Exception as e:
         logger.warning(f"Retail SKUs sync in /s_sync skipped: {e}")
 
@@ -5414,7 +5493,13 @@ async def admin_crawl_retail(m: Message, command: CommandObject = None):
     if _crawler_lock.locked():
         return await m.answer("⚠️ <b>A retail catalog crawl is already in progress.</b> Please wait for it to finish.")
 
-    status_msg = await m.answer("⏳ <b>Starting Retail Catalog Crawler...</b>\n\nConnecting to supplier bot and scanning catalog pages...")
+    args = (command.args or "").strip().lower() if command else ""
+    force_refresh = "force" in args
+
+    status_msg = await m.answer(
+        f"⏳ <b>Starting Retail Catalog Crawler{' (FORCE REFRESH)' if force_refresh else ''}...</b>\n\n"
+        f"Connecting to supplier bot and scanning catalog pages..."
+    )
 
     async def progress_update(page: int, total: int, text: str):
         try:
@@ -5430,9 +5515,10 @@ async def admin_crawl_retail(m: Message, command: CommandObject = None):
     async with _crawler_lock:
         try:
             from crawl_retail_details import run_retail_crawler
-            res = await run_retail_crawler(db_path=DB_PATH, progress_cb=progress_update)
+            res = await run_retail_crawler(db_path=DB_PATH, progress_cb=progress_update, force_refresh_all=force_refresh)
 
             if res.get("success"):
+                deduplicate_products_in_db(db)
                 resequence_product_ids(db)
                 trigger_catalog_refresh()
                 await status_msg.edit_text(

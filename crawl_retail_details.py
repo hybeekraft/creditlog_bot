@@ -38,6 +38,40 @@ def norm_name(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
+def parse_catalog_button(b_text: str) -> dict:
+    """Extracts clean product name, supplier price (USD), and live in-stock status from catalog button text."""
+    clean = b_text.replace("\u2063", "").replace("\u2062", "").replace("\xa0", " ").strip()
+    btn_name = clean.split("·")[0].strip() if "·" in clean else clean
+
+    # Strip trailing emojis or marks from name
+    btn_name = re.sub(r"[\s\u200b\ufe0f]*[✅🟢✔️⛔🔴🚫❌➖—]+\s*$", "", btn_name).strip()
+
+    price_usd = None
+    price_match = re.search(r"·\s*\$?\s*([\d\.]+)", clean)
+    if not price_match:
+        price_match = re.search(r"\$\s*([\d\.]+)", clean)
+    if price_match:
+        try:
+            price_usd = float(price_match.group(1))
+        except ValueError:
+            price_usd = None
+
+    is_in_stock = True
+    if any(em in clean for em in ("⛔", "🔴", "🚫", "❌", "➖", "—")):
+        is_in_stock = False
+    elif any(em in clean for em in ("✅", "🟢", "✔️")):
+        is_in_stock = True
+
+    stock = 10 if is_in_stock else 0
+
+    return {
+        "name": btn_name,
+        "price_usd": price_usd,
+        "is_in_stock": is_in_stock,
+        "stock": stock,
+    }
+
+
 def parse_detail_text(text: str) -> dict:
     clean = text.replace("\u2063", "").replace("\u2062", "").replace("\xa0", " ").strip()
 
@@ -68,7 +102,7 @@ def parse_detail_text(text: str) -> dict:
 
 
 def update_db_product(name: str, desc: str, stock: int, cost_usd: Optional[float] = None, db_path=None):
-    """Updates an existing retail product or inserts a new one if not found."""
+    """Updates an existing product (default or renqis_retail) or inserts a new retail product if not found."""
     conn = None
     try:
         target_path = resolve_db_path(db_path)
@@ -76,19 +110,27 @@ def update_db_product(name: str, desc: str, stock: int, cost_usd: Optional[float
         cur = conn.cursor()
         norm = norm_name(name)
 
-        rows = cur.execute("SELECT id, name, margin, fixed_price FROM products WHERE supplier='renqis_retail'").fetchall()
+        rows = cur.execute("SELECT id, name, margin, fixed_price, supplier, auto_fulfill, description FROM products").fetchall()
         matched_id = None
+        matched_desc = ""
         margin = 45
         fixed_price = 0
-        for pid, pname, pmargin, pfixed in rows:
+
+        # Prioritize matching an existing product. If multiple exist, prioritize auto_fulfill/default
+        candidates = []
+        for pid, pname, pmargin, pfixed, psup, pauto, pdesc in rows:
             if norm_name(pname) == norm:
-                matched_id = pid
-                margin = pmargin if pmargin is not None else 45
-                fixed_price = pfixed
-                break
+                candidates.append((pid, pname, pmargin, pfixed, psup, pauto, pdesc))
+
+        if candidates:
+            # Prefer supplier='default' or auto_fulfill=1
+            candidates.sort(key=lambda c: (1 if (c[4] == 'default' or c[5]) else 0, -c[0]), reverse=True)
+            matched_id, _, pmargin, fixed_price, _, _, matched_desc = candidates[0]
+            margin = pmargin if pmargin is not None else 45
 
         if matched_id:
             active = 1 if stock > 0 else 0
+            effective_desc = desc if (desc and (not matched_desc or len(matched_desc) < len(desc))) else matched_desc
             if cost_usd is not None and not fixed_price:
                 cost_cents = int(round(cost_usd * 100))
                 retail_cents = max(100, int(round(cost_cents * (1 + margin / 100.0))))
@@ -102,7 +144,7 @@ def update_db_product(name: str, desc: str, stock: int, cost_usd: Optional[float
                         price = ?
                     WHERE id = ?
                 """,
-                    (desc, stock, active, cost_cents, retail_cents, matched_id),
+                    (effective_desc, stock, active, cost_cents, retail_cents, matched_id),
                 )
             else:
                 cur.execute(
@@ -113,7 +155,7 @@ def update_db_product(name: str, desc: str, stock: int, cost_usd: Optional[float
                         active = ?
                     WHERE id = ?
                 """,
-                    (desc, stock, active, matched_id),
+                    (effective_desc, stock, active, matched_id),
                 )
             conn.commit()
             return matched_id, False
@@ -245,6 +287,10 @@ async def run_retail_crawler(
                     data = getattr(getattr(b, "type", None), "data", None)
                     if re.match(r"^\d+/\d+$", b.text.strip()):
                         page_indicator = b.text.strip()
+                        try:
+                            total_pages = max(total_pages, int(page_indicator.split("/")[1]))
+                        except (ValueError, IndexError):
+                            pass
                     elif "▶️" in b.text:
                         next_btn = b
                     elif data and data.startswith(b"itm:"):
@@ -258,14 +304,21 @@ async def run_retail_crawler(
                     pass
 
             for idx, (b_text, b_data) in enumerate(prod_buttons, 1):
-                clean_btn = b_text.replace("\u2063", "").replace("\u2062", "").replace("\xa0", " ").strip()
-                btn_name = clean_btn.split("·")[0].strip() if "·" in clean_btn else clean_btn
+                btn_info = parse_catalog_button(b_text)
+                btn_name = btn_info["name"]
+                live_price = btn_info["price_usd"]
+                live_stock = btn_info["stock"]
                 norm_k = norm_name(btn_name)
 
                 # Skip deep click if already cached with a rich description, unless forced
                 if not force_refresh_all and norm_k in details_cache and details_cache[norm_k].get("description") and len(details_cache[norm_k]["description"]) > 30:
                     cached = details_cache[norm_k]
-                    pid, is_new = update_db_product(btn_name, cached["description"], cached.get("stock", 0), cached.get("price_usd"), db_path)
+                    eff_price = live_price if live_price is not None else cached.get("price_usd")
+                    eff_stock = live_stock
+                    cached["stock"] = eff_stock
+                    if live_price is not None:
+                        cached["price_usd"] = live_price
+                    pid, is_new = update_db_product(btn_name, cached["description"], eff_stock, eff_price, db_path)
                     if is_new:
                         new_count += 1
                     else:
@@ -285,6 +338,10 @@ async def run_retail_crawler(
                             parsed["item_name"] = btn_name
                         if not parsed["description"]:
                             parsed["description"] = detail_msg.text
+                        if parsed.get("price_usd") is None and live_price is not None:
+                            parsed["price_usd"] = live_price
+                        if parsed.get("stock", 0) == 0 and live_stock > 0:
+                            parsed["stock"] = live_stock
 
                         parsed["page"] = page_indicator
                         parsed["raw_btn"] = b_text
