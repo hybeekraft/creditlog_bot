@@ -34,6 +34,48 @@ def resolve_db_path(custom_path=None) -> Path:
     return BASE_DIR / db_env
 
 
+def update_retail_catalog_py(details_cache: dict) -> bool:
+    """Updates RETAIL_CATALOG_ITEMS in retail_catalog.py directly from scraped details."""
+    cat_py_path = BASE_DIR / "retail_catalog.py"
+    if not cat_py_path.exists() or not details_cache:
+        return False
+    try:
+        items = []
+        for k, v in details_cache.items():
+            name = v.get("item_name") or k
+            price = v.get("price_usd") or 0.0
+            stock = v.get("stock", 0)
+            items.append((name, round(float(price), 2), stock > 0))
+
+        items.sort(key=lambda x: x[0].lower())
+        content = cat_py_path.read_text(encoding="utf-8")
+        if "\ndef sync_retail_catalog_details" not in content:
+            return False
+        parts = content.split("\ndef sync_retail_catalog_details", 1)
+
+        header = '''"""Supplier retail catalog items missing from automated reseller API feed."""
+
+import json
+import os
+import re
+
+# (name, cost_usd, is_in_stock)
+RETAIL_CATALOG_ITEMS = [
+'''
+        item_lines = []
+        for name, price, in_stock in items:
+            safe_name = name.replace("'", "\\'")
+            item_lines.append(f"    ('{safe_name}', {price:.2f}, {in_stock}),")
+
+        new_content = header + "\n".join(item_lines) + "\n]\n\n\ndef sync_retail_catalog_details" + parts[1]
+        cat_py_path.write_text(new_content, encoding="utf-8")
+        logger.info("Successfully updated retail_catalog.py with %d items", len(items))
+        return True
+    except Exception as e:
+        logger.warning("Failed to update retail_catalog.py: %s", e)
+        return False
+
+
 def norm_name(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
@@ -415,6 +457,11 @@ async def run_retail_crawler(
                     break
             else:
                 break
+
+        try:
+            update_retail_catalog_py(details_cache)
+        except Exception:
+            pass
 
         return {
             "success": True,

@@ -148,7 +148,8 @@ def _product(service, row):
     data = dict(row)
     stock_count = service["stock_count"](data["id"])
     is_supplier = bool(data.get("auto_fulfill") and data.get("supplier_product_id"))
-    stock = data.get("supplier_stock") if is_supplier else stock_count
+    sup_stock = data.get("supplier_stock")
+    stock = sup_stock if sup_stock is not None else (stock_count if not is_supplier else None)
     available = 999999 if is_supplier and stock is None else max(0, int(stock or 0))
     price = int(data.get("price") or 0)
     cost = int(data.get("supplier_price") or 0)
