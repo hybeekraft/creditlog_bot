@@ -1555,17 +1555,17 @@
     "item_name": "Gemini Pro 12 Months FAM",
     "description": "Gemini Pro + 5TB Google Drive + AntiGravity.\n\n• Subscription duration: 12 months\n• In AntiGravity, Gemini 4 Argon, Gemini 4 Carbon, and Gemini 4 Hydrogen may not be available on every account. Access to these models is not guaranteed.\n• The subscription is activated on your own Google account by adding your Gmail address to a family group (FAM)\n• This is not a ready-made account\n• One of the most stable Gemini packages\n\n⚠️ IMPORTANT BEFORE PURCHASING\n\nBEFORE PURCHASING, YOU MUST CHANGE THE ACCOUNT REGION TO THE UNITED STATES (US).\n\nRegion change instructions:\nhttps://docs.google.com/document/d/163wcJE7ms29b1UMfDe5l0oeYfIV8wYrmV0ZhpW3SsjM/edit?usp=sharing\n\nPrepare in advance the Gmail addresses that must be added to the family group.\n\n• One unique @gmail.com address is required for each unit purchased\n• During checkout, the bot will ask you to send the addresses directly in this chat\n• Do not send Gmail addresses to support\n• Adding the account to the family group may take up to 12 hours\n\nNo warranty.",
     "price_usd": 7.54,
-    "stock": 10,
+    "stock": 0,
     "page": "14/19",
-    "raw_btn": "Gemini Pro 12 Months FAM · .54 ✅"
+    "raw_btn": "Gemini Pro 12 Months FAM · .54 ⛔"
   },
   "geminipro6monthsfam": {
     "item_name": "Gemini Pro 6 Months FAM",
     "description": "Gemini Pro + 5TB Google Drive + AntiGravity.\n\n• Subscription duration: 6 months\n• In AntiGravity, Gemini 4 Argon, Gemini 4 Carbon, and Gemini 4 Hydrogen may not be available on every account. Access to these models is not guaranteed.\n• The subscription is activated on your own Google account by adding your Gmail address to a family group (FAM)\n• This is not a ready-made account\n• One of the most stable Gemini packages\n\n⚠️ IMPORTANT BEFORE PURCHASING\n\nBEFORE PURCHASING, YOU MUST CHANGE THE ACCOUNT REGION TO THE UNITED STATES (US).\n\nRegion change instructions:\nhttps://docs.google.com/document/d/163wcJE7ms29b1UMfDe5l0oeYfIV8wYrmV0ZhpW3SsjM/edit?usp=sharing\n\nPrepare in advance the Gmail addresses that must be added to the family group.\n\n• One unique @gmail.com address is required for each unit purchased\n• During checkout, the bot will ask you to send the addresses directly in this chat\n• Do not send Gmail addresses to support\n• Adding the account to the family group may take up to 12 hours\n\nNo warranty.",
     "price_usd": 5.16,
-    "stock": 10,
+    "stock": 0,
     "page": "14/19",
-    "raw_btn": "Gemini Pro 6 Months FAM · .16 ✅"
+    "raw_btn": "Gemini Pro 6 Months FAM · .16 ⛔"
   },
   "geminipro3monthsfam": {
     "item_name": "Gemini Pro 3 Months FAM",
@@ -1579,9 +1579,9 @@
     "item_name": "AntiGravity Argon/Hydrogen 3M FAM",
     "description": "AntiGravity Argon/Hydrogen + Gemini Pro + 5TB - 3 Months Family Slot.\n\n• Subscription duration: 3 months\n• Supports the AntiGravity Argon and Hydrogen models\n• The AntiGravity Carbon model is not available\n• The subscription is activated on your own Google account by adding your Gmail address to a family group (FAM)\n• This is not a ready-made account\n• One of the most stable Gemini packages\n\n⚠️ IMPORTANT BEFORE PURCHASING\n\nBEFORE PURCHASING, YOU MUST CHANGE THE ACCOUNT REGION TO THE UNITED STATES (US).\n\nRegion change instructions:\nhttps://docs.google.com/document/d/163wcJE7ms29b1UMfDe5l0oeYfIV8wYrmV0ZhpW3SsjM/edit?usp=sharing\n\nPrepare in advance the Gmail addresses that must be added to the family group.\n\n• One unique @gmail.com address is required for each unit purchased\n• During checkout, the bot will ask you to send the addresses directly in this chat\n• Do not send Gmail addresses to support\n• Adding the account to the family group may take up to 12 hours\n\nNo warranty.",
     "price_usd": 4.0,
-    "stock": 0,
+    "stock": 10,
     "page": "14/19",
-    "raw_btn": "AntiGravity Argon/Hydrogen 3M FAM · .00 ⛔"
+    "raw_btn": "AntiGravity Argon/Hydrogen 3M FAM · .00 ✅"
   },
   "protonunlimited1m": {
     "item_name": "Proton Unlimited 1M",
@@ -2227,9 +2227,9 @@
     "item_name": "AntiGravity Argon/Hydro 3M Solo FAM",
     "description": "AntiGravity Argon/Hydro 3M Solo FAM - AntiGravity Argon/Hydrogen + Gemini Pro + 5TB - 3 Months Solo Family Slot.\n\n• Subscription duration: 3 months (Solo slot)\n• Supports AntiGravity Argon and Hydrogen models\n• Activated on your own Google account\n• Region must be set to US\n• High stability and priority quota.",
     "price_usd": 7.0,
-    "stock": 10,
+    "stock": 0,
     "page": "14/19",
-    "raw_btn": "AntiGravity Argon/Hydro 3M Solo FAM · .00 ✅"
+    "raw_btn": "AntiGravity Argon/Hydro 3M Solo FAM · .00 ⛔"
   },
   "geminipro3monthcdk": {
     "item_name": "Gemini Pro 3 Month CDK",
