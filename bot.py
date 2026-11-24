@@ -1713,7 +1713,7 @@ def _get_order_lock(oid: int) -> asyncio.Lock:
     return lock
 
 
-async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tuple[Optional[str], Optional[str]]:
+async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False, notify_manual: bool = True) -> Tuple[Optional[str], Optional[str]]:
     """
     Fulfills an order with an per-order async lock to prevent concurrent double-ordering:
       - Model A (when top-up balance > 0): Calls supplier API POST /orders immediately and auto-delivers.
@@ -1725,13 +1725,13 @@ async def fulfill_order(bot: Bot, oid: int, force_supplier: bool = False) -> Tup
     lock = _get_order_lock(oid)
     async with lock:
         try:
-            return await _fulfill_order_locked(bot, oid, force_supplier)
+            return await _fulfill_order_locked(bot, oid, force_supplier, notify_manual)
         finally:
             if not lock.locked():
                 _order_locks.pop(oid, None)
 
 
-async def _fulfill_order_locked(bot: Bot, oid: int, force_supplier: bool = False) -> Tuple[Optional[str], Optional[str]]:
+async def _fulfill_order_locked(bot: Bot, oid: int, force_supplier: bool = False, notify_manual: bool = True) -> Tuple[Optional[str], Optional[str]]:
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         return None, "out_of_stock"
@@ -1763,19 +1763,20 @@ async def _fulfill_order_locked(bot: Bot, oid: int, force_supplier: bool = False
                 deficit = max(0.0, total_cost - cur_bal)
                 bal_status = f"${cur_bal:.2f} USDT (Short by ${deficit:.2f} USDT)" if cur_bal > 0 else f"${cur_bal:.2f} USDT (Empty)"
                 topup_needed = f"at least <b>${deficit:.2f} USDT</b> (shortfall)" if cur_bal > 0 else f"<b>${total_cost:.2f} USDT</b>"
-                await notify_admins(
-                    bot,
-                    f"🟡 <b>Model B Active (Supplier Balance Insufficient) — Order #{oid}</b>\n"
-                    f"• <b>Product:</b> {esc(p['name'])} x{qty}\n"
-                    f"• <b>Customer Paid:</b> {usd(o['price'])} USDT (in your wallet)\n"
-                    f"• <b>Wholesale Cost:</b> ${total_cost:.2f} USDT\n"
-                    f"• <b>Supplier Balance:</b> {bal_status}\n\n"
-                    f"⚡ <b>Next Step (Customer Money Top-Up):</b>\n"
-                    f"1. The customer's payment is already confirmed and safe in your wallet.\n"
-                    f"2. Top up your supplier account with {topup_needed}.\n"
-                    f"3. Send <code>/approve_{oid}</code> to buy & deliver automatically to the customer.\n"
-                    f"   <i>(Or send <code>/deliver {oid} &lt;item&gt;</code> to deliver manually)</i>"
-                )
+                if notify_manual:
+                    await notify_admins(
+                        bot,
+                        f"🟡 <b>Model B Active (Supplier Balance Insufficient) — Order #{oid}</b>\n"
+                        f"• <b>Product:</b> {esc(p['name'])} x{qty}\n"
+                        f"• <b>Customer Paid:</b> {usd(o['price'])} USDT (in your wallet)\n"
+                        f"• <b>Wholesale Cost:</b> ${total_cost:.2f} USDT\n"
+                        f"• <b>Supplier Balance:</b> {bal_status}\n\n"
+                        f"⚡ <b>Next Step (Customer Money Top-Up):</b>\n"
+                        f"1. The customer's payment is already confirmed and safe in your wallet.\n"
+                        f"2. Top up your supplier account with {topup_needed}.\n"
+                        f"3. Send <code>/approve_{oid}</code> to buy & deliver automatically to the customer.\n"
+                        f"   <i>(Or send <code>/deliver {oid} &lt;item&gt;</code> to deliver manually)</i>"
+                    )
                 return "MANUAL_PENDING", None
 
         # Place order with supplier
@@ -1831,20 +1832,31 @@ async def _fulfill_order_locked(bot: Bot, oid: int, force_supplier: bool = False
             pass
         raise
 
-    # 3. Manual delivery
+    # 3. Manual delivery / retail fulfillment
     deliv = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else "auto"
     if deliv == "manual" or not p["auto_fulfill"]:
         db.execute("UPDATE orders SET status='manual_pending' WHERE id=?", (oid,))
-        await notify_admins(
-            bot,
-            lambda aid: (
-                f"🔔 <b>New Manual Order #{oid}</b>\n"
-                f"• Item: <b>{esc(p['name'])}</b> (Qty: {qty})\n"
-                f"• User ID: <code>{o['user_id']}</code>\n"
-                f"• Amount: <b>{format_user_price(o['price'], aid)}</b>\n\n"
-                f"👉 Use <code>/deliver {oid} &lt;credentials/link&gt;</code> to send item to user."
+        if notify_manual:
+            buyer_uid = o["user_id"]
+            user_mention = f"User <code>{buyer_uid}</code>"
+            expected_note = f"\n• <b>Expected:</b> {esc(o['expected_amount'])}" if ("expected_amount" in o.keys() and o["expected_amount"]) else ""
+            method_str = o["payment_method"] if ("payment_method" in o.keys() and o["payment_method"]) else "Manual"
+            txid_val = o["txid"] if ("txid" in o.keys() and o["txid"]) else (o["invoice_id"] if "invoice_id" in o.keys() else "")
+            tx_line = f"\n• <b>TxID / Sender:</b> <code>{esc(txid_val)}</code>" if txid_val else ""
+
+            await notify_admins(
+                bot,
+                lambda aid: (
+                    f"🔔 <b>New Order Payment Verified!</b>\n"
+                    f"• <b>Order:</b> #{oid}\n"
+                    f"• <b>Buyer:</b> {user_mention}\n"
+                    f"• <b>Product:</b> {esc(p['name'])}\n"
+                    f"• <b>Amount:</b> {format_user_price(o['price'], aid)}{expected_note}\n"
+                    f"• <b>Method:</b> {esc(str(method_str).upper())}{tx_line}\n\n"
+                    f"✅ Approve & deliver: /approve_{oid}\n"
+                    f"❌ Reject: /reject_{oid}"
+                )
             )
-        )
         return "MANUAL_PENDING", None
 
     db.execute("UPDATE orders SET status='failed' WHERE id=?", (oid,))
@@ -2866,7 +2878,7 @@ async def check_and_fulfill_onchain(oid: int, txid: str, uid: int, bot_instance:
 
     if verified:
         db.execute("UPDATE orders SET txid=?, status='paid' WHERE id=?", (txid, oid))
-        payload, err = await fulfill_order(bot_instance, oid)
+        payload, err = await fulfill_order(bot_instance, oid, notify_manual=False)
         if err:
             log.error("Failed to fulfill auto-verified order %s: %s", oid, err)
             await notify_admins(
@@ -2874,33 +2886,48 @@ async def check_and_fulfill_onchain(oid: int, txid: str, uid: int, bot_instance:
                 f"⚠️ Payment verified on-chain for Order #{oid}, but auto-fulfillment failed: {esc(str(err))}\n"
                 f"• Method: {esc(method.upper())}\n"
                 f"• TxID: <code>{esc(txid)}</code>\n"
-                f"👉 Use <code>/deliver {oid} &lt;item&gt;</code> to deliver manually."
+                f"👉 Use <code>/approve_{oid}</code> to retry or <code>/deliver {oid} &lt;item&gt;</code> to deliver manually."
             )
             return True, "Payment verified on-chain! Our support team is completing your delivery shortly."
+
+        buyer_username = ""
+        try:
+            chat_obj = await bot_instance.get_chat(uid)
+            if chat_obj and chat_obj.username:
+                buyer_username = f"@{chat_obj.username}"
+        except Exception:
+            pass
+        user_mention = f"{buyer_username} (<code>{uid}</code>)" if buyer_username else f"User <code>{uid}</code>"
 
         if payload == "MANUAL_PENDING":
             await notify_admins(
                 bot_instance,
-                f"⚡ <b>Payment Auto-Verified On-Chain!</b>\n"
-                f"• <b>Order:</b> #{oid}\n"
-                f"• <b>Product:</b> {esc(o['product_name'])}\n"
-                f"• <b>Amount:</b> ${detected_amount:.2f} USDT (Required: {usd(o['price'])})\n"
-                f"• <b>Method:</b> {esc(method.upper())}\n"
-                f"• <b>TxID:</b> <code>{esc(txid)}</code>\n"
-                f"• <b>Status:</b> Awaiting support fulfillment / Model B top-up"
+                lambda aid: (
+                    f"🔔 <b>New Order Payment Verified!</b>\n"
+                    f"• <b>Order:</b> #{oid}\n"
+                    f"• <b>Buyer:</b> {user_mention}\n"
+                    f"• <b>Product:</b> {esc(o['product_name'])}\n"
+                    f"• <b>Amount:</b> ${detected_amount:.2f} USDT\n"
+                    f"• <b>Expected:</b> {usd(o['price'])}\n"
+                    f"• <b>Method:</b> {esc(method.upper())}\n"
+                    f"• <b>TxID / Sender:</b> <code>{esc(txid)}</code>\n\n"
+                    f"✅ Approve & deliver: /approve_{oid}\n"
+                    f"❌ Reject: /reject_{oid}"
+                )
             )
             return True, "MANUAL_PENDING"
 
-        user_mention = f"User {uid}"
         await notify_admins(
             bot_instance,
-            f"⚡ <b>Auto-Verified & Delivered!</b>\n"
-            f"• <b>Order:</b> #{oid}\n"
-            f"• <b>Buyer:</b> {user_mention}\n"
-            f"• <b>Product:</b> {esc(o['product_name'])}\n"
-            f"• <b>Amount:</b> ${detected_amount:.2f} USDT (Required: {usd(o['price'])})\n"
-            f"• <b>Method:</b> {esc(method.upper())}\n"
-            f"• <b>TxID:</b> <code>{esc(txid)}</code>"
+            lambda aid: (
+                f"⚡ <b>Auto-Verified & Delivered!</b>\n"
+                f"• <b>Order:</b> #{oid}\n"
+                f"• <b>Buyer:</b> {user_mention}\n"
+                f"• <b>Product:</b> {esc(o['product_name'])}\n"
+                f"• <b>Amount:</b> ${detected_amount:.2f} USDT (Required: {usd(o['price'])})\n"
+                f"• <b>Method:</b> {esc(method.upper())}\n"
+                f"• <b>TxID:</b> <code>{esc(txid)}</code>"
+            )
         )
         return True, "VERIFIED_AND_DELIVERED"
 
@@ -2977,6 +3004,9 @@ async def on_buy_qty(c: CallbackQuery):
     pid, qty, ctx, p = res
     if not is_product_available(p):
         return await c.answer(t(c.from_user.id, "out_of_stock"), show_alert=True)
+    sup_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
+    if sup_stock is not None and sup_stock >= 0 and qty > sup_stock:
+        return await c.answer(f"⚠️ Only {sup_stock} unit(s) available in stock.", show_alert=True)
     await start_checkout(c, c.from_user.id, p, qty, ctx)
 
 
@@ -3061,6 +3091,11 @@ async def handle_user_text_input(m: Message):
 
         is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
         deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
+        sup_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
+        if sup_stock is not None and sup_stock >= 0 and qty > sup_stock:
+            pending_inputs[uid] = state
+            return await m.answer(f"⚠️ Only {sup_stock} in stock at supplier. Please enter a quantity up to {sup_stock} (or send /cancel):")
+
         if not is_auto and deliv_type != "manual":
             has_stock_rows = db.execute("SELECT 1 FROM stock WHERE product_id=?", (pid,)).fetchone()
             if has_stock_rows:
@@ -3183,23 +3218,33 @@ async def handle_user_text_input(m: Message):
         )
 
 
-@dp.message(F.text.regexp(r"^/approve_(\d+)(?:@\w+)?$"), is_admin)
+@dp.message(F.text.regexp(r"^/approve_(\d+)(?:@\w+)?(?:\s+(.+))?$"), is_admin)
 @dp.message(Command("approve"), is_admin)
 async def admin_approve_order(m: Message, command: CommandObject = None):
     oid = None
+    direct_payload = None
     if command and command.args:
-        try:
-            oid = int(command.args.strip())
-        except ValueError:
-            pass
+        parts = command.args.strip().split(maxsplit=1)
+        if parts:
+            try:
+                oid = int(parts[0])
+                if len(parts) > 1:
+                    direct_payload = parts[1].strip()
+            except ValueError:
+                pass
     elif m.text and m.text.startswith("/approve_"):
+        raw_cmd = m.text[9:]  # after "/approve_"
+        parts = raw_cmd.split(maxsplit=1)
+        first = parts[0].split("@")[0]
         try:
-            oid = int(m.text.split("_")[1].split("@")[0])
+            oid = int(first)
+            if len(parts) > 1:
+                direct_payload = parts[1].strip()
         except (ValueError, IndexError):
             pass
 
     if not oid:
-        return await m.answer("Usage: /approve <order_id> or /approve_<order_id>")
+        return await m.answer("Usage: /approve <order_id> [credentials] or /approve_<order_id> [credentials]")
 
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
@@ -3209,12 +3254,22 @@ async def admin_approve_order(m: Message, command: CommandObject = None):
     if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
         return await m.answer(f"⚠️ Order #{oid} was refunded or cancelled.")
 
-    payload, err = await fulfill_order(m.bot, oid, force_supplier=True)
+    buyer_uid = o["user_id"]
+
+    # If admin explicitly provided credentials with /approve, deliver directly
+    if direct_payload:
+        db.execute("UPDATE orders SET payload=?, status='completed' WHERE id=?", (direct_payload, oid))
+        try:
+            await m.bot.send_message(buyer_uid, t(buyer_uid, "purchased", oid=oid, payload=esc(direct_payload)))
+            return await m.answer(f"✅ Order #{oid} approved and delivered to user {buyer_uid}!")
+        except Exception as e:
+            return await m.answer(f"✅ Order #{oid} completed, but could not message user: {esc(str(e))}\nPayload: <code>{esc(direct_payload)}</code>")
+
+    payload, err = await fulfill_order(m.bot, oid, force_supplier=True, notify_manual=False)
     if err:
         return await m.answer(f"⚠️ Failed to fulfill order #{oid}: {esc(str(err))}")
 
     try:
-        buyer_uid = o["user_id"]
         if payload == "MANUAL_PENDING":
             await m.bot.send_message(
                 buyer_uid,
@@ -3223,7 +3278,7 @@ async def admin_approve_order(m: Message, command: CommandObject = None):
                 f"🟡 <i>This product is an assisted/manual setup service. Our support team has received your order and will deliver your credentials or setup link directly to you here shortly!</i>\n\n"
                 f"If you have any questions, contact Support: {SUPPORT_URL}"
             )
-            await m.answer(f"✅ Order #{oid} approved. Awaiting manual fulfillment with: <code>/deliver {oid} &lt;item&gt;</code>")
+            await m.answer(f"✅ Order #{oid} approved. Send credentials to deliver: <code>/deliver {oid} &lt;item&gt;</code>")
             return
         await m.bot.send_message(buyer_uid, t(buyer_uid, "purchased", oid=oid, payload=esc(payload)))
         await m.answer(f"✅ Order #{oid} approved and delivered to user {buyer_uid}!")
@@ -5613,8 +5668,8 @@ async def periodic_supplier_sync(interval_sec: int = 600):
 
 async def periodic_retail_crawler_task(aiogram_bot: Bot):
     """Background task to periodically crawl supplier retail bot for new products and live stock."""
-    # Delay initial crawl by 5 minutes after startup to allow primary services to boot
-    await asyncio.sleep(300)
+    # Delay initial crawl by 60 seconds after startup to allow primary services to boot
+    await asyncio.sleep(60)
     while True:
         try:
             if get_setting("auto_crawler_enabled", "1") not in ("0", "false", "paused", "off"):
@@ -5646,8 +5701,8 @@ async def periodic_retail_crawler_task(aiogram_bot: Bot):
         except Exception as e:
             log.warning("Periodic retail crawler encountered error: %s", e)
 
-        interval_hours = float(get_setting("crawler_interval_hours", "12"))
-        await asyncio.sleep(max(3600, int(interval_hours * 3600)))
+        interval_hours = float(get_setting("crawler_interval_hours", "2"))
+        await asyncio.sleep(max(1800, int(interval_hours * 3600)))
 
 
 # Main entrypoint

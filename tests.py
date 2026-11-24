@@ -4509,6 +4509,71 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
             bot.db.execute("DELETE FROM products WHERE name LIKE 'Test Dup Item%'")
             bot.db.commit()
 
+    async def test_admin_approve_order_with_direct_payload(self):
+        pid = bot.db.execute("INSERT INTO products(name, price, active, auto_fulfill) VALUES('Direct Deliver Item', 1000, 1, 0)").lastrowid
+        oid = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(888111, ?, 'Direct Deliver Item', 1000, 'manual_pending')", (pid,)).lastrowid
+        bot.db.commit()
+
+        m = AsyncMock()
+        m.from_user.id = 111222333
+        m.text = f"/approve_{oid} https://setup.link/token123"
+        m.bot = AsyncMock()
+
+        await bot.admin_approve_order(m)
+        self.assertTrue(m.answer.called)
+        self.assertIn("approved and delivered", m.answer.call_args[0][0])
+        m.bot.send_message.assert_called_once()
+        self.assertIn("https://setup.link/token123", m.bot.send_message.call_args[0][1])
+
+        # Verify order in DB
+        o = bot.db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(o["status"], "completed")
+        self.assertEqual(o["payload"], "https://setup.link/token123")
+
+    async def test_onchain_manual_pending_unified_notification(self):
+        pid = bot.db.execute("INSERT INTO products(name, price, active, auto_fulfill, delivery_type) VALUES('Retail Item Test', 800, 1, 0, 'manual')").lastrowid
+        oid = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, payment_method, status) VALUES(5004324075, ?, 'Retail Item Test', 800, 'trc20', 'pending')", (pid,)).lastrowid
+        bot.db.commit()
+
+        mock_bot = AsyncMock()
+        mock_chat = MagicMock()
+        mock_chat.username = "Ominiknowette"
+        mock_bot.get_chat.return_value = mock_chat
+
+        with patch.object(bot, "CRYPTO_USDT_TRC20", "TX12345678901234567890123456789012"):
+            with patch("bot.onchain.verify_trc20_usdt", new=AsyncMock(return_value=(True, "Verified", 8.00))):
+                with patch.object(bot, "notify_admins", new=AsyncMock()) as mock_notify:
+                    ok, res = await bot.check_and_fulfill_onchain(
+                        oid=oid,
+                        txid="88932434c51cb295911ccbbd6bc5422d87bf94839841930073745eb275d98a29",
+                        uid=5004324075,
+                        bot_instance=mock_bot
+                    )
+                    self.assertTrue(ok)
+                    self.assertEqual(res, "MANUAL_PENDING")
+                    # Exactly one notification to admins
+                    self.assertEqual(mock_notify.call_count, 1)
+                    notif_fn = mock_notify.call_args[0][1]
+                    msg_text = notif_fn(111222333)
+                    self.assertIn("🔔 <b>New Order Payment Verified!</b>", msg_text)
+                    self.assertIn("@Ominiknowette", msg_text)
+                    self.assertIn(f"Order:</b> #{oid}", msg_text)
+                    self.assertIn(f"/approve_{oid}", msg_text)
+                    self.assertIn(f"/reject_{oid}", msg_text)
+                    self.assertIn("TxID / Sender:</b> <code>88932434c51cb", msg_text)
+
+    async def test_buyqty_blocks_exceeding_supplier_stock(self):
+        pid = bot.db.execute("INSERT INTO products(name, price, active, auto_fulfill, supplier_stock) VALUES('Low Stock Prod', 500, 1, 0, 2)").lastrowid
+        bot.db.commit()
+
+        c = AsyncMock()
+        c.from_user.id = 123456
+        c.data = f"buyqty:{pid}:5:shop"
+
+        await bot.on_buy_qty(c)
+        self.assertTrue(c.answer.called)
+        self.assertIn("Only 2 unit(s) available in stock", c.answer.call_args[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()
