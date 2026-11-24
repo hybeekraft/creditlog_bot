@@ -743,17 +743,13 @@ def migrate_db():
         resequence_product_ids(db)
         set_setting("products_resequenced_v1", "1")
 
-    # Seed all retail catalog SKUs from supplier shop (~277 products across 19 pages)
-    if get_setting("retail_skus_details_synced_v3") != "1":
-        try:
-            from retail_catalog import sync_retail_catalog_details, seed_retail_catalog
-            sync_retail_catalog_details(db)
-            resequence_product_ids(db)
-            set_setting("retail_skus_details_synced_v3", "1")
-            set_setting("retail_skus_seeded_v2", "1")
-            set_setting("retail_skus_seeded_v1", "1")
-        except Exception as e:
-            logger.warning(f"Retail details sync skipped: {e}")
+    # Sync retail catalog SKUs, live stock, and rich descriptions from retail_catalog_details.json
+    try:
+        from retail_catalog import sync_retail_catalog_details
+        sync_retail_catalog_details(db)
+        resequence_product_ids(db)
+    except Exception as e:
+        logger.warning(f"Retail details sync skipped: {e}")
 
     # Clean up any duplicate products across suppliers
     deduplicate_products_in_db(db)
@@ -5703,6 +5699,8 @@ async def periodic_retail_crawler_task(aiogram_bot: Bot):
                                 )
                             except Exception:
                                 pass
+                else:
+                    log.warning("Scheduled retail crawl returned failure: %s", res.get("error"))
         except asyncio.CancelledError:
             break
         except Exception as e:

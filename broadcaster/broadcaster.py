@@ -688,11 +688,20 @@ async def catch_up_watchdog(client, parser, aiogram_bot, sources, interval_secs:
         except Exception as e:
             logger.debug(f"Broadcaster watchdog error: {e}")
 
+_active_client = None
+
+def get_active_client():
+    global _active_client
+    if _active_client and hasattr(_active_client, "is_connected") and _active_client.is_connected():
+        return _active_client
+    return None
+
 async def start_broadcaster_task(aiogram_bot=None):
     """
     Background task entry point for bot.py.
     Runs with auto-reconnect supervisor to ensure resilient 24/7 operation.
     """
+    global _active_client
     init_broadcaster_db()
     reconnect_delay = 5
 
@@ -706,6 +715,7 @@ async def start_broadcaster_task(aiogram_bot=None):
                 return
 
             await client.connect()
+            _active_client = client
             if not await client.is_user_authorized():
                 logger.warning(
                     "Stock broadcaster: Telegram session is not yet authorized. "
@@ -777,6 +787,7 @@ async def start_broadcaster_task(aiogram_bot=None):
         except Exception as e:
             logger.error(f"Stock broadcaster error: {e}. Reconnecting in {reconnect_delay}s...")
         finally:
+            _active_client = None
             if watchdog_task and not watchdog_task.done():
                 watchdog_task.cancel()
             try:

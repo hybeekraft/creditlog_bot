@@ -206,10 +206,16 @@ async def open_catalog(client, bot):
     await asyncio.sleep(2.5)
 
     shop_msg = await client.get_messages(bot, ids=cat_id)
+    if not (shop_msg and shop_msg.reply_markup):
+        shop_msg = (await client.get_messages(bot, limit=1))[0]
+        cat_id = shop_msg.id
+
     await shop_msg.click(text="All items")
     await asyncio.sleep(2.5)
 
     cat_msg = await client.get_messages(bot, ids=cat_id)
+    if not (cat_msg and cat_msg.reply_markup):
+        cat_msg = (await client.get_messages(bot, limit=1))[0]
     return cat_msg
 
 
@@ -257,11 +263,21 @@ async def run_retail_crawler(
         except Exception as e:
             logger.warning("Could not load cache: %s", e)
 
-    client = TelegramClient(StringSession(raw_session), api_id, api_hash)
-    await client.connect()
-    if not await client.is_user_authorized():
-        await client.disconnect()
-        return {"success": False, "error": "Telegram session is unauthorized or expired", "total_scraped": 0, "new_items": 0, "updated_items": 0, "pages_scanned": 0}
+    client = None
+    own_client = False
+    try:
+        from broadcaster.broadcaster import get_active_client
+        client = get_active_client()
+    except Exception:
+        client = None
+
+    if client is None or not client.is_connected():
+        client = TelegramClient(StringSession(raw_session), api_id, api_hash)
+        await client.connect()
+        own_client = True
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            return {"success": False, "error": "Telegram session is unauthorized or expired", "total_scraped": 0, "new_items": 0, "updated_items": 0, "pages_scanned": 0}
 
     new_count = 0
     updated_count = 0
@@ -284,16 +300,19 @@ async def run_retail_crawler(
 
             for r in getattr(cat_msg.reply_markup, "rows", []):
                 for b in r.buttons:
-                    data = getattr(getattr(b, "type", None), "data", None)
-                    if re.match(r"^\d+/\d+$", b.text.strip()):
-                        page_indicator = b.text.strip()
+                    data = getattr(b, "data", None)
+                    if data is None and hasattr(b, "type"):
+                        data = getattr(b.type, "data", None)
+                    clean_btn = b.text.strip()
+                    if re.match(r"^\d+/\d+$", clean_btn):
+                        page_indicator = clean_btn
                         try:
                             total_pages = max(total_pages, int(page_indicator.split("/")[1]))
                         except (ValueError, IndexError):
                             pass
-                    elif "▶️" in b.text:
+                    elif "▶️" in clean_btn:
                         next_btn = b
-                    elif data and data.startswith(b"itm:"):
+                    elif "·" in clean_btn or "$" in clean_btn or (data and data.startswith(b"itm:")):
                         prod_buttons.append((b.text, data))
 
             logger.info("=== Scanning Page [%s] | Products: %d ===", page_indicator, len(prod_buttons))
@@ -416,7 +435,11 @@ async def run_retail_crawler(
             "pages_scanned": current_page,
         }
     finally:
-        await client.disconnect()
+        if own_client and client:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
