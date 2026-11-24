@@ -308,7 +308,7 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
     from bot import detect_category
     cur = db_conn.cursor()
 
-    rows = cur.execute("SELECT id, name, margin, fixed_price, supplier, auto_fulfill FROM products").fetchall()
+    rows = cur.execute("SELECT id, name, margin, fixed_price, supplier, auto_fulfill, description FROM products").fetchall()
     by_norm = {}
     for r in rows:
         pid = r[0] if isinstance(r, tuple) else r["id"]
@@ -317,9 +317,10 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
         pfixed = r[3] if isinstance(r, tuple) else r["fixed_price"]
         psup = r[4] if isinstance(r, tuple) else (r["supplier"] if "supplier" in r.keys() else "default")
         pauto = r[5] if isinstance(r, tuple) else (r["auto_fulfill"] if "auto_fulfill" in r.keys() else 0)
+        pdesc = r[6] if isinstance(r, tuple) else (r["description"] if "description" in r.keys() else "")
         norm = re.sub(r'[^a-z0-9]', '', str(pname).lower())
         if norm not in by_norm or (psup == 'default' or pauto):
-            by_norm[norm] = (pid, pmargin if pmargin is not None else 45, pfixed)
+            by_norm[norm] = (pid, pmargin if pmargin is not None else 45, pfixed, pdesc or "")
 
     updated = 0
     inserted = 0
@@ -332,7 +333,8 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
         cat = detect_category(name)
 
         if norm_k in by_norm:
-            pid, margin_val, is_fixed = by_norm[norm_k]
+            pid, margin_val, is_fixed, cur_desc = by_norm[norm_k]
+            final_desc = desc if (desc and len(desc) >= len(cur_desc)) else (cur_desc or desc)
             if cost_usd is not None and not is_fixed:
                 cost_cents = int(round(cost_usd * 100))
                 retail_cents = max(100, int(round(cost_cents * (1 + margin_val / 100.0))))
@@ -345,7 +347,7 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
                         price = ?,
                         category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
                     WHERE id = ?
-                """, (desc, stock, active, cost_cents, retail_cents, cat, pid))
+                """, (final_desc, stock, active, cost_cents, retail_cents, cat, pid))
             else:
                 cur.execute("""
                     UPDATE products
@@ -354,7 +356,7 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
                         active = ?,
                         category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
                     WHERE id = ?
-                """, (desc, stock, active, cat, pid))
+                """, (final_desc, stock, active, cat, pid))
             updated += 1
         else:
             cost_cents = int(round((cost_usd or 0.0) * 100))

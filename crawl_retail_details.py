@@ -193,6 +193,12 @@ def update_db_product(name: str, desc: str, stock: int, cost_usd: Optional[float
         if matched_id:
             active = 1 if stock > 0 else 0
             effective_desc = desc if (desc and (not matched_desc or len(matched_desc) < len(desc))) else matched_desc
+            cat = "AI Tools"
+            try:
+                from bot import detect_category
+                cat = detect_category(name)
+            except Exception:
+                pass
             if cost_usd is not None and not fixed_price:
                 cost_cents = int(round(cost_usd * 100))
                 retail_cents = max(100, int(round(cost_cents * (1 + margin / 100.0))))
@@ -203,10 +209,11 @@ def update_db_product(name: str, desc: str, stock: int, cost_usd: Optional[float
                         supplier_stock = ?,
                         active = ?,
                         supplier_price = ?,
-                        price = ?
+                        price = ?,
+                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
                     WHERE id = ?
                 """,
-                    (effective_desc, stock, active, cost_cents, retail_cents, matched_id),
+                    (effective_desc, stock, active, cost_cents, retail_cents, cat, matched_id),
                 )
             else:
                 cur.execute(
@@ -214,10 +221,11 @@ def update_db_product(name: str, desc: str, stock: int, cost_usd: Optional[float
                     UPDATE products
                     SET description = ?,
                         supplier_stock = ?,
-                        active = ?
+                        active = ?,
+                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
                     WHERE id = ?
                 """,
-                    (effective_desc, stock, active, matched_id),
+                    (effective_desc, stock, active, cat, matched_id),
                 )
             conn.commit()
             return matched_id, False
@@ -399,6 +407,7 @@ async def run_retail_crawler(
                     cached["stock"] = eff_stock
                     if live_price is not None:
                         cached["price_usd"] = live_price
+                    cached["raw_btn"] = b_text
                     pid, is_new = update_db_product(btn_name, cached["description"], eff_stock, eff_price, db_path)
                     if is_new:
                         new_count += 1
@@ -479,9 +488,11 @@ async def run_retail_crawler(
                 break
 
         try:
+            with open(DETAILS_JSON, "w", encoding="utf-8") as f:
+                json.dump(details_cache, f, indent=2, ensure_ascii=False)
             update_retail_catalog_py(details_cache)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Could not persist scraped details: %s", e)
 
         return {
             "success": True,

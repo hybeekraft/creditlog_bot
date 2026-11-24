@@ -785,7 +785,16 @@ async def start_broadcaster_task(aiogram_bot=None):
             logger.info("Stock broadcaster task cancelled. Shutting down client...")
             break
         except Exception as e:
-            logger.error(f"Stock broadcaster error: {e}. Reconnecting in {reconnect_delay}s...")
+            err_str = str(e).lower()
+            if "two different ip addresses" in err_str or "authkeyduplicated" in err_str:
+                logger.error(
+                    "Telethon session key revoked by Telegram (used simultaneously on two different IPs). "
+                    "Generate a fresh session with 'python broadcaster/login_session.py' and set TELEGRAM_STRING_SESSION. "
+                    "Pausing broadcaster for 30 minutes..."
+                )
+                reconnect_delay = 1800
+            else:
+                logger.error(f"Stock broadcaster error: {e}. Reconnecting in {reconnect_delay}s...")
         finally:
             _active_client = None
             if watchdog_task and not watchdog_task.done():

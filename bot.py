@@ -5375,6 +5375,13 @@ async def perform_supplier_sync(
 
         total_items += len(sup_products)
 
+    try:
+        from retail_catalog import sync_retail_catalog_details
+        sync_retail_catalog_details(db)
+        deduplicate_products_in_db(db)
+    except Exception as e:
+        log.warning("Post-supplier-sync retail catalog sync failed: %s", e)
+
     return total_added, total_updated, total_items, errors
 
 
