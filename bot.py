@@ -821,24 +821,31 @@ def resequence_product_ids(conn=None) -> Dict[int, int]:
                 except Exception:
                     pass
 
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS products_seq_tmp (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                price INTEGER NOT NULL,
-                active INTEGER DEFAULT 1,
-                supplier_product_id TEXT DEFAULT NULL,
-                supplier_price INTEGER DEFAULT NULL,
-                auto_fulfill INTEGER DEFAULT 0,
-                margin INTEGER DEFAULT NULL,
-                category TEXT DEFAULT 'AI Tools',
-                supplier TEXT DEFAULT 'default',
-                supplier_stock INTEGER DEFAULT NULL,
-                delivery_type TEXT DEFAULT 'auto',
-                fixed_price INTEGER DEFAULT 0
-            )
-        """)
+        # Clone table schema dynamically to preserve all columns across schema versions
+        cur.execute("DROP TABLE IF EXISTS products_seq_tmp")
+        schema_row = cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='products'").fetchone()
+        if schema_row and schema_row[0]:
+            create_sql = re.sub(r'\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`]?products["`]?', 'CREATE TABLE products_seq_tmp', schema_row[0], count=1, flags=re.IGNORECASE)
+            cur.execute(create_sql)
+        else:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS products_seq_tmp (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    price INTEGER NOT NULL,
+                    active INTEGER DEFAULT 1,
+                    supplier_product_id TEXT DEFAULT NULL,
+                    supplier_price INTEGER DEFAULT NULL,
+                    auto_fulfill INTEGER DEFAULT 0,
+                    margin INTEGER DEFAULT NULL,
+                    category TEXT DEFAULT 'AI Tools',
+                    supplier TEXT DEFAULT 'default',
+                    supplier_stock INTEGER DEFAULT NULL,
+                    delivery_type TEXT DEFAULT 'auto',
+                    fixed_price INTEGER DEFAULT 0
+                )
+            """)
 
         for p in prods:
             old_id = p["id"]
