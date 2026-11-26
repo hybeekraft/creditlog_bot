@@ -96,7 +96,6 @@ if "default" not in supplier_registry.list_suppliers():
     supplier_registry.register("default", reseller, is_default=True)
 
 # Crypto payment settings
-CRYPTOBOT_TOKEN = os.environ.get("CRYPTOBOT_TOKEN", "")
 BINANCE_PAY_ID = (os.environ.get("BINANCE_PAY_ID", "") or "").strip()
 if not BINANCE_PAY_ID or BINANCE_PAY_ID.startswith("your_"):
     BINANCE_PAY_ID = "76177351"  # Default backup ID
@@ -931,10 +930,8 @@ TR = {
         "no_products": "No products available in this section.",
         "btn_buy": "💳 Buy / Checkout",
         "btn_pay": "💳 Pay with Crypto ({amount})",
-        "btn_pay_cb": "💳 Pay with @CryptoBot ({amount})",
         "btn_check_pay": "🔄 Check Payment",
         "btn_manual_crypto": "💎 USDT / Binance Pay Details",
-        "pay_pending": "⏳ Payment not detected yet. Please complete the invoice in @CryptoBot and check again.",
         "manual_crypto_info": "💳 <b>Manual Crypto Payment · Order #{oid}</b>\n\nItem: <b>{name}</b>\nAmount: <b>{amount}</b>\n\n{details}\n\n<i>Send exact amount and send your transaction hash/receipt to support to verify.</i>",
         "checkout_invoice": "💳 <b>Order #{oid} - Checkout</b>\n\nItem: <b>{name}</b>\nTotal: <b>{amount}</b>\n\nClick the button below to complete payment. Your digital code/link will be delivered automatically upon payment.",
         "purchased": "✅ <b>Purchase Complete!</b>\nOrder #{oid}\n\n<code>{payload}</code>",
@@ -969,10 +966,8 @@ TR = {
         "no_products": "No hay productos disponibles en esta sección.",
         "btn_buy": "💳 Comprar / Pagar",
         "btn_pay": "💳 Pagar con Crypto ({amount})",
-        "btn_pay_cb": "💳 Pagar con @CryptoBot ({amount})",
         "btn_check_pay": "🔄 Verificar Pago",
         "btn_manual_crypto": "💎 Detalles USDT / Binance Pay",
-        "pay_pending": "⏳ Pago no detectado aún. Completa el pago en @CryptoBot e intenta de nuevo.",
         "manual_crypto_info": "💳 <b>Pago Manual con Crypto · Pedido #{oid}</b>\n\nArtículo: <b>{name}</b>\nTotal: <b>{amount}</b>\n\n{details}\n\n<i>Envía el monto exacto y tu comprobante/TXID al soporte para recibir tu artículo.</i>",
         "checkout_invoice": "💳 <b>Pedido #{oid} - Pago</b>\n\nArtículo: <b>{name}</b>\nTotal: <b>{amount}</b>\n\nPresiona el botón de abajo para pagar. Tu código/enlace digital se entregará automáticamente tras la confirmación.",
         "purchased": "✅ <b>¡Compra Completada!</b>\nPedido #{oid}\n\n<code>{payload}</code>",
@@ -1007,10 +1002,8 @@ TR = {
         "no_products": "В этом разделе пока нет товаров.",
         "btn_buy": "💳 Купить / Оформить",
         "btn_pay": "💳 Оплатить криптовалютой ({amount})",
-        "btn_pay_cb": "💳 Оплатить через @CryptoBot ({amount})",
         "btn_check_pay": "🔄 Проверить оплату",
         "btn_manual_crypto": "💎 Реквизиты USDT / Binance Pay",
-        "pay_pending": "⏳ Оплата пока не поступила. Завершите платёж в @CryptoBot и попробуйте снова.",
         "manual_crypto_info": "💳 <b>Оплата криптовалютой · Заказ №{oid}</b>\n\nТовар: <b>{name}</b>\nК оплате: <b>{amount}</b>\n\n{details}\n\n<i>Отправьте точную сумму и подтверждение перевода (TXID) в поддержку для получения товара.</i>",
         "checkout_invoice": "💳 <b>Заказ №{oid} - Оплата</b>\n\nТовар: <b>{name}</b>\nК оплате: <b>{amount}</b>\n\nНажмите кнопку ниже для оплаты. Товар будет отправлен мгновенно после подтверждения платежа.",
         "purchased": "✅ <b>Покупка завершена!</b>\nЗаказ №{oid}\n\n<code>{payload}</code>",
@@ -1045,10 +1038,8 @@ TR = {
         "no_products": "لا توجد منتجات متوفرة في هذا القسم.",
         "btn_buy": "💳 شراء / دفع",
         "btn_pay": "💳 الدفع بالعملات الرقمية ({amount})",
-        "btn_pay_cb": "💳 الدفع عبر @CryptoBot ({amount})",
         "btn_check_pay": "🔄 التحقق من الدفع",
         "btn_manual_crypto": "💎 تفاصيل USDT / Binance Pay",
-        "pay_pending": "⏳ لم يتم استلام الدفع بعد. يرجى إتمام الدفع في @CryptoBot والمحاولة مرة أخرى.",
         "manual_crypto_info": "💳 <b>الدفع اليدوي بالعملات المشفرة · الطلب #{oid}</b>\n\nالمنتج: <b>{name}</b>\nالمجموع: <b>{amount}</b>\n\n{details}\n\n<i>أرسل المبلغ المحدد مع إشعار/رقم التحويل للدعم الفني لاستلام المنتج.</i>",
         "checkout_invoice": "💳 <b>الطلب #{oid} - إتمام الدفع</b>\n\nالمنتج: <b>{name}</b>\nالمجموع: <b>{amount}</b>\n\nاضغط على الزر أدناه للدفع. سيتم تسليم المنتج الرقمي فورًا بعد التأكيد.",
         "purchased": "✅ <b>تمت عملية الشراء بنجاح!</b>\nالطلب #{oid}\n\n<code>{payload}</code>",
@@ -2089,58 +2080,6 @@ def has_manual_crypto() -> bool:
     )
 
 
-async def create_cryptobot_invoice(order_id: int, item_name: str, cents: int) -> dict:
-    """Create a CryptoBot invoice for an order."""
-    if not CRYPTOBOT_TOKEN:
-        raise RuntimeError("CryptoBot token is not configured.")
-    payload = {
-        "currency_type": "fiat",
-        "fiat": "USD",
-        "amount": f"{cents / 100:.2f}",
-        "description": f"Order #{order_id}: {item_name}",
-        "payload": str(order_id),
-    }
-    timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as s:
-        async with s.post(
-            "https://pay.crypt.bot/api/createInvoice",
-            json=payload,
-            headers={"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
-        ) as r:
-            try:
-                data = await r.json()
-            except Exception:
-                text_resp = await r.text()
-                raise RuntimeError(f"CryptoBot HTTP {r.status}: {text_resp[:200]}")
-            if not data.get("ok"):
-                raise RuntimeError(f"CryptoBot error: {data}")
-            return data["result"]
-
-
-async def check_cryptobot_invoice(invoice_id: int) -> bool:
-    """Check if a @CryptoBot invoice is paid."""
-    if not CRYPTOBOT_TOKEN:
-        return False
-    try:
-        timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(timeout=timeout) as s:
-            async with s.get(
-                f"https://pay.crypt.bot/api/getInvoices?invoice_ids={invoice_id}",
-                headers={"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
-            ) as r:
-                try:
-                    data = await r.json()
-                except Exception:
-                    return False
-                if data.get("ok") and data.get("result", {}).get("items"):
-                    items = data["result"]["items"]
-                    return items[0].get("status") == "paid"
-                return False
-    except Exception as e:
-        log.warning("CryptoBot getInvoices check failed: %s", e)
-        return False
-
-
 async def initialize_bachs_transaction(
     order_id: int,
     amount_cents: int,
@@ -2329,20 +2268,17 @@ def render_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tupl
     """Payment method options screen."""
     _ = uid
     pid = p["id"]
-    cb_emoji = get_custom_emoji_id("cryptopay") or get_custom_emoji_id("cryptobot")
     binance_emoji = get_custom_emoji_id("binance") or get_custom_emoji_id("binance_pay")
     usdt_emoji = get_custom_emoji_id("usdt") or get_custom_emoji_id("tether")
     card_emoji = get_custom_emoji_id("card") or get_custom_emoji_id("fiat")
     back_emoji = get_custom_emoji_id("back")
 
-    cb_label = "CryptoPay (Crypto Bot) +3%" if cb_emoji else "🤖 CryptoPay (Crypto Bot) +3%"
     binance_label = "Binance Pay (USDT only)" if binance_emoji else "🟡 Binance Pay (USDT only)"
     usdt_label = "USDT (TRC20 / BEP20)" if usdt_emoji else "🟢 USDT (TRC20 / BEP20)"
     card_label = "Don't have crypto?" if card_emoji else "💳 Don't have crypto?"
     back_label = "Back" if back_emoji else "↩️ Back"
 
     rows = [
-        [btn(cb_label, f"pay_opt:cryptobot:{pid}:{qty}:{ctx}", style="success", emoji_id=cb_emoji)],
         [btn(binance_label, f"pay_opt:binance:{pid}:{qty}:{ctx}", style="success", emoji_id=binance_emoji)],
         [btn(usdt_label, f"pay_usdt_net:{pid}:{qty}:{ctx}", style="success", emoji_id=usdt_emoji)],
         [btn(card_label, f"pay_fiat:{pid}:{qty}:{ctx}", style="primary", emoji_id=card_emoji)],
@@ -2504,7 +2440,7 @@ async def on_pay_fiat(c: CallbackQuery):
     pid, qty, ctx, p = res
 
     if not is_bank_configured() and not is_bachs_configured():
-        return await c.answer("⚠️ Local / fiat payment methods are currently being set up. Please select CryptoPay, Binance Pay, or USDT.", show_alert=True)
+        return await c.answer("⚠️ Local / fiat payment methods are currently being set up. Please select Binance Pay or USDT.", show_alert=True)
 
     text, markup = render_fiat_payment_methods(c.from_user.id, p, qty, ctx)
     await edit(c, text, markup)
@@ -2518,6 +2454,8 @@ async def on_pay_option_selected(c: CallbackQuery):
     if len(parts) < 5 or not parts[2].isdigit() or not parts[3].isdigit():
         return await c.answer("⚠️ Invalid callback data.", show_alert=True)
     _, method, pid_str, qty_str, ctx = parts
+    if method not in ("bachs", "bank", "binance", "trc20", "bep20"):
+        return await c.answer("⚠️ This payment method is no longer available. Please choose another payment method.", show_alert=True)
     pid, qty = int(pid_str), int(qty_str)
     if not (1 <= qty <= 1000):
         return await c.answer("⚠️ Invalid quantity.", show_alert=True)
@@ -2650,48 +2588,6 @@ async def on_pay_option_selected(c: CallbackQuery):
             btn("🔗 Submit Transfer Reference / Name", f"submit_tx:{oid}", style="primary"),
             f"chk_manual:{oid}",
             f"pay_fiat:{pid}:{qty}:{ctx}"
-        ))
-
-    # CryptoBot (+3% fee)
-    if method == "cryptobot":
-        pay_url = None
-        inv_id = None
-        cb_cents = round(total_cents * 1.03)
-        cb_usdt = f"{cb_cents / 100:.2f}"
-        if CRYPTOBOT_TOKEN and not CRYPTOBOT_TOKEN.startswith("token-from"):
-            try:
-                inv = await create_cryptobot_invoice(oid, f"{p['name']} x{qty}", cb_cents)
-                inv_id = inv["invoice_id"]
-                db.execute("UPDATE orders SET invoice_id=? WHERE id=?", (str(inv_id), oid))
-                pay_url = inv.get("bot_invoice_url") or inv.get("pay_url")
-            except Exception:
-                log.exception("CryptoBot invoice creation failed")
-
-        if not pay_url or not inv_id:
-            db.execute("DELETE FROM orders WHERE id=?", (oid,))
-            return await c.answer("⚠️ CryptoBot checkout could not be initialized. Please try again or choose another payment method.", show_alert=True)
-
-        user_curr = get_user_currency(c.from_user.id)
-        ngn_approx = f" (≈ {format_price(cb_cents, 'NGN')})" if user_curr == "NGN" else ""
-
-        text = (
-            "<u>🤖 <b>CryptoPay Checkout (Crypto Bot)</b></u>\n"
-            "────────────────────────\n\n"
-            f"🥇 <b>Product:</b> {icon} <b>{esc(p['name'])}</b>\n"
-            f"🔢 <b>Quantity:</b> {qty}\n"
-            f"💵 <b>Subtotal:</b> ${total_usdt} USDT\n"
-            f"📊 <b>Processing Fee (+3%):</b> ${(cb_cents - total_cents) / 100:.2f} USDT\n"
-            f"➡️ <b>Total to pay:</b> <b>${cb_usdt} USDT{ngn_approx}</b>\n"
-            "────────────────────────\n\n"
-            f"1. Tap <b>Pay ${cb_usdt} USDT</b> below to open CryptoBot.\n"
-            "2. Complete payment in Telegram.\n"
-            "3. Return and tap <b>I've Paid — Check Status</b> for instant delivery."
-        )
-        return await edit(c, text, build_order_action_kb(
-            oid,
-            btn(f"💳 Pay ${cb_usdt} USDT", url=pay_url, style="success"),
-            f"chk_cb:{oid}:{inv_id}",
-            f"pay_dir:{pid}:{qty}:{ctx}"
         ))
 
     # Binance Pay
@@ -3327,61 +3223,6 @@ async def admin_reject_order(m: Message, command: CommandObject = None):
         await m.answer(f"Order #{oid} marked as rejected (⚠️ Could not notify user {o['user_id']}: {esc(err_detail or 'bot blocked or user not reachable')}).")
 
 
-@dp.callback_query(F.data.startswith("chk_cb:"))
-async def check_cryptobot_payment(c: CallbackQuery):
-    parts = c.data.split(":")
-    if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
-        return await c.answer("⚠️ Invalid payment callback data.", show_alert=True)
-    oid, inv_id = int(parts[1]), int(parts[2])
-    uid = c.from_user.id
-
-    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
-    if not o:
-        return await c.answer("Order not found.", show_alert=True)
-    if o["user_id"] != uid and uid not in ADMIN_IDS:
-        return await c.answer("⚠️ Unauthorized access to this order.", show_alert=True)
-    if o["status"] == "completed":
-        if o["payload"]:
-            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(o["payload"])))
-        return await c.answer("✅ Order already completed!", show_alert=False)
-    if o["status"] == "manual_pending":
-        return await c.answer("⏳ Payment confirmed! Your order is currently pending fulfillment by support.", show_alert=True)
-    if o["refunded"] or o["status"] in ("refunded", "cancelled", "rejected"):
-        return await c.answer("⚠️ This order was cancelled or refunded. Please contact support.", show_alert=True)
-
-    if not o["invoice_id"] or str(o["invoice_id"]) != str(inv_id):
-        return await c.answer("⚠️ Invoice ID does not match this order.", show_alert=True)
-
-    dup = db.execute(
-        "SELECT id FROM orders WHERE invoice_id=? AND status IN ('completed', 'paid', 'manual_pending', 'refunded') AND id != ?",
-        (str(inv_id), oid)
-    ).fetchone()
-    if dup:
-        return await c.answer(f"⚠️ This invoice was already claimed for Order #{dup['id']}.", show_alert=True)
-
-    paid = await check_cryptobot_invoice(inv_id)
-    if paid:
-        db.execute("UPDATE orders SET invoice_id=?, status='paid' WHERE id=?", (str(inv_id), oid))
-        payload, err = await fulfill_order(c.bot, oid)
-        if payload == "MANUAL_PENDING":
-            await c.message.answer(
-                f"🎉 <b>Payment Confirmed for Order #{oid}!</b>\n\n"
-                f"Item: <b>{esc(o['product_name'])}</b>\n\n"
-                f"🟡 <i>Your order has been queued and is being processed by our support team. Your credentials/items will be delivered directly to you here shortly!</i>\n\n"
-                f"If you have any questions, contact Support: {SUPPORT_URL}"
-            )
-            await c.answer()
-        elif payload:
-            await c.message.answer(t(uid, "purchased", oid=oid, payload=esc(payload)))
-            await notify_admins(c.bot, lambda aid: f"✅ Order #{oid} paid via @CryptoBot & delivered: {esc(o['product_name'])} ({format_user_price(o['price'], aid)}) to user {uid}")
-            await c.answer()
-        else:
-            await c.answer(t(uid, err or "supplier_error")[:200], show_alert=True)
-            await notify_admins(c.bot, f"⚠️ Order #{oid} paid via @CryptoBot by user {uid} but delivery failed: {esc(str(err))}")
-    else:
-        await c.answer(t(uid, "pay_pending"), show_alert=True)
-
-
 @dp.callback_query(F.data.startswith("chk_bachs:"))
 async def check_bachs_payment_callback(c: CallbackQuery):
     parts = c.data.split(":", 2)
@@ -3802,7 +3643,7 @@ async def admin_setemoji(m: Message, command: CommandObject = None):
             f"<b>Usage:</b> <code>/setemoji &lt;key&gt; [emoji]</code>\n\n"
             f"Send with a custom emoji or paste its numeric ID.\n\n"
             f"<b>Payment & Navigation Keys:</b>\n"
-            f"<code>trc20, bep20, binance, cryptopay, usdt, card, back, bank</code>\n\n"
+            f"<code>trc20, bep20, binance, usdt, card, back, bank</code>\n\n"
             f"<b>Category Keys:</b>\n<code>{avail_keys}, shop, orders, lang, support, news, search, all_items</code>"
         )
 

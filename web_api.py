@@ -352,7 +352,7 @@ def register_web_routes(app, service):
     stored_suppliers = _supplier_configs(service)
     if stored_suppliers:
         _apply_supplier_configs(service, stored_suppliers)
-    for setting, variable in (("cryptobot_token", "CRYPTOBOT_TOKEN"), ("binance_pay_id", "BINANCE_PAY_ID"), ("crypto_usdt_trc20", "CRYPTO_USDT_TRC20"), ("crypto_usdt_bep20", "CRYPTO_USDT_BEP20"), ("support_url", "SUPPORT_URL"), ("channel_url", "CHANNEL_URL")):
+    for setting, variable in (("binance_pay_id", "BINANCE_PAY_ID"), ("crypto_usdt_trc20", "CRYPTO_USDT_TRC20"), ("crypto_usdt_bep20", "CRYPTO_USDT_BEP20"), ("support_url", "SUPPORT_URL"), ("channel_url", "CHANNEL_URL")):
         saved = _setting(service, setting, "")
         if saved:
             service[variable] = saved
@@ -461,7 +461,7 @@ def register_web_routes(app, service):
         if not available:
             return _json(409, success=False, message=f"Only {count} units are available.")
         method = str(body.get("gateway", "bachs")).strip().lower()
-        allowed = {"bachs", "bank", "cryptobot", "binance", "trc20", "bep20"}
+        allowed = {"bachs", "bank", "binance", "trc20", "bep20"}
         if method not in allowed:
             return _json(422, success=False, message="Unsupported payment method.")
         duration = str(body.get("duration", "")).strip()[:100]
@@ -493,14 +493,6 @@ def register_web_routes(app, service):
             checkout_url = payment["checkout_url"]
             service["db"].execute("UPDATE orders SET invoice_id=?,txid=?,expected_amount=? WHERE id=?",
                                   (payment["checkout_id"], payment["checkout_id"], f"{payment['amount']} {payment['currency']}", order_id))
-        elif method == "cryptobot":
-            try:
-                invoice = await service["create_cryptobot_invoice"](order_id, row["name"], round(total * 1.03))
-            except Exception:
-                service["db"].execute("DELETE FROM orders WHERE id=?", (order_id,))
-                return _json(503, success=False, message="CryptoBot checkout is unavailable.")
-            service["db"].execute("UPDATE orders SET invoice_id=? WHERE id=?", (str(invoice["invoice_id"]), order_id))
-            checkout_url = invoice.get("bot_invoice_url") or invoice.get("pay_url")
         elif method == "bank":
             accounts = service["get_bank_accounts"]()
             if not accounts:
@@ -591,8 +583,6 @@ def register_web_routes(app, service):
         verification = {}
         if method == "bachs" and row["invoice_id"]:
             paid, verification = await service["verify_bachs_transaction"](row["invoice_id"])
-        elif method == "cryptobot" and row["invoice_id"]:
-            paid = await service["check_cryptobot_invoice"](int(row["invoice_id"]))
         elif method in ("trc20", "bep20"):
             tx_hash = str(body.get("transactionHash", "")).strip()
             if not tx_hash:
@@ -1029,10 +1019,6 @@ def register_web_routes(app, service):
                         return _json(409, success=False, message="Verified payment is below the order total.")
                 except (TypeError, ValueError):
                     return _json(409, success=False, message="Verified Bachs amount is missing.")
-            elif row["payment_method"] == "cryptobot":
-                paid = await service["check_cryptobot_invoice"](int(row["invoice_id"] or 0))
-                if not paid:
-                    return _json(409, success=False, message="CryptoBot has not confirmed this payment.")
             elif row["payment_method"] in ("bank", "binance"):
                 if not row["txid"]:
                     return _json(409, success=False, message="Add and verify a payment reference before approval.")
@@ -1135,9 +1121,7 @@ def register_web_routes(app, service):
             values["exchangeRate"] = service["get_usd_ngn_rate"]()
             values["categories"] = [dict(x) for x in service["db"].execute("SELECT key,name,icon,sort_order FROM categories ORDER BY sort_order,rowid").fetchall()]
             values["featuredProducts"] = service["get_featured_product_ids"]()
-            values.update({"cryptoBotConfigured": bool(service.get("CRYPTOBOT_TOKEN")),
-                           "cryptoBotTokenMasked": "••••••••" if service.get("CRYPTOBOT_TOKEN") else "",
-                           "binancePayId": service.get("BINANCE_PAY_ID", ""),
+            values.update({"binancePayId": service.get("BINANCE_PAY_ID", ""),
                            "cryptoUsdtTrc20": service.get("CRYPTO_USDT_TRC20", ""),
                            "cryptoUsdtBep20": service.get("CRYPTO_USDT_BEP20", ""),
                            "supportUrl": service.get("SUPPORT_URL", ""),
@@ -1174,13 +1158,13 @@ def register_web_routes(app, service):
                     service["set_setting"]("broadcaster_enabled", "1" if value else "0")
                 elif key == "bachs_api_key" and isinstance(value, str) and len(value) <= 500:
                     service["set_setting"]("bachs_api_key", value.strip())
-                elif key in ("cryptobot_token", "binance_pay_id", "crypto_usdt_trc20", "crypto_usdt_bep20", "support_url", "channel_url") and isinstance(value, str):
+                elif key in ("binance_pay_id", "crypto_usdt_trc20", "crypto_usdt_bep20", "support_url", "channel_url") and isinstance(value, str):
                     target = key
                     cleaned = value.strip()[:1000]
                     if key in ("support_url", "channel_url") and cleaned and not cleaned.startswith(("https://", "http://", "tg://")):
                         return _json(422, success=False, message=f"{key} must be a valid link.")
                     service["set_setting"](target, cleaned)
-                    variables = {"cryptobot_token": "CRYPTOBOT_TOKEN", "binance_pay_id": "BINANCE_PAY_ID", "crypto_usdt_trc20": "CRYPTO_USDT_TRC20", "crypto_usdt_bep20": "CRYPTO_USDT_BEP20", "support_url": "SUPPORT_URL", "channel_url": "CHANNEL_URL"}
+                    variables = {"binance_pay_id": "BINANCE_PAY_ID", "crypto_usdt_trc20": "CRYPTO_USDT_TRC20", "crypto_usdt_bep20": "CRYPTO_USDT_BEP20", "support_url": "SUPPORT_URL", "channel_url": "CHANNEL_URL"}
                     service[variables[key]] = cleaned
                 elif key == "low_stock":
                     threshold = int(value)

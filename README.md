@@ -40,12 +40,7 @@ python bot.py
    - Or manage accounts directly via `/setbank`, `/addbank`, and `/delbank`.
    - Supports live USD/NGN exchange rates via `/setrate`.
 
-3. **@CryptoBot (Automated in-Telegram crypto checkout):**
-   - Obtain token from [@CryptoBot](https://t.me/CryptoBot) (`/pay` → Create App).
-   - Set `CRYPTOBOT_TOKEN=...` in `.env`.
-   - Instant verification and automatic order delivery.
-
-4. **Direct USDT (TRC20 / BEP20) & Binance Pay:**
+3. **Direct USDT (TRC20 / BEP20) & Binance Pay:**
    - Set `BINANCE_PAY_ID`, `CRYPTO_USDT_BEP20`, and `CRYPTO_USDT_TRC20`.
    - Direct wallet payment with TXID submission.
 

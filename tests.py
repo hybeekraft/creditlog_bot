@@ -958,18 +958,18 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
 
         flat_btns = [b for row in markup.inline_keyboard for b in row]
         labels = [b.text for b in flat_btns]
-        self.assertTrue(any("CryptoPay (Crypto Bot) +3%" in lbl for lbl in labels))
+        self.assertFalse(any("CryptoPay" in lbl or "Crypto Bot" in lbl for lbl in labels))
+        self.assertFalse(any(b.callback_data and "cryptobot" in b.callback_data.lower() for b in flat_btns))
         self.assertTrue(any("Binance Pay (USDT only)" in lbl for lbl in labels))
         self.assertTrue(any("USDT (TRC20 / BEP20)" in lbl for lbl in labels))
         self.assertTrue(any("Don't have crypto?" in lbl for lbl in labels))
         self.assertTrue(any("Back" in lbl for lbl in labels))
 
         # Check styles matching design
-        self.assertEqual(markup.inline_keyboard[0][0].style, "success")  # CryptoPay green
-        self.assertEqual(markup.inline_keyboard[1][0].style, "success")  # Binance Pay green
-        self.assertEqual(markup.inline_keyboard[2][0].style, "success")  # USDT green
-        self.assertEqual(markup.inline_keyboard[3][0].style, "primary")  # Don't have crypto blue
-        self.assertEqual(markup.inline_keyboard[4][0].style, "danger")   # Back red
+        self.assertEqual(markup.inline_keyboard[0][0].style, "success")  # Binance Pay green
+        self.assertEqual(markup.inline_keyboard[1][0].style, "success")  # USDT green
+        self.assertEqual(markup.inline_keyboard[2][0].style, "primary")  # Don't have crypto blue
+        self.assertEqual(markup.inline_keyboard[3][0].style, "danger")   # Back red
 
     async def test_admin_approve_and_reject_order(self):
         pid = bot.db.execute(
@@ -1896,29 +1896,6 @@ class TestForceSubscriptionGate(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(m.answer.called)
         self.assertIn("refunded or cancelled", m.answer.call_args[0][0])
 
-    async def test_check_cryptobot_payment_replay_blocked(self):
-        bot.db.execute("INSERT INTO orders(id, user_id, product_id, product_name, price, quantity, payment_method, status, invoice_id) VALUES(9901, 8881, 1, 'Test', 100, 1, 'cryptobot', 'completed', '998877')")
-        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status, invoice_id) VALUES(8882, 1, 'Test', 100, 1, 'cryptobot', 'pending', '998877')")
-        oid2 = cur.lastrowid
-
-        c = AsyncMock()
-        c.data = f"chk_cb:{oid2}:998877"
-        c.from_user.id = 8882
-        await bot.check_cryptobot_payment(c)
-        self.assertTrue(c.answer.called)
-        self.assertIn("already claimed", c.answer.call_args[0][0])
-
-    async def test_check_cryptobot_payment_null_invoice_id_blocked(self):
-        cur = bot.db.execute("INSERT INTO orders(user_id, product_id, product_name, price, quantity, payment_method, status) VALUES(8883, 1, 'Test', 100, 1, 'cryptobot', 'pending')")
-        oid = cur.lastrowid
-
-        c = AsyncMock()
-        c.data = f"chk_cb:{oid}:998877"
-        c.from_user.id = 8883
-        await bot.check_cryptobot_payment(c)
-        self.assertTrue(c.answer.called)
-        c.answer.assert_called_with("⚠️ Invoice ID does not match this order.", show_alert=True)
-
 
 class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
     def test_tron_base58_to_hex_variants(self):
@@ -1989,18 +1966,6 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bot.safe_int_env("TEST_INT_VALID", 1450), 2000)
             self.assertEqual(bot.safe_int_env("TEST_INT_BAD", 1450), 1450)
             self.assertEqual(bot.safe_int_env("NON_EXISTENT_KEY", 1450), 1450)
-
-    async def test_create_cryptobot_invoice_missing_token_raises(self):
-        with patch.object(bot, "CRYPTOBOT_TOKEN", ""):
-            with self.assertRaises(RuntimeError):
-                await bot.create_cryptobot_invoice(1, "Test", 100)
-
-    async def test_check_cryptobot_invoice_safe_error_handling(self):
-        with patch.object(bot, "CRYPTOBOT_TOKEN", "fake_token"):
-            with patch("aiohttp.ClientSession.get", side_effect=Exception("Connection refused")):
-                res = await bot.check_cryptobot_invoice(12345)
-                self.assertFalse(res)
-
 
     def test_early_helpers_defined(self):
         self.assertEqual(bot.esc("<script>"), "&lt;script&gt;")
@@ -2647,13 +2612,6 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         c.answer.assert_called_with("⚠️ Unauthorized access to this order.", show_alert=True)
         self.assertNotIn(attacker_id, bot.pending_inputs)
 
-        # 4. check_cryptobot_payment
-        c.reset_mock()
-        c.from_user.id = attacker_id
-        c.data = f"chk_cb:{oid}:12345"
-        await bot.check_cryptobot_payment(c)
-        c.answer.assert_called_with("⚠️ Unauthorized access to this order.", show_alert=True)
-
         # 5. check_bachs_payment_callback
         c.reset_mock()
         c.from_user.id = attacker_id
@@ -2691,8 +2649,6 @@ class TestOnchainVerification(unittest.IsolatedAsyncioTestCase):
         c.from_user.id = 111111
 
         for bad_cb, handler in [
-            ("chk_cb:abc", bot.check_cryptobot_payment),
-            ("chk_cb:1", bot.check_cryptobot_payment),
             ("chk_bachs:abc", bot.check_bachs_payment_callback),
             ("chk_bachs:1", bot.check_bachs_payment_callback),
             ("cancel_order:abc", bot.on_cancel_order),
@@ -3601,7 +3557,7 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
         bot.set_setting("bank_account_name", "")
         bot.set_setting("bachs_api_key", "")
         await bot.on_pay_fiat(c)
-        c.answer.assert_called_with("⚠️ Local / fiat payment methods are currently being set up. Please select CryptoPay, Binance Pay, or USDT.", show_alert=True)
+        c.answer.assert_called_with("⚠️ Local / fiat payment methods are currently being set up. Please select Binance Pay or USDT.", show_alert=True)
 
         # Case 2: configured -> opens submenu
         bot.set_setting("bank_name", "Kuda")
@@ -3616,24 +3572,16 @@ class TestDirectBankTransfer(unittest.IsolatedAsyncioTestCase):
             btns = [b for row in markup_arg.inline_keyboard for b in row]
             self.assertTrue(any("Direct Bank Transfer" in b.text for b in btns))
 
-    async def test_cryptobot_plus_3_percent_fee(self):
-        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('CB Fee Item', 'Desc', 1000, 1)").lastrowid
+    async def test_cryptobot_payment_method_rejected(self):
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active) VALUES('Removed CB Item', 'Desc', 1000, 1)").lastrowid
         c = AsyncMock()
         c.from_user.id = 998877
-        c.from_user.username = "cbuser"
         c.data = f"pay_opt:cryptobot:{pid}:1:shop"
-
-        mock_inv = {"invoice_id": 99991, "bot_invoice_url": "https://t.me/CryptoBot?start=inv99991"}
-        with patch.object(bot, "CRYPTOBOT_TOKEN", "test-live-token"), \
-             patch("bot.create_cryptobot_invoice", new=AsyncMock(return_value=mock_inv)) as mock_create_inv, \
-             patch("bot.edit", new=AsyncMock()) as mock_edit:
-            await bot.on_pay_option_selected(c)
-            # 1000 cents * 1.03 = 1030 cents
-            mock_create_inv.assert_called_once_with(mock_create_inv.call_args[0][0], "CB Fee Item x1", 1030)
-            mock_edit.assert_called_once()
-            text_arg = mock_edit.call_args[0][1]
-            self.assertIn("Processing Fee (+3%):</b> $0.30 USDT", text_arg)
-            self.assertIn("Total to pay:</b> <b>$10.30 USDT", text_arg)
+        before_count = bot.db.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        await bot.on_pay_option_selected(c)
+        after_count = bot.db.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        self.assertEqual(before_count, after_count)
+        c.answer.assert_called_with("⚠️ This payment method is no longer available. Please choose another payment method.", show_alert=True)
 
     async def test_admin_get_and_set_emoji(self):
         m = AsyncMock()
