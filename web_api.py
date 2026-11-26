@@ -18,7 +18,7 @@ import time
 from email.message import EmailMessage
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote as url_quote
 
 from aiohttp import web
 
@@ -482,12 +482,16 @@ def register_web_routes(app, service):
         checkout_url = None
         payment = {}
         if method == "bachs":
+            store_base = os.environ.get("WEB_STORE_URL", "").strip().rstrip("/") or "https://creditlog.com"
+            success_base = os.environ.get("WEB_SUCCESS_URL", "").strip() or f"{store_base}/success.html"
+            cancel_base = os.environ.get("WEB_CANCEL_URL", "").strip() or f"{store_base}/payment.html"
             ok, payment = await service["initialize_bachs_transaction"](
                 order_id, total, row["name"], email, None, quantity,
-                success_url_override=(os.environ.get("WEB_SUCCESS_URL", "https://creditlog.com/success.html") + ("&" if "?" in os.environ.get("WEB_SUCCESS_URL", "https://creditlog.com/success.html") else "?") + "orderId=" + quote(str(order_id))),
-                cancel_url_override=os.environ.get("WEB_CANCEL_URL", ""),
+                success_url_override=f"{success_base}{'&' if '?' in success_base else '?'}orderId={url_quote(str(order_id))}",
+                cancel_url_override=cancel_base,
             )
             if not ok:
+                log.warning("Bachs initialization failed for order %s: %s", order_id, payment.get("error"))
                 service["db"].execute("DELETE FROM orders WHERE id=?", (order_id,))
                 return _json(503, success=False, message="Bachs checkout is unavailable.")
             checkout_url = payment["checkout_url"]

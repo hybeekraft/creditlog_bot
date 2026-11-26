@@ -4522,6 +4522,49 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(c.answer.called)
         self.assertIn("Only 2 unit(s) available in stock", c.answer.call_args[0][0])
 
+    async def test_web_api_bachs_order_creation_returns_checkout_url(self):
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+        from web_api import register_web_routes
+
+        pid = bot.db.execute("INSERT INTO products(name, description, price, active, delivery_type) VALUES('Web Bachs Test', 'Desc', 1200, 1, 'manual')").lastrowid
+        bot.db.commit()
+        captured = {}
+
+        async def fake_init_bachs(order_id, total, name, email, uid, qty, success_url_override=None, cancel_url_override=None):
+            captured["success_url"] = success_url_override
+            captured["cancel_url"] = cancel_url_override
+            return True, {
+                "checkout_id": "cs_web_bachs_123",
+                "checkout_url": "https://checkout.bachs.io/c/cs_web_bachs_123",
+                "status": "open",
+                "amount": "12.00",
+                "currency": "USD",
+            }
+
+        app = web.Application()
+        with patch.dict(os.environ, {"CREDITLOG_BACKEND_SECRET": "test-web-secret", "WEB_SUCCESS_URL": "", "WEB_CANCEL_URL": "", "WEB_STORE_URL": "https://creditlog.com"}):
+            register_web_routes(app, vars(bot))
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                with patch.object(bot, "initialize_bachs_transaction", side_effect=fake_init_bachs):
+                    res = await client.post("/api/orders/create", headers={"X-CreditLog-Backend-Secret": "test-web-secret"}, json={
+                        "productId": pid, "quantity": 1, "customerName": "Web Buyer",
+                        "customerEmail": "webbuyer@example.com", "customerPhone": "+2348000000000",
+                        "gateway": "bachs", "currency": "USD",
+                    })
+                data = await res.json()
+                self.assertEqual(res.status, 201)
+                self.assertEqual(data["order"]["checkoutUrl"], "https://checkout.bachs.io/c/cs_web_bachs_123")
+                self.assertTrue(captured["success_url"].startswith("https://creditlog.com/success.html?orderId="))
+                self.assertEqual(captured["cancel_url"], "https://creditlog.com/payment.html")
+            finally:
+                await client.close()
+                bot.db.execute("DELETE FROM orders WHERE product_id=?", (pid,))
+                bot.db.execute("DELETE FROM products WHERE id=?", (pid,))
+                bot.db.commit()
+
 
 if __name__ == "__main__":
     unittest.main()
