@@ -4511,6 +4511,40 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(bot.deduplicate_products_in_db(bot.db), 0)
 
+    async def test_login_session_qr_with_2fa_and_phone_resend(self):
+        from telethon import errors as tl_errors
+        import broadcaster.login_session as ls
+
+        fake_sent = MagicMock()
+        fake_sent.phone_code_hash = "hash1"
+        fake_sent.type = MagicMock()
+        fake_sent.type.__class__.__name__ = "SentCodeTypeApp"
+        fake_sent.next_type = MagicMock()
+        fake_sent.next_type.__class__.__name__ = "SentCodeTypeSms"
+
+        fake_qr = AsyncMock()
+        fake_qr.url = "tg://login?token=test_token_123"
+        fake_qr.wait = AsyncMock(side_effect=tl_errors.SessionPasswordNeededError(request=None))
+
+        fake_client = AsyncMock()
+        fake_client.qr_login = AsyncMock(return_value=fake_qr)
+        fake_client.sign_in = AsyncMock(return_value=True)
+        fake_client.send_code_request = AsyncMock(return_value=fake_sent)
+
+        # Verify QR login completes 2FA and cleans up temporary PNG
+        with patch("builtins.print"), patch("broadcaster.login_session.render_qr_code", return_value=None) as mock_render:
+            ok = await ls.login_with_qr(fake_client, password_fn=lambda _: "secret_2fa")
+        self.assertTrue(ok)
+        mock_render.assert_called()
+        fake_client.sign_in.assert_awaited_with(password="secret_2fa")
+
+        # Verify phone login switches cleanly to QR when user enters 'q'
+        prompts = iter(["+2349035903917", "q"])
+        with patch("builtins.print"):
+            switched = await ls.login_with_phone(fake_client, input_fn=lambda _: next(prompts))
+        self.assertIs(switched, False)
+        self.assertIn("Telegram in-app message", ls.describe_sent_code_type(fake_sent.type))
+
     def test_detect_category_gemini_google_ai(self):
         self.assertEqual(bot.detect_category("Google AI Pro 12M CDK V2"), "Gemini")
         self.assertEqual(bot.detect_category("AntiGravity Argon/Hydro 3M Solo FAM"), "Gemini")
