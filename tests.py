@@ -4676,6 +4676,121 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(nxt.id, 76011)
         self.assertIn("4/19", crawl_retail_details._button_signature(nxt))
 
+    async def test_pagination_retries_stalled_page_and_marks_incomplete(self):
+        import crawl_retail_details
+        import broadcaster.broadcaster as bc
+
+        def _make_btn(text, data=None):
+            b = MagicMock()
+            b.text = text
+            b.data = data
+            return b
+
+        def _make_msg(mid, buttons):
+            m = AsyncMock()
+            m.id = mid
+            m.out = False
+            m.text = "✨ Choose a product"
+            m.message = m.text
+            m.raw_text = m.text
+            row = MagicMock()
+            row.buttons = [_make_btn(t, d) for t, d in buttons]
+            m.reply_markup = MagicMock()
+            m.reply_markup.rows = [row]
+            m.click = AsyncMock()
+            return m
+
+        import tempfile, json
+        page1 = _make_msg(76020, [("Prod 1 · $1.00 ✅", b"itm:1"), ("1/19", b"pg:1"), ("▶️", b"pg:2")])
+        fake_client = AsyncMock()
+        fake_client.is_connected = MagicMock(return_value=True)
+        fake_client.get_entity = AsyncMock(return_value=MagicMock())
+        fake_client.get_messages = AsyncMock(return_value=page1)
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tf:
+            json.dump({"prod1": {"description": "A" * 40, "price_usd": 1.0, "stock": 10}}, tf)
+            tmp_json = tf.name
+
+        try:
+            with patch("asyncio.sleep", new=AsyncMock()), \
+                 patch.object(crawl_retail_details, "DETAILS_JSON", crawl_retail_details.Path(tmp_json)), \
+                 patch.object(bc, "get_active_client", return_value=fake_client), \
+                 patch.object(crawl_retail_details, "open_catalog", new=AsyncMock(return_value=page1)), \
+                 patch.object(crawl_retail_details, "update_db_product", return_value=(1, False)), \
+                 patch.object(crawl_retail_details, "_persist_cache"), \
+                 patch.object(crawl_retail_details, "update_retail_catalog_py"):
+                res = await crawl_retail_details.run_retail_crawler(db_path=":memory:")
+        finally:
+            if os.path.exists(tmp_json):
+                os.remove(tmp_json)
+
+        self.assertEqual(res["pages_scanned"], 1)
+        self.assertTrue(res.get("incomplete"))
+
+    async def test_recover_to_catalog_page_handles_broadcast_and_new_message(self):
+        import crawl_retail_details
+
+        def _make_btn(text, data=None):
+            b = MagicMock()
+            b.text = text
+            b.data = data
+            return b
+
+        def _make_msg(mid, text, buttons):
+            m = AsyncMock()
+            m.id = mid
+            m.out = False
+            m.text = text
+            m.message = text
+            m.raw_text = text
+            row = MagicMock()
+            row.buttons = [_make_btn(t, d) for t, d in buttons]
+            m.reply_markup = MagicMock()
+            m.reply_markup.rows = [row]
+            m.click = AsyncMock()
+            return m
+
+        detail_msg = _make_msg(76030, "Item: Prod 1\nPrice: $1.00\nIn stock: 3", [("🔙 Back", b"back")])
+        broadcast = _make_msg(76031, "🔥 Restocked!\n\nMuse AI\n💵 Price: 0.40 USD", [("🛍 Open item", b"url")])
+        recovered_cat = _make_msg(76032, "✨ Choose a product", [("Prod 1 · $1.00 ✅", b"itm:1"), ("1/19", b"pg:1"), ("▶️", b"pg:2")])
+
+        fake_client = AsyncMock()
+        async def fake_get_messages(bot, limit=None, ids=None):
+            if ids is not None:
+                return detail_msg  # still shows detail screen in place because bot sent a new catalog msg
+            return [broadcast, recovered_cat]
+
+        fake_client.get_messages = AsyncMock(side_effect=fake_get_messages)
+        with patch("asyncio.sleep", new=AsyncMock()):
+            cat_msg = await crawl_retail_details._recover_to_catalog_page(fake_client, MagicMock(), 76030, detail_msg)
+
+        self.assertEqual(cat_msg.id, 76032)
+        self.assertTrue(crawl_retail_details._has_catalog_pagination(cat_msg))
+
+    async def test_admin_crawl_retail_updates_page_2_and_skips_when_locked(self):
+        m = AsyncMock()
+        m.from_user.id = next(iter(bot.ADMIN_IDS))
+        status_msg = AsyncMock()
+        m.answer = AsyncMock(return_value=status_msg)
+
+        async def fake_crawler(db_path=None, progress_cb=None, force_refresh_all=False):
+            await progress_cb(1, 19, "Scanning page 1/19")
+            await progress_cb(2, 19, "Scanning page 2/19")
+            return {"success": True, "total_scraped": 291, "new_items": 0, "updated_items": 15, "pages_scanned": 2, "total_pages": 19, "incomplete": True}
+
+        cmd = MagicMock()
+        cmd.args = ""
+        with patch("crawl_retail_details.run_retail_crawler", side_effect=fake_crawler), \
+             patch.object(bot, "deduplicate_products_in_db"), \
+             patch.object(bot, "resequence_product_ids"), \
+             patch.object(bot, "trigger_catalog_refresh"):
+            await bot.admin_crawl_retail(m, cmd)
+
+        edits = [call.args[0] for call in status_msg.edit_text.await_args_list]
+        self.assertTrue(any("Page 2/19" in txt for txt in edits))
+        self.assertIn("2/19", edits[-1])
+        self.assertIn("Stopped Early", edits[-1])
+
     def test_detect_category_gemini_google_ai(self):
         self.assertEqual(bot.detect_category("Google AI Pro 12M CDK V2"), "Gemini")
         self.assertEqual(bot.detect_category("AntiGravity Argon/Hydro 3M Solo FAM"), "Gemini")

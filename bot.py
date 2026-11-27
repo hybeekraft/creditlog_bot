@@ -5431,12 +5431,11 @@ async def admin_crawl_retail(m: Message, command: CommandObject = None):
 
     async def progress_update(page: int, total: int, text: str):
         try:
-            if page == 1 or page % 4 == 0 or page == total:
-                await status_msg.edit_text(
-                    f"⏳ <b>Retail Catalog Crawler Running...</b>\n\n"
-                    f"• <b>Progress:</b> Page {page}/{total}\n"
-                    f"• <i>{esc(text)}</i>"
-                )
+            await status_msg.edit_text(
+                f"⏳ <b>Retail Catalog Crawler Running...</b>\n\n"
+                f"• <b>Progress:</b> Page {page}/{total}\n"
+                f"• <i>{esc(text)}</i>"
+            )
         except Exception:
             pass
 
@@ -5449,14 +5448,26 @@ async def admin_crawl_retail(m: Message, command: CommandObject = None):
                 deduplicate_products_in_db(db)
                 resequence_product_ids(db)
                 trigger_catalog_refresh()
-                await status_msg.edit_text(
-                    f"✅ <b>Retail Catalog Crawl Complete!</b>\n\n"
-                    f"• <b>Pages Scanned:</b> {res.get('pages_scanned', 19)}\n"
-                    f"• <b>Total Products in Catalog:</b> {res.get('total_scraped', 0)}\n"
-                    f"• <b>New Products Added:</b> {res.get('new_items', 0)}\n"
-                    f"• <b>Products Updated:</b> {res.get('updated_items', 0)}\n"
-                    f"• <b>Status:</b> All rich descriptions and stock counts are live!"
-                )
+                pages_scanned = res.get("pages_scanned", 19)
+                total_pages = res.get("total_pages", pages_scanned)
+                if res.get("incomplete"):
+                    await status_msg.edit_text(
+                        f"⚠️ <b>Retail Catalog Crawl Stopped Early</b>\n\n"
+                        f"• <b>Pages Scanned:</b> {pages_scanned}/{total_pages}\n"
+                        f"• <b>Total Products in Catalog:</b> {res.get('total_scraped', 0)}\n"
+                        f"• <b>New Products Added:</b> {res.get('new_items', 0)}\n"
+                        f"• <b>Products Updated:</b> {res.get('updated_items', 0)}\n"
+                        f"• <b>Status:</b> Partial sync saved — please retry /crawl_retail."
+                    )
+                else:
+                    await status_msg.edit_text(
+                        f"✅ <b>Retail Catalog Crawl Complete!</b>\n\n"
+                        f"• <b>Pages Scanned:</b> {pages_scanned}\n"
+                        f"• <b>Total Products in Catalog:</b> {res.get('total_scraped', 0)}\n"
+                        f"• <b>New Products Added:</b> {res.get('new_items', 0)}\n"
+                        f"• <b>Products Updated:</b> {res.get('updated_items', 0)}\n"
+                        f"• <b>Status:</b> All rich descriptions and stock counts are live!"
+                    )
             else:
                 await status_msg.edit_text(f"❌ <b>Crawl failed:</b> {esc(res.get('error', 'Unknown error'))}")
         except Exception as e:
@@ -5546,32 +5557,44 @@ async def periodic_retail_crawler_task(aiogram_bot: Bot):
     while True:
         try:
             if get_setting("auto_crawler_enabled", "1") not in ("0", "false", "paused", "off"):
-                log.info("Starting scheduled retail catalog crawl...")
-                from crawl_retail_details import run_retail_crawler
-                res = await run_retail_crawler(db_path=DB_PATH)
-                if res.get("success"):
-                    deduplicate_products_in_db(db)
-                    resequence_product_ids(db)
-                    trigger_catalog_refresh()
-                    new_items = res.get("new_items", 0)
-                    log.info(
-                        "Scheduled retail crawl finished: %d total, %d new, %d updated",
-                        res.get("total_scraped", 0),
-                        new_items,
-                        res.get("updated_items", 0)
-                    )
-                    if new_items > 0:
-                        for aid in ADMIN_IDS:
-                            try:
-                                await aiogram_bot.send_message(
-                                    aid,
-                                    f"📢 <b>Auto-Crawler Alert:</b> Found <b>{new_items} new retail SKU(s)</b> from supplier!\n"
-                                    f"Total catalog: <b>{res.get('total_scraped', 0)} products</b>."
-                                )
-                            except Exception:
-                                pass
+                if _crawler_lock.locked():
+                    log.info("Skipping scheduled retail crawl; another crawl is already running.")
                 else:
-                    log.warning("Scheduled retail crawl returned failure: %s", res.get("error"))
+                    async with _crawler_lock:
+                        log.info("Starting scheduled retail catalog crawl...")
+                        from crawl_retail_details import run_retail_crawler
+                        res = await run_retail_crawler(db_path=DB_PATH)
+                        if res.get("success"):
+                            deduplicate_products_in_db(db)
+                            resequence_product_ids(db)
+                            trigger_catalog_refresh()
+                            new_items = res.get("new_items", 0)
+                            if res.get("incomplete"):
+                                log.warning(
+                                    "Scheduled retail crawl stopped early at page %d/%d (%d updated)",
+                                    res.get("pages_scanned", 0),
+                                    res.get("total_pages", 0),
+                                    res.get("updated_items", 0),
+                                )
+                            else:
+                                log.info(
+                                    "Scheduled retail crawl finished: %d total, %d new, %d updated",
+                                    res.get("total_scraped", 0),
+                                    new_items,
+                                    res.get("updated_items", 0)
+                                )
+                            if new_items > 0:
+                                for aid in ADMIN_IDS:
+                                    try:
+                                        await aiogram_bot.send_message(
+                                            aid,
+                                            f"📢 <b>Auto-Crawler Alert:</b> Found <b>{new_items} new retail SKU(s)</b> from supplier!\n"
+                                            f"Total catalog: <b>{res.get('total_scraped', 0)} products</b>."
+                                        )
+                                    except Exception:
+                                        pass
+                        else:
+                            log.warning("Scheduled retail crawl returned failure: %s", res.get("error"))
         except asyncio.CancelledError:
             break
         except Exception as e:

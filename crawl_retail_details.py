@@ -353,12 +353,17 @@ async def _click_inline_button(msg, button):
     return await msg.click(text=button.text)
 
 
-def _has_catalog_pagination(msg) -> bool:
+def _extract_page_num(msg) -> Optional[int]:
     for r in getattr(getattr(msg, "reply_markup", None), "rows", []) or []:
         for b in r.buttons:
-            if re.match(r"^\d+/\d+$", (getattr(b, "text", "") or "").strip()):
-                return True
-    return False
+            m = re.match(r"^(\d+)/\d+$", (getattr(b, "text", "") or "").strip())
+            if m:
+                return int(m.group(1))
+    return None
+
+
+def _has_catalog_pagination(msg) -> bool:
+    return _extract_page_num(msg) is not None
 
 
 def _is_broadcast_alert_msg(msg) -> bool:
@@ -430,17 +435,32 @@ async def _wait_for_menu_transition(
 
 
 async def _recover_to_catalog_page(client, bot, cat_id: int, msg):
-    """Returns from an accidental detail screen back to the catalog list if needed."""
+    """Returns from an accidental detail screen back to the paginated catalog list."""
     if msg and _has_catalog_pagination(msg):
         return msg
-    back_btn = _find_button(msg, "back") if msg else None
+    cur = msg or await client.get_messages(bot, ids=cat_id)
+    if cur and _has_catalog_pagination(cur):
+        return cur
+    back_btn = _find_button(cur, "back") if cur else None
     if back_btn:
         try:
-            before_sig = _button_signature(msg)
-            await _click_inline_button(msg, back_btn)
-            return await _wait_for_menu_transition(client, bot, msg, before_sig, timeout=6.0, in_place_only=True)
+            before_sig = _button_signature(cur)
+            await _click_inline_button(cur, back_btn)
+            res = await _wait_for_menu_transition(client, bot, cur, before_sig, timeout=8.0, in_place_only=True)
+            if res and _has_catalog_pagination(res):
+                return res
         except Exception:
             pass
+    # Fallback to newest incoming non-broadcast paginated message if Back opened a new message
+    recent = await client.get_messages(bot, limit=5)
+    for latest in recent or []:
+        if (
+            not getattr(latest, "out", False)
+            and getattr(latest, "reply_markup", None)
+            and not _is_broadcast_alert_msg(latest)
+            and _has_catalog_pagination(latest)
+        ):
+            return latest
     return await client.get_messages(bot, ids=cat_id)
 
 
@@ -452,8 +472,11 @@ async def open_catalog(client, bot):
 
     start_msg = await _wait_for_incoming_reply(client, bot, after_id=sent_id, timeout=10.0)
     if not start_msg:
-        recent = await client.get_messages(bot, limit=1)
-        start_msg = recent[0] if recent else None
+        recent = await client.get_messages(bot, limit=5)
+        for m in recent or []:
+            if not getattr(m, "out", False) and getattr(m, "reply_markup", None) and not _is_broadcast_alert_msg(m):
+                start_msg = m
+                break
     if not start_msg or not getattr(start_msg, "reply_markup", None):
         raise RuntimeError("No interactive menu received from supplier bot after /start")
 
@@ -559,6 +582,7 @@ async def run_retail_crawler(
     current_page = 1
     total_pages = 19
     seen_norms = set()
+    crawl_incomplete = False
 
     try:
         try:
@@ -695,12 +719,14 @@ async def run_retail_crawler(
                     try:
                         if attempt > 0:
                             cat_msg = await _recover_to_catalog_page(client, bot, cat_id, cat_msg)
+                        before_detail_sig = _button_signature(cat_msg)
                         if b_data:
                             await cat_msg.click(data=b_data)
                         else:
                             await cat_msg.click(text=b_text)
-                        await asyncio.sleep(2.0)
-                        detail_msg = await client.get_messages(bot, ids=cat_id)
+                        detail_msg = await _wait_for_menu_transition(
+                            client, bot, cat_msg, before_detail_sig, timeout=6.0, in_place_only=True
+                        )
                         detail_text = getattr(detail_msg, "text", "") or ""
                         if not detail_msg or is_menu_screen_text(detail_text):
                             logger.warning("Got non-product screen for [%s] on attempt %d", btn_name, attempt + 1)
@@ -737,9 +763,14 @@ async def run_retail_crawler(
 
                         back_btn = _find_button(detail_msg, "back")
                         if back_btn:
+                            before_back_sig = _button_signature(detail_msg)
                             await _click_inline_button(detail_msg, back_btn)
-                            await asyncio.sleep(2.0)
-                        cat_msg = await _recover_to_catalog_page(client, bot, cat_id, await client.get_messages(bot, ids=cat_id))
+                            returned_msg = await _wait_for_menu_transition(
+                                client, bot, detail_msg, before_back_sig, timeout=6.0, in_place_only=True
+                            )
+                        else:
+                            returned_msg = detail_msg
+                        cat_msg = await _recover_to_catalog_page(client, bot, cat_id, returned_msg)
                         if cat_msg:
                             cat_id = cat_msg.id
                         scraped_ok = True
@@ -764,25 +795,53 @@ async def run_retail_crawler(
 
             # Advance to next page
             cat_msg = await client.get_messages(bot, ids=cat_id)
-            next_btn = _find_button_any(cat_msg, ("▶️", "➡️")) if cat_msg else None
+            if not cat_msg or not _has_catalog_pagination(cat_msg):
+                cat_msg = await _recover_to_catalog_page(client, bot, cat_id, cat_msg)
+            if cat_msg:
+                cat_id = cat_msg.id
+            prev_page_num = _extract_page_num(cat_msg) or current_page
+            next_btn = _find_button_any(cat_msg, ("▶️", "➡️", "▶", "➡")) if cat_msg else None
 
             if current_page < total_pages and next_btn:
-                try:
-                    before_sig = _button_signature(cat_msg)
-                    await _click_inline_button(cat_msg, next_btn)
-                    # Pagination edits the catalog message in place; ignore concurrent broadcast alerts
-                    cat_msg = await _wait_for_menu_transition(
-                        client, bot, cat_msg, before_sig, timeout=6.0, in_place_only=True
-                    )
-                    cat_id = cat_msg.id
-                    current_page += 1
-                except Exception as e:
-                    logger.error("Failed to advance to page %d: %s", current_page + 1, e)
+                advanced = False
+                for nav_attempt in range(2):
+                    try:
+                        before_sig = _button_signature(cat_msg)
+                        await _click_inline_button(cat_msg, next_btn)
+                        # Pagination edits the catalog message in place; ignore concurrent broadcast alerts
+                        next_msg = await _wait_for_menu_transition(
+                            client, bot, cat_msg, before_sig, timeout=8.0, in_place_only=True
+                        )
+                        next_page_num = _extract_page_num(next_msg)
+                        if next_msg and _button_signature(next_msg) != before_sig and (
+                            next_page_num is None or next_page_num > prev_page_num
+                        ):
+                            cat_msg = next_msg
+                            cat_id = cat_msg.id
+                            current_page += 1
+                            advanced = True
+                            break
+                        logger.warning(
+                            "Pagination stayed on page %s (attempt %d/2); retrying...",
+                            prev_page_num, nav_attempt + 1,
+                        )
+                        next_btn = _find_button_any(cat_msg, ("▶️", "➡️", "▶", "➡")) or next_btn
+                    except errors.FloodWaitError as fe:
+                        logger.warning("Telegram FloodWait on pagination: sleeping %ds...", fe.seconds + 2)
+                        await asyncio.sleep(fe.seconds + 2)
+                    except Exception as e:
+                        logger.error("Failed to advance to page %d (attempt %d): %s", current_page + 1, nav_attempt + 1, e)
+                if not advanced:
+                    logger.error("Pagination stalled on page %d/%d; stopping crawl.", current_page, total_pages)
+                    crawl_incomplete = True
                     break
             else:
+                if current_page < total_pages:
+                    logger.warning("Missing Next button on page %d/%d; stopping crawl.", current_page, total_pages)
+                    crawl_incomplete = True
                 break
 
-        if current_page >= total_pages:
+        if not crawl_incomplete and current_page >= total_pages:
             _deactivate_removed_retail_skus(seen_norms, db_path=db_path)
 
         try:
@@ -797,6 +856,8 @@ async def run_retail_crawler(
             "new_items": new_count,
             "updated_items": updated_count,
             "pages_scanned": current_page,
+            "total_pages": total_pages,
+            "incomplete": crawl_incomplete,
             "error": None,
         }
     except Exception as e:
@@ -818,6 +879,8 @@ async def run_retail_crawler(
             "new_items": new_count,
             "updated_items": updated_count,
             "pages_scanned": current_page,
+            "total_pages": total_pages,
+            "incomplete": True,
         }
     finally:
         if own_client and client:
