@@ -361,37 +361,70 @@ def _has_catalog_pagination(msg) -> bool:
     return False
 
 
+def _is_broadcast_alert_msg(msg) -> bool:
+    """Returns True if message looks like an unsolicited supplier restock broadcast alert."""
+    raw = getattr(msg, "raw_text", None) or getattr(msg, "message", None) or getattr(msg, "text", None)
+    txt = raw.lower() if isinstance(raw, str) else ""
+    if any(marker in txt for marker in ("restocked", "limited stock", "instant delivery after payment", "price:")):
+        if "choose a product" not in txt and "choose a category" not in txt and not _has_catalog_pagination(msg):
+            return True
+    return False
+
+
 async def _wait_for_incoming_reply(client, bot, after_id: int, timeout: float = 10.0):
-    """Polls until the bot replies with a message newer than after_id having inline buttons."""
+    """Polls until the bot replies with an interactive menu newer than after_id (ignoring restock alerts)."""
     steps = max(1, int(timeout / 0.5))
     for _ in range(steps):
-        recent = await client.get_messages(bot, limit=1)
-        if recent:
-            msg = recent[0]
-            if not getattr(msg, "out", False) and msg.id > after_id and getattr(msg, "reply_markup", None):
+        recent = await client.get_messages(bot, limit=5)
+        for msg in recent or []:
+            if (
+                not getattr(msg, "out", False)
+                and msg.id > after_id
+                and getattr(msg, "reply_markup", None)
+                and not _is_broadcast_alert_msg(msg)
+            ):
                 return msg
         await asyncio.sleep(0.5)
     return None
 
 
-async def _wait_for_menu_transition(client, bot, cur_msg, before_sig: tuple, timeout: float = 10.0):
-    """Waits for either an in-place edit on cur_msg or a newer bot message after a button click."""
+async def _wait_for_menu_transition(
+    client,
+    bot,
+    cur_msg,
+    before_sig: tuple,
+    timeout: float = 10.0,
+    in_place_only: bool = False,
+):
+    """Waits for either an in-place edit on cur_msg or (when allowed) a newer bot menu message."""
     steps = max(1, int(timeout / 0.5))
     cur_id = cur_msg.id
     for _ in range(steps):
         await asyncio.sleep(0.5)
-        recent = await client.get_messages(bot, limit=1)
-        if recent:
-            latest = recent[0]
-            if not getattr(latest, "out", False) and latest.id > cur_id and getattr(latest, "reply_markup", None):
-                return latest
         edited = await client.get_messages(bot, ids=cur_id)
         if edited and getattr(edited, "reply_markup", None) and _button_signature(edited) != before_sig:
             return edited
+        if not in_place_only:
+            recent = await client.get_messages(bot, limit=3)
+            for latest in recent or []:
+                if (
+                    not getattr(latest, "out", False)
+                    and latest.id > cur_id
+                    and getattr(latest, "reply_markup", None)
+                    and not _is_broadcast_alert_msg(latest)
+                ):
+                    return latest
     # Fallback to latest known markup state if signature stayed identical
-    recent = await client.get_messages(bot, limit=1)
-    if recent and not getattr(recent[0], "out", False) and recent[0].id > cur_id and getattr(recent[0], "reply_markup", None):
-        return recent[0]
+    if not in_place_only:
+        recent = await client.get_messages(bot, limit=3)
+        for latest in recent or []:
+            if (
+                not getattr(latest, "out", False)
+                and latest.id > cur_id
+                and getattr(latest, "reply_markup", None)
+                and not _is_broadcast_alert_msg(latest)
+            ):
+                return latest
     edited = await client.get_messages(bot, ids=cur_id)
     return edited if (edited and getattr(edited, "reply_markup", None)) else cur_msg
 
@@ -405,7 +438,7 @@ async def _recover_to_catalog_page(client, bot, cat_id: int, msg):
         try:
             before_sig = _button_signature(msg)
             await _click_inline_button(msg, back_btn)
-            return await _wait_for_menu_transition(client, bot, msg, before_sig, timeout=6.0)
+            return await _wait_for_menu_transition(client, bot, msg, before_sig, timeout=6.0, in_place_only=True)
         except Exception:
             pass
     return await client.get_messages(bot, ids=cat_id)
@@ -737,7 +770,10 @@ async def run_retail_crawler(
                 try:
                     before_sig = _button_signature(cat_msg)
                     await _click_inline_button(cat_msg, next_btn)
-                    cat_msg = await _wait_for_menu_transition(client, bot, cat_msg, before_sig, timeout=6.0)
+                    # Pagination edits the catalog message in place; ignore concurrent broadcast alerts
+                    cat_msg = await _wait_for_menu_transition(
+                        client, bot, cat_msg, before_sig, timeout=6.0, in_place_only=True
+                    )
                     cat_id = cat_msg.id
                     current_page += 1
                 except Exception as e:

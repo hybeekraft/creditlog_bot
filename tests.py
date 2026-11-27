@@ -4566,6 +4566,9 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
             m = AsyncMock()
             m.id = mid
             m.out = out
+            m.text = ""
+            m.message = ""
+            m.raw_text = ""
             row = MagicMock()
             row.buttons = [_make_btn(t, d) for t, d in texts_and_data]
             m.reply_markup = MagicMock()
@@ -4634,6 +4637,44 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(res["success"])
         self.assertIn("catalog", res["error"].lower())
+
+    async def test_pagination_ignores_concurrent_restock_broadcast(self):
+        import crawl_retail_details
+
+        def _make_btn(text, data=None):
+            b = MagicMock()
+            b.text = text
+            b.data = data
+            return b
+
+        def _make_msg(mid, text, buttons):
+            m = AsyncMock()
+            m.id = mid
+            m.out = False
+            m.text = text
+            row = MagicMock()
+            row.buttons = [_make_btn(t, d) for t, d in buttons]
+            m.reply_markup = MagicMock()
+            m.reply_markup.rows = [row]
+            return m
+
+        page3 = _make_msg(76011, "✨ Choose a product", [("Prod 3 · $1.00 ✅", b"itm:3"), ("3/19", b"pg:3"), ("▶️", b"pg:4")])
+        page4 = _make_msg(76011, "✨ Choose a product", [("Prod 4 · $2.00 ✅", b"itm:4"), ("4/19", b"pg:4"), ("▶️", b"pg:5")])
+        broadcast = _make_msg(76012, "🔥 Restocked!\n\nMuse AI\n💵 Price: 0.40 USD", [("🛍 Open item", b"url")])
+
+        fake_client = AsyncMock()
+        async def fake_get_messages(bot, limit=None, ids=None):
+            if ids == 76011:
+                return page4
+            return [broadcast]
+        fake_client.get_messages = AsyncMock(side_effect=fake_get_messages)
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            nxt = await crawl_retail_details._wait_for_menu_transition(
+                fake_client, MagicMock(), page3, crawl_retail_details._button_signature(page3), in_place_only=True
+            )
+        self.assertEqual(nxt.id, 76011)
+        self.assertIn("4/19", crawl_retail_details._button_signature(nxt))
 
     def test_detect_category_gemini_google_ai(self):
         self.assertEqual(bot.detect_category("Google AI Pro 12M CDK V2"), "Gemini")
