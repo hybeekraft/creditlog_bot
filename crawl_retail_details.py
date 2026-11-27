@@ -298,6 +298,23 @@ def update_db_product(name: str, desc: str, stock: int, cost_usd: Optional[float
             conn.close()
 
 
+def is_product_button(clean_btn: str, data: Optional[bytes]) -> bool:
+    """Returns True only for actual product buttons, rejecting menu/balance buttons."""
+    if data and data.startswith(b"itm:"):
+        return True
+    low = clean_btn.lower()
+    if any(skip in low for skip in ("balance", "deposit", "top up", "top-up", "wallet", "profile", "contact us")):
+        return False
+    return bool(
+        "·" in clean_btn
+        and (
+            "$" in clean_btn
+            or re.search(r"·\s*\$?\s*\d", clean_btn)
+            or any(em in clean_btn for em in ("✅", "⛔", "🟢", "🔴", "🚫", "❌"))
+        )
+    )
+
+
 def _find_button(msg, label: str):
     """Finds an inline button matching label (exact case-insensitive first, then substring)."""
     target = label.strip().lower()
@@ -311,6 +328,20 @@ def _find_button(msg, label: str):
             if partial is None and target in txt:
                 partial = b
     return partial
+
+
+def _find_button_any(msg, labels):
+    """Finds the first inline button matching any candidate label in priority order."""
+    for lbl in labels:
+        btn = _find_button(msg, lbl)
+        if btn is not None:
+            return btn
+    return None
+
+
+def _button_signature(msg) -> tuple:
+    rows = getattr(getattr(msg, "reply_markup", None), "rows", []) or []
+    return tuple((getattr(b, "text", "") or "").strip() for r in rows for b in r.buttons)
 
 
 async def _click_inline_button(msg, button):
@@ -330,6 +361,41 @@ def _has_catalog_pagination(msg) -> bool:
     return False
 
 
+async def _wait_for_incoming_reply(client, bot, after_id: int, timeout: float = 10.0):
+    """Polls until the bot replies with a message newer than after_id having inline buttons."""
+    steps = max(1, int(timeout / 0.5))
+    for _ in range(steps):
+        recent = await client.get_messages(bot, limit=1)
+        if recent:
+            msg = recent[0]
+            if not getattr(msg, "out", False) and msg.id > after_id and getattr(msg, "reply_markup", None):
+                return msg
+        await asyncio.sleep(0.5)
+    return None
+
+
+async def _wait_for_menu_transition(client, bot, cur_msg, before_sig: tuple, timeout: float = 10.0):
+    """Waits for either an in-place edit on cur_msg or a newer bot message after a button click."""
+    steps = max(1, int(timeout / 0.5))
+    cur_id = cur_msg.id
+    for _ in range(steps):
+        await asyncio.sleep(0.5)
+        recent = await client.get_messages(bot, limit=1)
+        if recent:
+            latest = recent[0]
+            if not getattr(latest, "out", False) and latest.id > cur_id and getattr(latest, "reply_markup", None):
+                return latest
+        edited = await client.get_messages(bot, ids=cur_id)
+        if edited and getattr(edited, "reply_markup", None) and _button_signature(edited) != before_sig:
+            return edited
+    # Fallback to latest known markup state if signature stayed identical
+    recent = await client.get_messages(bot, limit=1)
+    if recent and not getattr(recent[0], "out", False) and recent[0].id > cur_id and getattr(recent[0], "reply_markup", None):
+        return recent[0]
+    edited = await client.get_messages(bot, ids=cur_id)
+    return edited if (edited and getattr(edited, "reply_markup", None)) else cur_msg
+
+
 async def _recover_to_catalog_page(client, bot, cat_id: int, msg):
     """Returns from an accidental detail screen back to the catalog list if needed."""
     if msg and _has_catalog_pagination(msg):
@@ -337,52 +403,47 @@ async def _recover_to_catalog_page(client, bot, cat_id: int, msg):
     back_btn = _find_button(msg, "back") if msg else None
     if back_btn:
         try:
+            before_sig = _button_signature(msg)
             await _click_inline_button(msg, back_btn)
-            await asyncio.sleep(2.0)
+            return await _wait_for_menu_transition(client, bot, msg, before_sig, timeout=6.0)
         except Exception:
             pass
     return await client.get_messages(bot, ids=cat_id)
 
 
 async def open_catalog(client, bot):
-    """Sends /start -> Shop -> All items to get the fresh Catalog message."""
+    """Sends /start -> Shop -> All items to open the paginated Catalog message."""
     logger.info("Opening fresh catalog message from /start...")
-    await client.send_message(bot, "/start")
-    await asyncio.sleep(2.5)
+    sent_msg = await client.send_message(bot, "/start")
+    sent_id = getattr(sent_msg, "id", 0) or 0
 
-    msgs = await client.get_messages(bot, limit=1)
-    if not msgs:
-        raise RuntimeError("No response from supplier bot after /start")
-    start_msg = msgs[0]
-    cat_id = start_msg.id
+    start_msg = await _wait_for_incoming_reply(client, bot, after_id=sent_id, timeout=10.0)
+    if not start_msg:
+        recent = await client.get_messages(bot, limit=1)
+        start_msg = recent[0] if recent else None
+    if not start_msg or not getattr(start_msg, "reply_markup", None):
+        raise RuntimeError("No interactive menu received from supplier bot after /start")
 
-    shop_btn = _find_button(start_msg, "shop")
+    if _has_catalog_pagination(start_msg):
+        return start_msg
+
+    cur_msg = start_msg
+    shop_btn = _find_button_any(cur_msg, ("shop", "catalog", "store", "products"))
     if shop_btn:
-        await _click_inline_button(start_msg, shop_btn)
-    else:
-        await start_msg.click(text="Shop")
-    await asyncio.sleep(2.5)
+        before_sig = _button_signature(cur_msg)
+        await _click_inline_button(cur_msg, shop_btn)
+        cur_msg = await _wait_for_menu_transition(client, bot, cur_msg, before_sig, timeout=10.0)
 
-    shop_msg = await client.get_messages(bot, ids=cat_id)
-    if not (shop_msg and shop_msg.reply_markup):
-        recent = await client.get_messages(bot, limit=1)
-        if not recent:
-            raise RuntimeError("No shop menu returned from supplier bot")
-        shop_msg = recent[0]
-        cat_id = shop_msg.id
+    if _has_catalog_pagination(cur_msg):
+        return cur_msg
 
-    all_btn = _find_button(shop_msg, "all items")
+    all_btn = _find_button_any(cur_msg, ("all items", "all products", "full catalog", "open catalog", "view all"))
     if all_btn:
-        await _click_inline_button(shop_msg, all_btn)
-    else:
-        await shop_msg.click(text="All items")
-    await asyncio.sleep(2.5)
+        before_sig = _button_signature(cur_msg)
+        await _click_inline_button(cur_msg, all_btn)
+        cur_msg = await _wait_for_menu_transition(client, bot, cur_msg, before_sig, timeout=10.0)
 
-    cat_msg = await client.get_messages(bot, ids=cat_id)
-    if not (cat_msg and cat_msg.reply_markup):
-        recent = await client.get_messages(bot, limit=1)
-        cat_msg = recent[0] if recent else None
-    return cat_msg
+    return cur_msg
 
 
 def _persist_cache(details_cache: dict, primary_path: Path):
@@ -523,8 +584,10 @@ async def run_retail_crawler(
                 logger.warning("Catalog message missing reply_markup on page %d; stopping.", current_page)
                 break
 
+            saw_pagination = False
             page_indicator = f"{current_page}/{total_pages}"
             prod_buttons = []
+            all_btn_labels = []
             next_btn = None
 
             for r in getattr(cat_msg.reply_markup, "rows", []):
@@ -533,16 +596,23 @@ async def run_retail_crawler(
                     if data is None and hasattr(b, "type"):
                         data = getattr(b.type, "data", None)
                     clean_btn = b.text.strip()
+                    all_btn_labels.append(clean_btn)
                     if re.match(r"^\d+/\d+$", clean_btn):
+                        saw_pagination = True
                         page_indicator = clean_btn
                         try:
                             total_pages = int(page_indicator.split("/")[1])
                         except (ValueError, IndexError):
                             pass
-                    elif "▶️" in clean_btn:
+                    elif "▶️" in clean_btn or "➡️" in clean_btn:
                         next_btn = b
-                    elif "·" in clean_btn or "$" in clean_btn or (data and data.startswith(b"itm:")):
+                    elif is_product_button(clean_btn, data):
                         prod_buttons.append((b.text, data))
+
+            if current_page == 1 and (not prod_buttons or (not saw_pagination and len(prod_buttons) < 2)):
+                raise RuntimeError(
+                    f"Did not reach supplier catalog listing (visible buttons: {', '.join(all_btn_labels[:8])})"
+                )
 
             logger.info("=== Scanning Page [%s] | Products: %d ===", page_indicator, len(prod_buttons))
             if progress_cb:
@@ -637,6 +707,8 @@ async def run_retail_crawler(
                             await _click_inline_button(detail_msg, back_btn)
                             await asyncio.sleep(2.0)
                         cat_msg = await _recover_to_catalog_page(client, bot, cat_id, await client.get_messages(bot, ids=cat_id))
+                        if cat_msg:
+                            cat_id = cat_msg.id
                         scraped_ok = True
                         break
                     except errors.FloodWaitError as fe:
@@ -646,6 +718,8 @@ async def run_retail_crawler(
                         logger.error("Error scraping [%s] (attempt %d): %s", btn_name, attempt + 1, ex)
                         await asyncio.sleep(2.5)
                         cat_msg = await _recover_to_catalog_page(client, bot, cat_id, await client.get_messages(bot, ids=cat_id))
+                        if cat_msg:
+                            cat_id = cat_msg.id
 
                 if not scraped_ok and live_price is not None and live_price > 0:
                     fallback_desc = cached_desc if (cached_desc and not is_menu_screen_text(cached_desc)) else f"{btn_name}\n\nVerified digital product delivery."
@@ -657,12 +731,14 @@ async def run_retail_crawler(
 
             # Advance to next page
             cat_msg = await client.get_messages(bot, ids=cat_id)
-            next_btn = _find_button(cat_msg, "▶️") if cat_msg else None
+            next_btn = _find_button_any(cat_msg, ("▶️", "➡️")) if cat_msg else None
 
             if current_page < total_pages and next_btn:
                 try:
+                    before_sig = _button_signature(cat_msg)
                     await _click_inline_button(cat_msg, next_btn)
-                    await asyncio.sleep(2.5)
+                    cat_msg = await _wait_for_menu_transition(client, bot, cat_msg, before_sig, timeout=6.0)
+                    cat_id = cat_msg.id
                     current_page += 1
                 except Exception as e:
                     logger.error("Failed to advance to page %d: %s", current_page + 1, e)

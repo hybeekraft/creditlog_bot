@@ -4545,6 +4545,96 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertIs(switched, False)
         self.assertIn("Telegram in-app message", ls.describe_sent_code_type(fake_sent.type))
 
+    def test_is_product_button_rejects_balance_and_menu_buttons(self):
+        from crawl_retail_details import is_product_button
+
+        self.assertFalse(is_product_button("💰 Balance: $0.00", None))
+        self.assertFalse(is_product_button("Top Up ($5.00)", None))
+        self.assertTrue(is_product_button("Gemini Plus 6 Months [No card] · $0.90 ✅", None))
+        self.assertTrue(is_product_button("Unknown Label", b"itm:42"))
+
+    async def test_open_catalog_follows_new_messages_even_when_old_markup_remains(self):
+        import crawl_retail_details
+
+        def _make_btn(text, data=None):
+            b = MagicMock()
+            b.text = text
+            b.data = data
+            return b
+
+        def _make_msg(mid, texts_and_data, out=False):
+            m = AsyncMock()
+            m.id = mid
+            m.out = out
+            row = MagicMock()
+            row.buttons = [_make_btn(t, d) for t, d in texts_and_data]
+            m.reply_markup = MagicMock()
+            m.reply_markup.rows = [row] if texts_and_data else []
+            m.click = AsyncMock()
+            return m
+
+        sent_start = _make_msg(100, [], out=True)
+        sent_start.reply_markup = None
+        welcome_msg = _make_msg(101, [("🛍 Shop", b"shop"), ("💰 Balance: $0.00", b"bal")])
+        categories_msg = _make_msg(102, [("📦 All items", b"all")])
+        catalog_msg = _make_msg(103, [("Prod A · $1.00 ✅", b"itm:1"), ("1/2", b"pg:1"), ("▶️", b"pg:2")])
+
+        fake_client = AsyncMock()
+        fake_client.send_message = AsyncMock(return_value=sent_start)
+
+        step = {"n": 0}
+        async def fake_get_messages(bot, limit=None, ids=None):
+            if ids is not None:
+                if ids == 101:
+                    return welcome_msg  # still has reply_markup even though bot sent new #102!
+                if ids == 102:
+                    return categories_msg
+                return catalog_msg
+            if step["n"] == 0:
+                step["n"] += 1
+                return [welcome_msg]
+            if step["n"] == 1:
+                step["n"] += 1
+                return [categories_msg]
+            return [catalog_msg]
+
+        fake_client.get_messages = AsyncMock(side_effect=fake_get_messages)
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            res_msg = await crawl_retail_details.open_catalog(fake_client, MagicMock())
+
+        self.assertEqual(res_msg.id, 103)
+
+    async def test_run_retail_crawler_fails_on_non_catalog_menu_screen(self):
+        import crawl_retail_details
+        import broadcaster.broadcaster as bc
+
+        def _make_btn(text, data=None):
+            b = MagicMock()
+            b.text = text
+            b.data = data
+            return b
+
+        row = MagicMock()
+        row.buttons = [_make_btn("🛍 Shop", b"shop"), _make_btn("💰 Balance: $0.00", b"bal")]
+        menu_msg = MagicMock()
+        menu_msg.id = 76004
+        menu_msg.text = "✨ Welcome"
+        menu_msg.reply_markup = MagicMock()
+        menu_msg.reply_markup.rows = [row]
+
+        fake_client = AsyncMock()
+        fake_client.is_connected = MagicMock(return_value=True)
+        fake_client.get_entity = AsyncMock(return_value=MagicMock())
+        fake_client.get_messages = AsyncMock(return_value=menu_msg)
+
+        with patch.object(bc, "get_active_client", return_value=fake_client):
+            with patch.object(crawl_retail_details, "open_catalog", new=AsyncMock(return_value=menu_msg)):
+                res = await crawl_retail_details.run_retail_crawler(db_path=":memory:")
+
+        self.assertFalse(res["success"])
+        self.assertIn("catalog", res["error"].lower())
+
     def test_detect_category_gemini_google_ai(self):
         self.assertEqual(bot.detect_category("Google AI Pro 12M CDK V2"), "Gemini")
         self.assertEqual(bot.detect_category("AntiGravity Argon/Hydro 3M Solo FAM"), "Gemini")

@@ -5550,6 +5550,7 @@ async def periodic_retail_crawler_task(aiogram_bot: Bot):
                 from crawl_retail_details import run_retail_crawler
                 res = await run_retail_crawler(db_path=DB_PATH)
                 if res.get("success"):
+                    deduplicate_products_in_db(db)
                     resequence_product_ids(db)
                     trigger_catalog_refresh()
                     new_items = res.get("new_items", 0)

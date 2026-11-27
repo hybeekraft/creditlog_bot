@@ -557,6 +557,8 @@ async def process_and_broadcast_message(
 
     result = parser.process_message(raw_text)
     if not result:
+        # Mark non-restock menu/status messages so catch-up watchdog doesn't re-scan them forever
+        mark_message_processed(msg_id, source_id)
         return False
 
     logger.info(f"Processing restock alert (msg #{msg_id} from {source_id})...")
