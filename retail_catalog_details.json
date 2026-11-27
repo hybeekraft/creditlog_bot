@@ -53,63 +53,70 @@
     "price_usd": 2.5,
     "stock": 10,
     "page": "1/19",
-    "raw_btn": "100$ API Claude 30D · .50 ✅"
+    "raw_btn": "100$ API Claude 30D · $2.50 ✅"
   },
   "500apiclaude30d": {
     "item_name": "500$ API Claude 30D",
-    "description": "🛍 **Choose a category**\nSelect a section or open the full catalog:",
+    "description": "500$ API Claude 30D\n\nVerified digital product delivery.",
     "price_usd": 7.5,
     "stock": 10,
     "page": "1/19",
-    "raw_btn": "500$ API Claude 30D · .50 ✅"
+    "raw_btn": "500$ API Claude 30D · $7.50 ✅",
+    "needs_refresh": true
   },
   "100claudeapi30dfableai": {
     "item_name": "100$ Claude API 30D FableAI",
-    "description": "✨ **Welcome to Gemini Pro Store**\n\n🔥 Best prices\n⚡ Fast delivery after payment\n🛍 New products and restocks\n💬 Can’t find what you need? Contact support\n\nChoose a section below:",
+    "description": "100$ Claude API 30D FableAI\n\nVerified digital product delivery.",
     "price_usd": 2.5,
     "stock": 10,
     "page": "1/19",
-    "raw_btn": "100$ Claude API 30D FableAI · .50 ✅"
+    "raw_btn": "100$ Claude API 30D FableAI · $2.50 ✅",
+    "needs_refresh": true
   },
   "500claudeapi30dfableai": {
     "item_name": "500$ Claude API 30D FableAI",
-    "description": "✨ **Welcome to Gemini Pro Store**\n\n🔥 Best prices\n⚡ Fast delivery after payment\n🛍 New products and restocks\n💬 Can’t find what you need? Contact support\n\nChoose a section below:",
+    "description": "500$ Claude API 30D FableAI\n\nVerified digital product delivery.",
     "price_usd": 7.7,
     "stock": 10,
     "page": "1/19",
-    "raw_btn": "500$ Claude API 30D FableAI · .70 ✅"
+    "raw_btn": "500$ Claude API 30D FableAI · $7.70 ✅",
+    "needs_refresh": true
   },
   "elevenlabsredeem131kcredits": {
     "item_name": "ElevenLabs Redeem 131K Credits",
-    "description": "✨ **Welcome to Gemini Pro Store**\n\n🔥 Best prices\n⚡ Fast delivery after payment\n🛍 New products and restocks\n💬 Can’t find what you need? Contact support\n\nChoose a section below:",
-    "price_usd": null,
-    "stock": 0,
+    "description": "ElevenLabs Redeem 131K Credits\n\nVerified digital product delivery.",
+    "price_usd": 3.0,
+    "stock": 10,
     "page": "1/19",
-    "raw_btn": "ElevenLabs Redeem 131K Credits · $3.00 ✅"
+    "raw_btn": "ElevenLabs Redeem 131K Credits · $3.00 ✅",
+    "needs_refresh": true
   },
   "codexapi10mtokens1d": {
     "item_name": "Codex API 10M Tokens 1D",
-    "description": "✨ **Welcome to Gemini Pro Store**\n\n🔥 Best prices\n⚡ Fast delivery after payment\n🛍 New products and restocks\n💬 Can’t find what you need? Contact support\n\nChoose a section below:",
-    "price_usd": null,
-    "stock": 0,
+    "description": "Codex API 10M Tokens 1D\n\nVerified digital product delivery.",
+    "price_usd": 1.7,
+    "stock": 10,
     "page": "1/19",
-    "raw_btn": "Codex API 10M Tokens 1D · $1.70 ✅"
+    "raw_btn": "Codex API 10M Tokens 1D · $1.70 ✅",
+    "needs_refresh": true
   },
   "codexapi10mtokens1day": {
     "item_name": "Codex API 10M Tokens 1 Day",
-    "description": "✨ **Welcome to Gemini Pro Store**\n\n🔥 Best prices\n⚡ Fast delivery after payment\n🛍 New products and restocks\n💬 Can’t find what you need? Contact support\n\nChoose a section below:",
-    "price_usd": null,
-    "stock": 0,
+    "description": "Codex API 10M Tokens 1 Day\n\nVerified digital product delivery.",
+    "price_usd": 3.6,
+    "stock": 10,
     "page": "1/19",
-    "raw_btn": "Codex API 10M Tokens 1 Day · $3.60 ✅"
+    "raw_btn": "Codex API 10M Tokens 1 Day · $3.60 ✅",
+    "needs_refresh": true
   },
   "elevenreaderultra12months": {
     "item_name": "ElevenReader Ultra 12 Months",
-    "description": "✨ **Welcome to Gemini Pro Store**\n\n🔥 Best prices\n⚡ Fast delivery after payment\n🛍 New products and restocks\n💬 Can’t find what you need? Contact support\n\nChoose a section below:",
-    "price_usd": null,
-    "stock": 0,
+    "description": "ElevenReader Ultra 12 Months\n\nVerified digital product delivery.",
+    "price_usd": 1.8,
+    "stock": 10,
     "page": "1/19",
-    "raw_btn": "ElevenReader Ultra 12 Months · $1.80 ✅"
+    "raw_btn": "ElevenReader Ultra 12 Months · $1.80 ✅",
+    "needs_refresh": true
   },
   "codexapi50mtokens2d": {
     "item_name": "Codex API 50M Tokens 2D",
@@ -122,7 +129,7 @@
   "grokapi101m": {
     "item_name": "Grok API $10 1M",
     "description": "🚀 GROK API — ONE KEY, MULTIPLE GROK MODELS\n\nNo warranty.\n\nExperience xAI's Grok models with grok-4.3, grok-4.5, grok-4.6, grok-4.7, and grok-build-0.1. Choose the model that suits your needs with the same API key. Note that video creation is not yet available!\n\n⚡ Use the key immediately: enter the API key directly following the instructions, no code change or website activation needed.\n\n📊 Actively check the usage level of your key at: https://vibi.top/docs-setup/vi/usage\n\n🎯 This package is specifically for Grok, suitable if you want to focus on experiencing xAI's models.\n\n📖 User guide: https://vibi.top/docs-setup/vi\nVIDEO GUIDE: https://docs.google.com/document/d/1N6REuLBxiXP6VvDVPLiSt6C40PXULDLXGKDP0I7PGUs/edit?usp=sharing",
-    "price_usd": 10.0,
+    "price_usd": 2.5,
     "stock": 5,
     "page": "2/19",
     "raw_btn": "Grok API $10 1M · $2.50 ✅"
@@ -130,7 +137,7 @@
   "grokapi301m": {
     "item_name": "Grok API $30 1M",
     "description": "🚀 GROK API — ONE KEY, MANY GROK MODELS\n\nNo warranty.\n\nExperience xAI's Grok models with grok-4.3, grok-4.5, grok-4.6, grok-4.7, and grok-build-0.1. Choose the model that suits your needs with the same API key.\n\n⚡ Get the key and use it: enter the API key directly according to the instructions, no need to change codes or activate on the website.\n\n📊 Actively check your key usage at: https://vibi.top/docs-setup/vi/usage\n\n🎯 This package is dedicated to Grok, suitable if you want to focus on experiencing xAI's models.\n\n📖 User guide: https://vibi.top/docs-setup/vi\nVIDEO TUTORIAL: https://docs.google.com/document/d/1N6REuLBxiXP6VvDVPLiSt6C40PXULDLXGKDP0I7PGUs/edit?usp=sharing",
-    "price_usd": 30.0,
+    "price_usd": 3.2,
     "stock": 8,
     "page": "2/19",
     "raw_btn": "Grok API $30 1M · $3.20 ✅"
@@ -138,7 +145,7 @@
   "grokapi501m": {
     "item_name": "Grok API $50 1M",
     "description": "🚀 GROK API — ONE KEY, MANY GROK MODELS\n\nNo warranty.\n\nExperience xAI's Grok models with grok-4.3, grok-4.5, grok-4.6, grok-4.7, and grok-build-0.1. Choose the model that suits your needs with the same API key.\n\n⚡ Get the key and use it: enter the API key directly according to the instructions, no need to change codes or activate on the website.\n\n📊 Actively check your key usage at: https://vibi.top/docs-setup/vi/usage\n\n🎯 This package is dedicated to Grok, suitable if you want to focus on experiencing xAI's models.\n\n📖 User guide: https://vibi.top/docs-setup/vi\nVIDEO TUTORIAL: https://docs.google.com/document/d/1N6REuLBxiXP6VvDVPLiSt6C40PXULDLXGKDP0I7PGUs/edit?usp=sharing",
-    "price_usd": 50.0,
+    "price_usd": 5.0,
     "stock": 5,
     "page": "2/19",
     "raw_btn": "Grok API $50 1M · $5.00 ✅"
@@ -146,7 +153,7 @@
   "grokapi1001m": {
     "item_name": "Grok API $100 1M",
     "description": "🚀 GROK API — ONE KEY, MANY GROK MODELS\n\nNo warranty.\n\nExperience xAI's Grok models with grok-4.3, grok-4.5, grok-4.6, grok-4.7, and grok-build-0.1. Choose the model that suits your needs with the same API key.\n\n⚡ Get the key and use it: enter the API key directly according to the instructions, no need to change codes or activate on the website.\n\n📊 Actively check your key usage at: https://vibi.top/docs-setup/vi/usage\n\n🎯 This package is dedicated to Grok, suitable if you want to focus on experiencing xAI's models.\n\n📖 User guide: https://vibi.top/docs-setup/vi\nVIDEO TUTORIAL: https://docs.google.com/document/d/1N6REuLBxiXP6VvDVPLiSt6C40PXULDLXGKDP0I7PGUs/edit?usp=sharing",
-    "price_usd": 100.0,
+    "price_usd": 7.4,
     "stock": 2,
     "page": "2/19",
     "raw_btn": "Grok API $100 1M · $7.40 ✅"
@@ -189,7 +196,7 @@
     "price_usd": 2.0,
     "stock": 10,
     "page": "2/19",
-    "raw_btn": "Claude API 10M Tokens 1 Day · .00 ✅"
+    "raw_btn": "Claude API 10M Tokens 1 Day · $2.00 ✅"
   },
   "codexapi100mtokens3d": {
     "item_name": "Codex API 100M Tokens 3D",
@@ -341,7 +348,7 @@
     "price_usd": 4.0,
     "stock": 10,
     "page": "3/19",
-    "raw_btn": "Claude API 50M Tokens 2 Days · .00 ✅"
+    "raw_btn": "Claude API 50M Tokens 2 Days · $4.00 ✅"
   },
   "codexapi50mtokens1day": {
     "item_name": "Codex API 50M Tokens 1 Day",
@@ -389,7 +396,7 @@
     "price_usd": 0.9,
     "stock": 10,
     "page": "4/19",
-    "raw_btn": "Gemini Plus 6 Months [No card] · .90 ✅"
+    "raw_btn": "Gemini Plus 6 Months [No card] · $0.90 ✅"
   },
   "hmaandroidpc2030days": {
     "item_name": "HMA Android/PC 20-30 Days",
@@ -421,7 +428,7 @@
     "price_usd": 4.9,
     "stock": 10,
     "page": "4/19",
-    "raw_btn": "Claude API 100M Tokens 3D · .90 ✅"
+    "raw_btn": "Claude API 100M Tokens 3D · $4.90 ✅"
   },
   "codexapi100mtokens1day": {
     "item_name": "Codex API 100M Tokens 1 Day",
@@ -569,27 +576,30 @@
   },
   "ilovepdfpremium1year": {
     "item_name": "iLovePDF Premium 1 Year",
-    "description": "🛍 **Choose a category**\nSelect a section or open the full catalog:",
-    "price_usd": null,
-    "stock": 0,
+    "description": "iLovePDF Premium 1 Year\n\nVerified digital product delivery.",
+    "price_usd": 0.8,
+    "stock": 10,
     "page": "5/19",
-    "raw_btn": "iLovePDF Premium 1 Year · $0.80 ✅"
+    "raw_btn": "iLovePDF Premium 1 Year · $0.80 ✅",
+    "needs_refresh": true
   },
   "expressvpn3days": {
     "item_name": "ExpressVPN 3 Days",
-    "description": "✨ **Welcome to Gemini Pro Store**\n\n🔥 Best prices\n⚡ Fast delivery after payment\n🛍 New products and restocks\n💬 Can’t find what you need? Contact support\n\nChoose a section below:",
-    "price_usd": null,
-    "stock": 0,
+    "description": "ExpressVPN 3 Days\n\nVerified digital product delivery.",
+    "price_usd": 1.1,
+    "stock": 10,
     "page": "5/19",
-    "raw_btn": "ExpressVPN 3 Days · $1.10 ✅"
+    "raw_btn": "ExpressVPN 3 Days · $1.10 ✅",
+    "needs_refresh": true
   },
   "autocadedu12m": {
     "item_name": "AutoCAD EDU 12M",
-    "description": "✨ **Welcome to Gemini Pro Store**\n\n🔥 Best prices\n⚡ Fast delivery after payment\n🛍 New products and restocks\n💬 Can’t find what you need? Contact support\n\nChoose a section below:",
-    "price_usd": null,
-    "stock": 0,
+    "description": "AutoCAD EDU 12M\n\nVerified digital product delivery.",
+    "price_usd": 9.8,
+    "stock": 10,
     "page": "5/19",
-    "raw_btn": "AutoCAD EDU 12M · $9.80 ✅"
+    "raw_btn": "AutoCAD EDU 12M · $9.80 ✅",
+    "needs_refresh": true
   },
   "codexapi500mtokens6days": {
     "item_name": "Codex API 500M Tokens 6 Days",
@@ -733,7 +743,7 @@
     "price_usd": 3.0,
     "stock": 10,
     "page": "7/19",
-    "raw_btn": "Claude API 10M Tokens 1D · .00 ✅"
+    "raw_btn": "Claude API 10M Tokens 1D · $3.00 ✅"
   },
   "claudeapi50mtokens1day": {
     "item_name": "Claude API 50M Tokens 1 Day",
@@ -741,7 +751,7 @@
     "price_usd": 5.0,
     "stock": 10,
     "page": "7/19",
-    "raw_btn": "Claude API 50M Tokens 1 Day · .00 ✅"
+    "raw_btn": "Claude API 50M Tokens 1 Day · $5.00 ✅"
   },
   "claudeapi100mtokens1day": {
     "item_name": "Claude API 100M Tokens 1 Day",
@@ -749,7 +759,7 @@
     "price_usd": 6.0,
     "stock": 10,
     "page": "7/19",
-    "raw_btn": "Claude API 100M Tokens 1 Day · .00 ✅"
+    "raw_btn": "Claude API 100M Tokens 1 Day · $6.00 ✅"
   },
   "claudeapi100mtokens3days": {
     "item_name": "Claude API 100M Tokens 3 Days",
@@ -757,7 +767,7 @@
     "price_usd": 7.5,
     "stock": 10,
     "page": "7/19",
-    "raw_btn": "Claude API 100M Tokens 3 Days · .50 ✅"
+    "raw_btn": "Claude API 100M Tokens 3 Days · $7.50 ✅"
   },
   "primevideo6months": {
     "item_name": "Prime Video 6 Months",
@@ -787,7 +797,7 @@
     "item_name": "Fallout 76 MS Store",
     "description": "Fallout 76 MS Store\n\nAfter purchase, you will receive the details or activation instructions required for this product. Review the delivered information before use and follow any instructions included with it.\n\nNo warranty. The product is provided as-is.",
     "price_usd": 2.48,
-    "stock": 0,
+    "stock": 10,
     "page": "7/19",
     "raw_btn": "Fallout 76 MS Store · $2.48 ✅"
   },
@@ -795,7 +805,7 @@
     "item_name": "PC Game Pass 1M",
     "description": "Format: digital key.\n\nNo warranty.\nDuration: 1 month.\nRegion: Global / Europe.\nPlatform: Windows.\nProduct: PC Game Pass trial, non-stackable key.\nPayment method is required.\nOnly for new accounts without a previous subscription.\nAccount and IP must be in a country where Xbox Live is available.\nThe code must be activated within 1 week after purchase.\n\nAccount requirements:\n• Only for new Microsoft / Xbox accounts without a previous PC Game Pass subscription.\n• The account must not have an active Game Pass subscription.\n• Account and IP must be in a country where Xbox Live is available.\n• Payment method is required.\n\nActivation:\n1. Open Microsoft / Xbox redeem.\n2. Log in to your Microsoft account.\n3. Enter the 25-character code.\n4. Add a payment method.\n5. Finish activation.",
     "price_usd": 8.36,
-    "stock": 0,
+    "stock": 10,
     "page": "7/19",
     "raw_btn": "PC Game Pass 1M · $8.36 ✅"
   },
@@ -819,7 +829,7 @@
     "item_name": "McAfee AntiVirus 1 Device 1Y",
     "description": "Digital key for McAfee AntiVirus 2026.\n\nOnline antivirus protection for safer browsing and everyday PC use. Helps protect against viruses, malware, ransomware, phishing and other online threats.\n\nActivation:\n• Go to the official McAfee website\n• Enter the 25-digit activation code\n• Log in or create a McAfee account\n• Download and activate the software\n\nImportant notice:\nThe key origin may be different from your region. This does not mean the key is faulty. Activate it in your region on the official McAfee website:\nhttps://www.mcafee.com/consumer/en-us/ipz/r2d/flows/retailredemption.html\n\n• 1 device\n• 1 year\n• Global key\n\nNo warranty is provided.",
     "price_usd": 7.26,
-    "stock": 0,
+    "stock": 10,
     "page": "7/19",
     "raw_btn": "McAfee AntiVirus 1 Device 1Y · $7.26 ✅"
   },
@@ -1203,7 +1213,7 @@
     "item_name": "Adobe CC Pro 1M",
     "description": "Digital subscription for Adobe Creative Cloud Pro.\n\nAccess Adobe creative tools for design, photo editing, video editing, documents and content creation.\n\n• 1 month\n• Digital product\n• Adobe account required\n\nNo warranty is provided.",
     "price_usd": 18.17,
-    "stock": 0,
+    "stock": 10,
     "page": "11/19",
     "raw_btn": "Adobe CC Pro 1M · $18.17 ✅"
   },
@@ -1517,7 +1527,7 @@
     "price_usd": 1.3,
     "stock": 0,
     "page": "13/19",
-    "raw_btn": "Gemini Plus 12 Months · .30 ⛔"
+    "raw_btn": "Gemini Plus 12 Months · $1.30 ⛔"
   },
   "gmailaccountnew": {
     "item_name": "Gmail account new",
@@ -1557,7 +1567,7 @@
     "price_usd": 7.54,
     "stock": 10,
     "page": "14/19",
-    "raw_btn": "Gemini Pro 12 Months FAM · .54 ✅"
+    "raw_btn": "Gemini Pro 12 Months FAM · $7.54 ✅"
   },
   "geminipro6monthsfam": {
     "item_name": "Gemini Pro 6 Months FAM",
@@ -1565,7 +1575,7 @@
     "price_usd": 5.16,
     "stock": 10,
     "page": "14/19",
-    "raw_btn": "Gemini Pro 6 Months FAM · .16 ✅"
+    "raw_btn": "Gemini Pro 6 Months FAM · $5.16 ✅"
   },
   "geminipro3monthsfam": {
     "item_name": "Gemini Pro 3 Months FAM",
@@ -1573,7 +1583,7 @@
     "price_usd": 3.5,
     "stock": 10,
     "page": "14/19",
-    "raw_btn": "Gemini Pro 3 Months FAM · .50 ✅"
+    "raw_btn": "Gemini Pro 3 Months FAM · $3.50 ✅"
   },
   "antigravityargonhydrogen3mfam": {
     "item_name": "AntiGravity Argon/Hydrogen 3M FAM",
@@ -1581,7 +1591,7 @@
     "price_usd": 4.0,
     "stock": 0,
     "page": "14/19",
-    "raw_btn": "AntiGravity Argon/Hydrogen 3M FAM · .00 ⛔"
+    "raw_btn": "AntiGravity Argon/Hydrogen 3M FAM · $4.00 ⛔"
   },
   "protonunlimited1m": {
     "item_name": "Proton Unlimited 1M",
@@ -1685,7 +1695,7 @@
     "price_usd": 23.0,
     "stock": 10,
     "page": "15/19",
-    "raw_btn": "Claude API 500M Tokens 6D · .00 ✅"
+    "raw_btn": "Claude API 500M Tokens 6D · $23.00 ✅"
   },
   "linkedinpremium3monthcode": {
     "item_name": "LinkedIn Premium 3-Month Code",
@@ -1901,7 +1911,7 @@
     "price_usd": 6.0,
     "stock": 0,
     "page": "16/19",
-    "raw_btn": "Claude API 50M Tokens 3 Days · .00 ⛔"
+    "raw_btn": "Claude API 50M Tokens 3 Days · $6.00 ⛔"
   },
   "claudeapi500mtokens1day": {
     "item_name": "Claude API 500M Tokens 1 Day",
@@ -1909,7 +1919,7 @@
     "price_usd": 20.0,
     "stock": 0,
     "page": "17/19",
-    "raw_btn": "Claude API 500M Tokens 1 Day · .00 ⛔"
+    "raw_btn": "Claude API 500M Tokens 1 Day · $20.00 ⛔"
   },
   "gammapro12mcouponcode": {
     "item_name": "Gamma Pro 12M Coupon Code",
@@ -2229,7 +2239,7 @@
     "price_usd": 7.0,
     "stock": 10,
     "page": "14/19",
-    "raw_btn": "AntiGravity Argon/Hydro 3M Solo FAM · .00 ✅"
+    "raw_btn": "AntiGravity Argon/Hydro 3M Solo FAM · $7.00 ✅"
   },
   "geminipro3monthcdk": {
     "item_name": "Gemini Pro 3 Month CDK",
@@ -2237,7 +2247,7 @@
     "price_usd": 2.9,
     "stock": 0,
     "page": "14/19",
-    "raw_btn": "Gemini Pro 3 Month CDK · .90 ⛔"
+    "raw_btn": "Gemini Pro 3 Month CDK · $2.90 ⛔"
   },
   "googleaipro12mcdkv2": {
     "item_name": "Google AI Pro 12M CDK V2",
@@ -2245,6 +2255,6 @@
     "price_usd": 2.0,
     "stock": 10,
     "page": "14/19",
-    "raw_btn": "Google AI Pro 12M CDK V2 · .00 ✅"
+    "raw_btn": "Google AI Pro 12M CDK V2 · $2.00 ✅"
   }
 }

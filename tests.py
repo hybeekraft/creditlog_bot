@@ -4380,6 +4380,137 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p3["price_usd"], 23.00)
         self.assertTrue(p3["is_in_stock"])
 
+    def test_parse_catalog_button_ignores_name_dollar_amounts(self):
+        from crawl_retail_details import parse_catalog_button
+
+        p1 = parse_catalog_button("Grok API $100 1M · $7.40 ✅")
+        self.assertEqual(p1["name"], "Grok API $100 1M")
+        self.assertEqual(p1["price_usd"], 7.40)
+
+        p2 = parse_catalog_button("Grok API $100 1M ✅")
+        self.assertEqual(p2["name"], "Grok API $100 1M")
+        self.assertIsNone(p2["price_usd"])
+
+        p3 = parse_catalog_button("Claude API 500M Tokens 6D · .00 ✅")
+        self.assertIsNone(p3["price_usd"])
+
+    def test_parse_detail_text_dollar_price_and_menu_detection(self):
+        from crawl_retail_details import parse_detail_text, is_menu_screen_text
+
+        parsed = parse_detail_text("Item: **Grok API $100 1M**\nDescription: Key only\nPrice: $7.40\nIn stock: 2")
+        self.assertEqual(parsed["item_name"], "Grok API $100 1M")
+        self.assertEqual(parsed["price_usd"], 7.40)
+        self.assertEqual(parsed["stock"], 2)
+        self.assertFalse(is_menu_screen_text("Item: X\nPrice: 1.0\nIn stock: 1"))
+        self.assertTrue(is_menu_screen_text("✨ **Welcome to Gemini Pro Store**\n\nChoose a section below:"))
+        self.assertTrue(is_menu_screen_text("🛍 **Choose a category**\nSelect a section or open the full catalog:"))
+
+    def test_sync_retail_catalog_details_handles_tuple_and_ignores_menu_garbage(self):
+        import json, tempfile
+        from retail_catalog import sync_retail_catalog_details
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, description TEXT, price INTEGER,
+                supplier_product_id TEXT, supplier_price INTEGER, auto_fulfill INTEGER,
+                active INTEGER, category TEXT, supplier TEXT, supplier_stock INTEGER,
+                delivery_type TEXT, margin INTEGER, fixed_price INTEGER
+            )
+        """)
+        conn.execute("""
+            INSERT INTO products(name, description, price, supplier_product_id, supplier_price,
+                                 auto_fulfill, active, category, supplier, supplier_stock,
+                                 delivery_type, margin, fixed_price)
+            VALUES('iLovePDF Premium 1 Year', 'Valid PDF Desc', 116, '108', 80, 1, 1, 'Productivity', 'default', 64, 'auto', 45, 0)
+        """)
+        conn.commit()
+
+        payload = {
+            "ilovepdfpremium1year": {
+                "item_name": "iLovePDF Premium 1 Year",
+                "description": "🛍 **Choose a category**\nSelect a section or open the full catalog:",
+                "price_usd": None,
+                "stock": 0,
+            },
+            "newretailtest": {
+                "item_name": "New Retail Test",
+                "description": "Valid test product details",
+                "price_usd": 2.0,
+                "stock": 5,
+            },
+            "New Retail Test": {
+                "item_name": "New Retail Test",
+                "description": "Even longer valid test product details for second key",
+                "price_usd": 2.0,
+                "stock": 5,
+            },
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tf:
+            json.dump(payload, tf)
+            tf_path = tf.name
+
+        try:
+            sync_retail_catalog_details(conn, json_path=tf_path)
+            row = conn.execute("SELECT description, active, supplier_stock FROM products WHERE id=1").fetchone()
+            self.assertEqual(row["description"], "Valid PDF Desc")
+            self.assertEqual(row["active"], 1)
+            self.assertEqual(row["supplier_stock"], 64)
+        finally:
+            conn.close()
+            if os.path.exists(tf_path):
+                os.remove(tf_path)
+
+    async def test_run_retail_crawler_catches_revoked_session_and_disconnects(self):
+        import crawl_retail_details
+        import broadcaster.broadcaster as bc
+
+        fake_client = AsyncMock()
+        fake_client.connect = AsyncMock()
+        fake_client.is_user_authorized = AsyncMock(
+            side_effect=RuntimeError("The authorization key (session file) was used under two different IP addresses simultaneously")
+        )
+        fake_client.disconnect = AsyncMock()
+
+        with patch.dict(os.environ, {
+            "TELEGRAM_API_ID": "12345",
+            "TELEGRAM_API_HASH": "abc123",
+            "TELEGRAM_STRING_SESSION": "dummy_session_string",
+        }):
+            with patch.object(bc, "get_active_client", return_value=None):
+                with patch("telethon.sessions.StringSession", return_value=MagicMock()):
+                    with patch("telethon.TelegramClient", return_value=fake_client):
+                        res = await crawl_retail_details.run_retail_crawler(db_path=":memory:")
+
+        self.assertFalse(res["success"])
+        self.assertIn("revoked", res["error"].lower())
+        fake_client.disconnect.assert_awaited_once()
+
+    async def test_perform_supplier_sync_skips_same_supplier_invisible_char_duplicates(self):
+        bot.db.execute("DELETE FROM products")
+        bot.db.commit()
+
+        mock_products = [
+            {"id": "63", "name": "ChatGPT Plus 1M Apple Pay", "description": "Valid desc", "price_cents": 499, "stock": 14},
+            {"id": "380", "name": "ChatGPT Plus 1M Apple Pay\u2063", "description": "Valid desc", "price_cents": 489, "stock": 3},
+        ]
+        mock_client = AsyncMock()
+        mock_client.api_key = "test_key"
+        mock_client.get_products = AsyncMock(return_value=mock_products)
+
+        with patch.object(bot.supplier_registry, "get", return_value=mock_client), \
+             patch.object(bot.supplier_registry, "list_suppliers", return_value={"default": mock_client}):
+            added1, updated1, _, _ = await bot.perform_supplier_sync(target_suppliers=["default"], markup=45)
+            added2, updated2, _, _ = await bot.perform_supplier_sync(target_suppliers=["default"], markup=45)
+
+        self.assertEqual(added1, 1)
+        self.assertEqual(added2, 0)
+        self.assertEqual(updated2, 1)
+        rows = bot.db.execute("SELECT supplier_product_id, supplier_stock FROM products WHERE name LIKE 'ChatGPT Plus 1M Apple Pay%'").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(bot.deduplicate_products_in_db(bot.db), 0)
+
     def test_detect_category_gemini_google_ai(self):
         self.assertEqual(bot.detect_category("Google AI Pro 12M CDK V2"), "Gemini")
         self.assertEqual(bot.detect_category("AntiGravity Argon/Hydro 3M Solo FAM"), "Gemini")

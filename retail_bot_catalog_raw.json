@@ -3,7 +3,7 @@
     "name": "100$ API Claude 30D",
     "cost_usd": 2.5,
     "is_in_stock": true,
-    "raw_button": "100$ API Claude 30D · .50 ✅",
+    "raw_button": "100$ API Claude 30D · $2.50 ✅",
     "callback": "",
     "page": "1/19"
   },
@@ -11,7 +11,7 @@
     "name": "100$ Claude API 30D FableAI",
     "cost_usd": 2.5,
     "is_in_stock": true,
-    "raw_button": "100$ Claude API 30D FableAI · .50 ✅",
+    "raw_button": "100$ Claude API 30D FableAI · $2.50 ✅",
     "callback": "",
     "page": "1/19"
   },
@@ -19,7 +19,7 @@
     "name": "500$ API Claude 30D",
     "cost_usd": 7.5,
     "is_in_stock": true,
-    "raw_button": "500$ API Claude 30D · .50 ✅",
+    "raw_button": "500$ API Claude 30D · $7.50 ✅",
     "callback": "",
     "page": "1/19"
   },
@@ -27,7 +27,7 @@
     "name": "500$ Claude API 30D FableAI",
     "cost_usd": 7.7,
     "is_in_stock": true,
-    "raw_button": "500$ Claude API 30D FableAI · .70 ✅",
+    "raw_button": "500$ Claude API 30D FableAI · $7.70 ✅",
     "callback": "",
     "page": "1/19"
   },
@@ -58,7 +58,7 @@
   {
     "name": "Adobe CC Pro 1M",
     "cost_usd": 18.17,
-    "is_in_stock": false,
+    "is_in_stock": true,
     "raw_button": "Adobe CC Pro 1M · $18.17 ✅",
     "callback": "",
     "page": "11/19"
@@ -130,16 +130,16 @@
   {
     "name": "AntiGravity Argon/Hydro 3M Solo FAM",
     "cost_usd": 7.0,
-    "is_in_stock": false,
-    "raw_button": "AntiGravity Argon/Hydro 3M Solo FAM · .00 ⛔",
+    "is_in_stock": true,
+    "raw_button": "AntiGravity Argon/Hydro 3M Solo FAM · $7.00 ✅",
     "callback": "",
     "page": "14/19"
   },
   {
     "name": "AntiGravity Argon/Hydrogen 3M FAM",
     "cost_usd": 4.0,
-    "is_in_stock": true,
-    "raw_button": "AntiGravity Argon/Hydrogen 3M FAM · .00 ✅",
+    "is_in_stock": false,
+    "raw_button": "AntiGravity Argon/Hydrogen 3M FAM · $4.00 ⛔",
     "callback": "",
     "page": "14/19"
   },
@@ -289,8 +289,8 @@
   },
   {
     "name": "AutoCAD EDU 12M",
-    "cost_usd": 0.0,
-    "is_in_stock": false,
+    "cost_usd": 9.8,
+    "is_in_stock": true,
     "raw_button": "AutoCAD EDU 12M · $9.80 ✅",
     "callback": "",
     "page": "5/19"
@@ -635,7 +635,7 @@
     "name": "Claude API 100M Tokens 1 Day",
     "cost_usd": 6.0,
     "is_in_stock": true,
-    "raw_button": "Claude API 100M Tokens 1 Day · .00 ✅",
+    "raw_button": "Claude API 100M Tokens 1 Day · $6.00 ✅",
     "callback": "",
     "page": "7/19"
   },
@@ -643,7 +643,7 @@
     "name": "Claude API 100M Tokens 3 Days",
     "cost_usd": 7.5,
     "is_in_stock": true,
-    "raw_button": "Claude API 100M Tokens 3 Days · .50 ✅",
+    "raw_button": "Claude API 100M Tokens 3 Days · $7.50 ✅",
     "callback": "",
     "page": "7/19"
   },
@@ -651,7 +651,7 @@
     "name": "Claude API 100M Tokens 3D",
     "cost_usd": 4.9,
     "is_in_stock": true,
-    "raw_button": "Claude API 100M Tokens 3D · .90 ✅",
+    "raw_button": "Claude API 100M Tokens 3D · $4.90 ✅",
     "callback": "",
     "page": "4/19"
   },
@@ -659,7 +659,7 @@
     "name": "Claude API 10M Tokens 1 Day",
     "cost_usd": 2.0,
     "is_in_stock": true,
-    "raw_button": "Claude API 10M Tokens 1 Day · .00 ✅",
+    "raw_button": "Claude API 10M Tokens 1 Day · $2.00 ✅",
     "callback": "",
     "page": "2/19"
   },
@@ -667,7 +667,7 @@
     "name": "Claude API 10M Tokens 1D",
     "cost_usd": 3.0,
     "is_in_stock": true,
-    "raw_button": "Claude API 10M Tokens 1D · .00 ✅",
+    "raw_button": "Claude API 10M Tokens 1D · $3.00 ✅",
     "callback": "",
     "page": "7/19"
   },
@@ -675,7 +675,7 @@
     "name": "Claude API 500M Tokens 1 Day",
     "cost_usd": 20.0,
     "is_in_stock": false,
-    "raw_button": "Claude API 500M Tokens 1 Day · .00 ⛔",
+    "raw_button": "Claude API 500M Tokens 1 Day · $20.00 ⛔",
     "callback": "",
     "page": "17/19"
   },
@@ -683,7 +683,7 @@
     "name": "Claude API 500M Tokens 6D",
     "cost_usd": 23.0,
     "is_in_stock": true,
-    "raw_button": "Claude API 500M Tokens 6D · .00 ✅",
+    "raw_button": "Claude API 500M Tokens 6D · $23.00 ✅",
     "callback": "",
     "page": "15/19"
   },
@@ -691,7 +691,7 @@
     "name": "Claude API 50M Tokens 1 Day",
     "cost_usd": 5.0,
     "is_in_stock": true,
-    "raw_button": "Claude API 50M Tokens 1 Day · .00 ✅",
+    "raw_button": "Claude API 50M Tokens 1 Day · $5.00 ✅",
     "callback": "",
     "page": "7/19"
   },
@@ -699,7 +699,7 @@
     "name": "Claude API 50M Tokens 2 Days",
     "cost_usd": 4.0,
     "is_in_stock": true,
-    "raw_button": "Claude API 50M Tokens 2 Days · .00 ✅",
+    "raw_button": "Claude API 50M Tokens 2 Days · $4.00 ✅",
     "callback": "",
     "page": "3/19"
   },
@@ -707,7 +707,7 @@
     "name": "Claude API 50M Tokens 3 Days",
     "cost_usd": 6.0,
     "is_in_stock": false,
-    "raw_button": "Claude API 50M Tokens 3 Days · .00 ⛔",
+    "raw_button": "Claude API 50M Tokens 3 Days · $6.00 ⛔",
     "callback": "",
     "page": "16/19"
   },
@@ -729,16 +729,16 @@
   },
   {
     "name": "Codex API 10M Tokens 1 Day",
-    "cost_usd": 0.0,
-    "is_in_stock": false,
+    "cost_usd": 3.6,
+    "is_in_stock": true,
     "raw_button": "Codex API 10M Tokens 1 Day · $3.60 ✅",
     "callback": "",
     "page": "1/19"
   },
   {
     "name": "Codex API 10M Tokens 1D",
-    "cost_usd": 0.0,
-    "is_in_stock": false,
+    "cost_usd": 1.7,
+    "is_in_stock": true,
     "raw_button": "Codex API 10M Tokens 1D · $1.70 ✅",
     "callback": "",
     "page": "1/19"
@@ -945,8 +945,8 @@
   },
   {
     "name": "ElevenLabs Redeem 131K Credits",
-    "cost_usd": 0.0,
-    "is_in_stock": false,
+    "cost_usd": 3.0,
+    "is_in_stock": true,
     "raw_button": "ElevenLabs Redeem 131K Credits · $3.00 ✅",
     "callback": "",
     "page": "1/19"
@@ -977,8 +977,8 @@
   },
   {
     "name": "ElevenReader Ultra 12 Months",
-    "cost_usd": 0.0,
-    "is_in_stock": false,
+    "cost_usd": 1.8,
+    "is_in_stock": true,
     "raw_button": "ElevenReader Ultra 12 Months · $1.80 ✅",
     "callback": "",
     "page": "1/19"
@@ -1009,8 +1009,8 @@
   },
   {
     "name": "ExpressVPN 3 Days",
-    "cost_usd": 0.0,
-    "is_in_stock": false,
+    "cost_usd": 1.1,
+    "is_in_stock": true,
     "raw_button": "ExpressVPN 3 Days · $1.10 ✅",
     "callback": "",
     "page": "5/19"
@@ -1018,7 +1018,7 @@
   {
     "name": "Fallout 76 MS Store",
     "cost_usd": 2.48,
-    "is_in_stock": false,
+    "is_in_stock": true,
     "raw_button": "Fallout 76 MS Store · $2.48 ✅",
     "callback": "",
     "page": "7/19"
@@ -1115,7 +1115,7 @@
     "name": "Gemini Plus 12 Months",
     "cost_usd": 1.3,
     "is_in_stock": false,
-    "raw_button": "Gemini Plus 12 Months · .30 ⛔",
+    "raw_button": "Gemini Plus 12 Months · $1.30 ⛔",
     "callback": "",
     "page": "13/19"
   },
@@ -1123,15 +1123,15 @@
     "name": "Gemini Plus 6 Months [No card]",
     "cost_usd": 0.9,
     "is_in_stock": true,
-    "raw_button": "Gemini Plus 6 Months [No card] · .90 ✅",
+    "raw_button": "Gemini Plus 6 Months [No card] · $0.90 ✅",
     "callback": "",
     "page": "4/19"
   },
   {
     "name": "Gemini Pro 12 Months FAM",
     "cost_usd": 7.54,
-    "is_in_stock": false,
-    "raw_button": "Gemini Pro 12 Months FAM · .54 ⛔",
+    "is_in_stock": true,
+    "raw_button": "Gemini Pro 12 Months FAM · $7.54 ✅",
     "callback": "",
     "page": "14/19"
   },
@@ -1139,7 +1139,7 @@
     "name": "Gemini Pro 3 Month CDK",
     "cost_usd": 2.9,
     "is_in_stock": false,
-    "raw_button": "Gemini Pro 3 Month CDK · .90 ⛔",
+    "raw_button": "Gemini Pro 3 Month CDK · $2.90 ⛔",
     "callback": "",
     "page": "14/19"
   },
@@ -1147,15 +1147,15 @@
     "name": "Gemini Pro 3 Months FAM",
     "cost_usd": 3.5,
     "is_in_stock": true,
-    "raw_button": "Gemini Pro 3 Months FAM · .50 ✅",
+    "raw_button": "Gemini Pro 3 Months FAM · $3.50 ✅",
     "callback": "",
     "page": "14/19"
   },
   {
     "name": "Gemini Pro 6 Months FAM",
     "cost_usd": 5.16,
-    "is_in_stock": false,
-    "raw_button": "Gemini Pro 6 Months FAM · .16 ⛔",
+    "is_in_stock": true,
+    "raw_button": "Gemini Pro 6 Months FAM · $5.16 ✅",
     "callback": "",
     "page": "14/19"
   },
@@ -1179,7 +1179,7 @@
     "name": "Google AI Pro 12M CDK V2",
     "cost_usd": 2.0,
     "is_in_stock": true,
-    "raw_button": "Google AI Pro 12M CDK V2 · .00 ✅",
+    "raw_button": "Google AI Pro 12M CDK V2 · $2.00 ✅",
     "callback": "",
     "page": "14/19"
   },
@@ -1241,7 +1241,7 @@
   },
   {
     "name": "Grok API $10 1M",
-    "cost_usd": 10.0,
+    "cost_usd": 2.5,
     "is_in_stock": true,
     "raw_button": "Grok API $10 1M · $2.50 ✅",
     "callback": "",
@@ -1249,7 +1249,7 @@
   },
   {
     "name": "Grok API $100 1M",
-    "cost_usd": 100.0,
+    "cost_usd": 7.4,
     "is_in_stock": true,
     "raw_button": "Grok API $100 1M · $7.40 ✅",
     "callback": "",
@@ -1257,7 +1257,7 @@
   },
   {
     "name": "Grok API $30 1M",
-    "cost_usd": 30.0,
+    "cost_usd": 3.2,
     "is_in_stock": true,
     "raw_button": "Grok API $30 1M · $3.20 ✅",
     "callback": "",
@@ -1265,7 +1265,7 @@
   },
   {
     "name": "Grok API $50 1M",
-    "cost_usd": 50.0,
+    "cost_usd": 5.0,
     "is_in_stock": true,
     "raw_button": "Grok API $50 1M · $5.00 ✅",
     "callback": "",
@@ -1425,8 +1425,8 @@
   },
   {
     "name": "iLovePDF Premium 1 Year",
-    "cost_usd": 0.0,
-    "is_in_stock": false,
+    "cost_usd": 0.8,
+    "is_in_stock": true,
     "raw_button": "iLovePDF Premium 1 Year · $0.80 ✅",
     "callback": "",
     "page": "5/19"
@@ -1642,7 +1642,7 @@
   {
     "name": "McAfee AntiVirus 1 Device 1Y",
     "cost_usd": 7.26,
-    "is_in_stock": false,
+    "is_in_stock": true,
     "raw_button": "McAfee AntiVirus 1 Device 1Y · $7.26 ✅",
     "callback": "",
     "page": "7/19"
@@ -1890,7 +1890,7 @@
   {
     "name": "PC Game Pass 1M",
     "cost_usd": 8.36,
-    "is_in_stock": false,
+    "is_in_stock": true,
     "raw_button": "PC Game Pass 1M · $8.36 ✅",
     "callback": "",
     "page": "7/19"

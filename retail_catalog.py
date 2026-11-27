@@ -13,7 +13,7 @@ RETAIL_CATALOG_ITEMS = [
     ('AdGuard VPN 7D', 2.30, False),
     ('Admin Netflix 4K 1M', 3.80, False),
     ('Adobe All Apps 7D', 3.67, False),
-    ('Adobe CC Pro 1M', 18.17, False),
+    ('Adobe CC Pro 1M', 18.17, True),
     ('Adobe Express 1 Year', 0.50, True),
     ('Adobe Express 12M Account', 1.50, True),
     ('Adobe Express 4M Trial', 1.00, True),
@@ -42,7 +42,7 @@ RETAIL_CATALOG_ITEMS = [
     ('API QWEN Unlimited Tokens 7D', 5.00, True),
     ('Apple Music 5M', 1.60, True),
     ('Apple Music 6M', 2.00, False),
-    ('AutoCAD EDU 12M', 0.00, False),
+    ('AutoCAD EDU 12M', 9.80, True),
     ('Autodesk 1 App 3Y Upgrade', 5.00, False),
     ('Autodesk Admin Access', 11.50, True),
     ('Autodesk All Apps 3Y', 3.80, True),
@@ -97,8 +97,8 @@ RETAIL_CATALOG_ITEMS = [
     ('Claude API 50M Tokens 3 Days', 6.00, False),
     ('Codex API 100M Tokens 1 Day', 5.00, True),
     ('Codex API 100M Tokens 3D', 6.00, True),
-    ('Codex API 10M Tokens 1 Day', 0.00, False),
-    ('Codex API 10M Tokens 1D', 0.00, False),
+    ('Codex API 10M Tokens 1 Day', 3.60, True),
+    ('Codex API 10M Tokens 1D', 1.70, True),
     ('Codex API 500M Tokens 6 Days', 29.80, True),
     ('Codex API 500M Tokens 6D', 20.00, False),
     ('Codex API 50M Tokens 1 Day', 4.20, True),
@@ -124,16 +124,16 @@ RETAIL_CATALOG_ITEMS = [
     ('ElevenLabs Creator 1M', 6.37, True),
     ('ElevenLabs Creator Account 3 Months', 8.50, True),
     ('ElevenLabs Free 10k Credits', 0.60, False),
-    ('ElevenLabs Redeem 131K Credits', 0.00, False),
+    ('ElevenLabs Redeem 131K Credits', 3.00, True),
     ('ElevenLabs Redeem 1M Credits', 12.54, True),
     ('ElevenLabs Redeem 300K Credits', 6.50, True),
     ('ElevenLabs Redeem 3M Credits', 34.50, True),
-    ('ElevenReader Ultra 12 Months', 0.00, False),
+    ('ElevenReader Ultra 12 Months', 1.80, True),
     ('ElevenReader Ultra 1Y Gift Link', 5.50, False),
     ('ExpressVPN 1 Month 5 Devices', 2.00, False),
     ('ExpressVPN 12M', 7.00, False),
-    ('ExpressVPN 3 Days', 0.00, False),
-    ('Fallout 76 MS Store', 2.48, False),
+    ('ExpressVPN 3 Days', 1.10, True),
+    ('Fallout 76 MS Store', 2.48, True),
     ('Figma Pro EDU 12 Months', 7.50, True),
     ('Figma Pro EDU 2 Years', 3.50, True),
     ('Flux 03 1M', 1.50, False),
@@ -161,10 +161,10 @@ RETAIL_CATALOG_ITEMS = [
     ('Grok + Cursor Premium 1M', 12.74, False),
     ('Grok + Cursor Premium 1M (W7D)', 16.00, False),
     ('Grok + Cursor Ultra 1M', 68.50, True),
-    ('Grok API $10 1M', 10.00, True),
-    ('Grok API $100 1M', 100.00, True),
-    ('Grok API $30 1M', 30.00, True),
-    ('Grok API $50 1M', 50.00, True),
+    ('Grok API $10 1M', 2.50, True),
+    ('Grok API $100 1M', 7.40, True),
+    ('Grok API $30 1M', 3.20, True),
+    ('Grok API $50 1M', 5.00, True),
     ('Grok API 4.5 HIGH/XHIGH 100M Tokens 7 Days', 5.00, True),
     ('Grok API 4.5 HIGH/XHIGH 15M Tokens 1 Day', 2.50, True),
     ('Grok Plus + Cursor 1 Month', 6.50, False),
@@ -184,7 +184,7 @@ RETAIL_CATALOG_ITEMS = [
     ('Hotspot Shield VPN 7D', 2.00, False),
     ('iCloud 2TB 3M', 11.50, False),
     ('iCloud 400GB Your Mail 12M', 24.00, True),
-    ('iLovePDF Premium 1 Year', 0.00, False),
+    ('iLovePDF Premium 1 Year', 0.80, True),
     ('IPVanish VPN 7D', 2.00, False),
     ('JetBrains EDU Pack 12 Months', 3.20, True),
     ('Kaspersky Premium + VPN 1Y', 9.60, True),
@@ -211,7 +211,7 @@ RETAIL_CATALOG_ITEMS = [
     ('Lovable Pro Lite 12 months + 300 credits', 6.30, False),
     ('Loveable Pro 1M Redeem Link', 1.20, False),
     ('Manus Pro 1 Year Coupon', 58.00, False),
-    ('McAfee AntiVirus 1 Device 1Y', 7.26, False),
+    ('McAfee AntiVirus 1 Device 1Y', 7.26, True),
     ('Microsoft 365 Family 5U 12M', 12.00, True),
     ('Microsoft Copilot Pro 1 Month', 6.00, True),
     ('Microsoft Office 365 Plus 1 Year', 1.60, True),
@@ -242,7 +242,7 @@ RETAIL_CATALOG_ITEMS = [
     ('Notion Business Admin 1M', 7.70, False),
     ('O365 Ready Account Random 6-12M', 4.00, True),
     ('OpenArt Starter 4K Credits 1M', 13.84, False),
-    ('PC Game Pass 1M', 8.36, False),
+    ('PC Game Pass 1M', 8.36, True),
     ('Perplexity Pro 1M', 8.16, False),
     ('Picsart Pro 6 Months', 4.50, True),
     ('Pixverse 600 Credits', 1.00, False),
@@ -290,11 +290,34 @@ RETAIL_CATALOG_ITEMS = [
 ]
 
 
+def _resolve_retail_details_path(json_path: str = None) -> str:
+    if json_path is not None:
+        return json_path
+    try:
+        from crawl_retail_details import resolve_details_json_path
+        resolved = resolve_details_json_path()
+        if resolved and os.path.exists(resolved):
+            return str(resolved)
+    except Exception:
+        pass
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, "retail_catalog_details.json")
+
+
+def _is_menu_garbage(text: str) -> bool:
+    try:
+        from crawl_retail_details import is_menu_screen_text
+        return is_menu_screen_text(text)
+    except Exception:
+        if not text:
+            return True
+        low = text.lower()
+        return any(m in low for m in ("welcome to gemini pro store", "choose a category", "choose a product"))
+
+
 def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
     """Sync rich scraped descriptions, prices, and live stock from retail_catalog_details.json."""
-    if json_path is None:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        json_path = os.path.join(base_dir, "retail_catalog_details.json")
+    json_path = _resolve_retail_details_path(json_path)
 
     if not os.path.exists(json_path):
         return 0, 0
@@ -325,17 +348,22 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
     updated = 0
     inserted = 0
     for norm_k, item in data.items():
+        clean_norm = re.sub(r'[^a-z0-9]', '', str(norm_k).lower())
         name = item.get("item_name") or norm_k
         desc = item.get("description") or ""
         cost_usd = item.get("price_usd")
         stock = item.get("stock", 0)
         active = 1 if stock > 0 else 0
         cat = detect_category(name)
+        is_menu = _is_menu_garbage(desc)
 
-        if norm_k in by_norm:
-            pid, margin_val, is_fixed, cur_desc = by_norm[norm_k]
-            final_desc = desc if (desc and len(desc) >= len(cur_desc)) else (cur_desc or desc)
-            if cost_usd is not None and not is_fixed:
+        if clean_norm in by_norm:
+            pid, margin_val, is_fixed, cur_desc = by_norm[clean_norm]
+            # Ignore corrupted menu-screen captures so valid stock, price, and descriptions are preserved
+            if is_menu and (cost_usd is None or stock == 0):
+                continue
+            final_desc = cur_desc if is_menu else (desc if (desc and len(desc) >= len(cur_desc)) else (cur_desc or desc))
+            if cost_usd is not None and cost_usd > 0 and not is_fixed:
                 cost_cents = int(round(cost_usd * 100))
                 retail_cents = max(100, int(round(cost_cents * (1 + margin_val / 100.0))))
                 cur.execute("""
@@ -357,9 +385,13 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
                         category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
                     WHERE id = ?
                 """, (final_desc, stock, active, cat, pid))
+            by_norm[clean_norm] = (pid, margin_val, is_fixed, final_desc)
             updated += 1
         else:
-            cost_cents = int(round((cost_usd or 0.0) * 100))
+            if cost_usd is None or cost_usd <= 0:
+                continue
+            clean_desc = f"{name}\n\nVerified digital product delivery." if is_menu else desc
+            cost_cents = int(round(cost_usd * 100))
             retail_cents = max(100, int(round(cost_cents * 1.45)))
             cur.execute("""
                 INSERT INTO products (
@@ -367,9 +399,9 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
                     auto_fulfill, active, category, supplier, supplier_stock,
                     delivery_type, margin, fixed_price
                 ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'renqis_retail', ?, 'manual', 45, 0)
-            """, (name, desc, retail_cents, f"renqis_retail_{norm_k}", cost_cents, active, cat, stock))
+            """, (name, clean_desc, retail_cents, f"renqis_retail_{clean_norm}", cost_cents, active, cat, stock))
             inserted += 1
-            by_norm[norm_k] = (cur.lastrowid, 45, 0)
+            by_norm[clean_norm] = (cur.lastrowid, 45, 0, clean_desc)
 
     db_conn.commit()
     return updated, inserted
@@ -377,8 +409,7 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
 
 def seed_retail_catalog(db_conn):
     """Seed retail catalog products into database or update pricing/stock."""
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    json_path = os.path.join(base_dir, "retail_catalog_details.json")
+    json_path = _resolve_retail_details_path(None)
     if os.path.exists(json_path):
         updated, inserted = sync_retail_catalog_details(db_conn, json_path=json_path)
         if updated > 0 or inserted > 0:

@@ -5144,21 +5144,43 @@ async def perform_supplier_sync(
             errors.append(f"'{sup_name}': {e}")
             continue
 
+        # Collapse sibling feed SKUs with identical normalized names (e.g. invisible \u2063 variants)
+        existing_rows_by_sp = {}
+        existing_rows_by_norm = {}
+        for row in db.execute(
+            "SELECT id, name, supplier_product_id, price, margin, fixed_price FROM products WHERE supplier=?",
+            (sup_name,)
+        ).fetchall():
+            if row["supplier_product_id"]:
+                existing_rows_by_sp[str(row["supplier_product_id"])] = row
+            r_norm = re.sub(r"[^a-z0-9]", "", str(row["name"]).lower())
+            existing_rows_by_norm.setdefault(r_norm, row)
+
+        feed_groups = {}
+        for idx, sp in enumerate(sup_products):
+            sp_name_clean = re.sub(r"[\u2063\u2062\u200b]+", "", sp["name"]).strip() or sp["name"]
+            norm_k = re.sub(r"[^a-z0-9]", "", sp_name_clean.lower())
+            feed_groups.setdefault(norm_k, []).append((idx, sp, sp_name_clean))
+
         seen_supplier_ids = set()
-        for sp in sup_products:
+        for norm_k, group in feed_groups.items():
+            # Prefer in-stock SKU, then one already tracked in DB, then highest stock
+            def _pick_key(entry):
+                idx, sp_item, _ = entry
+                s_id = str(sp_item["id"])
+                st = sp_item.get("stock")
+                in_stk = 1 if (st is None or st > 0) else 0
+                in_db = 1 if s_id in existing_rows_by_sp else 0
+                return (in_stk, in_db, st or 0, -idx)
+
+            _, sp, clean_name = max(group, key=_pick_key)
             sp_id = str(sp["id"])
             seen_supplier_ids.add(sp_id)
             cost_cents = sp["price_cents"]
             stock = sp.get("stock")
-            cat = detect_category(sp["name"])
+            cat = detect_category(clean_name)
 
-            existing = db.execute(
-                "SELECT id, price, margin, fixed_price FROM products WHERE supplier_product_id=? AND supplier=?",
-                (sp_id, sup_name)
-            ).fetchone()
-
-            # Sync strictly by supplier_product_id from supplier API
-            pass
+            existing = existing_rows_by_sp.get(sp_id) or existing_rows_by_norm.get(norm_k)
 
             is_fixed = bool(existing and ("fixed_price" in existing.keys()) and existing["fixed_price"])
             is_active = 0 if (stock is not None and stock == 0) else 1
@@ -5186,13 +5208,13 @@ async def perform_supplier_sync(
                     SET name=?, description=?, price=?, supplier_price=?, auto_fulfill=1, active=?, category=?, supplier=?,
                         supplier_stock=?, delivery_type='auto', supplier_product_id=?, margin=?, fixed_price=?
                     WHERE id=?
-                """, (sp["name"], sp["description"], retail_cents, cost_cents, is_active, cat, sup_name, stock, sp_id, db_margin, db_fixed_price, existing["id"]))
+                """, (clean_name, sp["description"], retail_cents, cost_cents, is_active, cat, sup_name, stock, sp_id, db_margin, db_fixed_price, existing["id"]))
                 total_updated += 1
             else:
                 db.execute("""
                     INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type, margin, fixed_price)
                     VALUES(?,?,?,?,?,1,?,?,?,?, 'auto', ?, 0)
-                """, (sp["name"], sp["description"], retail_cents, sp_id, cost_cents, is_active, cat, sup_name, stock, None))
+                """, (clean_name, sp["description"], retail_cents, sp_id, cost_cents, is_active, cat, sup_name, stock, None))
                 total_added += 1
 
         # Clear legacy unlinked cached products
