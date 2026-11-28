@@ -935,7 +935,7 @@ class TestGuestCheckoutAndPurchases(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Qty:</b> 1", text)
         self.assertIn("Price:</b> $3.25 each", text)
         self.assertIn("Total:</b> $3.25 USDT", text)
-        self.assertIn("Buy more & save:", text)
+        self.assertNotIn("Buy more & save:", text)
 
         # Buttons verification
         flat_btns = [b for row in markup.inline_keyboard for b in row]
@@ -5292,6 +5292,159 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
                 await client.close()
         row_a = bot.db.execute("SELECT active, supplier_stock FROM products WHERE id=?", (pid_api,)).fetchone()
         self.assertEqual((row_a["active"], row_a["supplier_stock"]), (0, 0))
+
+    async def test_bulk_sale_pricing_tiers_floor_telegram_and_web_api(self):
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+        from web_api import register_web_routes
+
+        uid = 998899
+        admin_id = 123456
+        bot.ADMIN_IDS.add(admin_id)
+        bot.db.execute("INSERT OR REPLACE INTO users(id, currency, lang) VALUES(?, 'USD', 'en')", (uid,))
+        bot.db.execute("DELETE FROM products")
+        bot.set_usd_ngn_rate(1500)
+
+        # 1. Redeem-link product gets default 10+ (-$0.02), 20+ (-$0.04), 50+ (-$0.05) tiers
+        pid_redeem = bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type) "
+            "VALUES('ElevenLabs Redeem 131K Credits', 'Redeem link', 435, '292', 300, 1, 1, 'ElevenLabs', 'default', 60, 'auto')"
+        ).lastrowid
+        # 2. Redeem-link product with finite stock=31 hides 50 qty button
+        pid_redeem_31 = bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type) "
+            "VALUES('MiniMax Redeem 131K', 'Redeem link', 377, '344', 260, 1, 1, 'AI Tools', 'default', 31, 'auto')"
+        ).lastrowid
+        # 3. Tight-margin redeem-link product clamped cleanly at supplier_price wholesale floor ($1.00 = 100c)
+        pid_tight = bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type) "
+            "VALUES('Tight Margin Redeem Link', 'Tight floor test', 102, '999', 100, 1, 1, 'AI Tools', 'default', 80, 'auto')"
+        ).lastrowid
+        # 4. Non-redeem product (including 'LinkedIn') must NOT get bulk tiers or 'Buy more & save'
+        pid_normal = bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type) "
+            "VALUES('LinkedIn Career 3M', 'Career plan', 145, '38', 100, 1, 1, 'Social', 'default', 50, 'auto')"
+        ).lastrowid
+        bot.db.commit()
+
+        p_redeem = bot.db.execute("SELECT * FROM products WHERE id=?", (pid_redeem,)).fetchone()
+        p_redeem_31 = bot.db.execute("SELECT * FROM products WHERE id=?", (pid_redeem_31,)).fetchone()
+        p_tight = bot.db.execute("SELECT * FROM products WHERE id=?", (pid_tight,)).fetchone()
+        p_normal = bot.db.execute("SELECT * FROM products WHERE id=?", (pid_normal,)).fetchone()
+
+        # Verify wholesale floor & per-tier math
+        calc_10 = bot.calculate_bulk_order_price(p_redeem, 10)
+        self.assertEqual((calc_10["unit_cents"], calc_10["total_cents"], calc_10["discount_total_cents"]), (433, 4330, 20))
+        calc_20 = bot.calculate_bulk_order_price(p_redeem, 20)
+        self.assertEqual((calc_20["unit_cents"], calc_20["total_cents"], calc_20["discount_total_cents"]), (431, 8620, 80))
+        calc_50 = bot.calculate_bulk_order_price(p_redeem, 50)
+        self.assertEqual((calc_50["unit_cents"], calc_50["total_cents"], calc_50["discount_total_cents"]), (430, 21500, 250))
+
+        # Cost floor prevents 102c - 5c = 97c (< 100c wholesale cost)
+        calc_tight_50 = bot.calculate_bulk_order_price(p_tight, 50)
+        self.assertEqual((calc_tight_50["unit_cents"], calc_tight_50["total_cents"], calc_tight_50["discount_total_cents"]), (100, 5000, 100))
+
+        # Normal/LinkedIn product has zero bulk discount and hides 'Buy more & save'
+        calc_norm_50 = bot.calculate_bulk_order_price(p_normal, 50)
+        self.assertEqual((calc_norm_50["unit_cents"], calc_norm_50["total_cents"], calc_norm_50["discount_total_cents"]), (145, 7250, 0))
+        norm_summary, _ = bot.render_order_summary(uid, p_normal, 20, "shop")
+        self.assertNotIn("Buy more", norm_summary)
+
+        # Product card qty buttons include 20 & 50 when stock=60, only 20 when stock=31, and only 1/5/10 on non-redeem
+        card_60, kb_60 = bot.render_product_card(uid, p_redeem, "shop")
+        btns_60 = [b.text for row in kb_60.inline_keyboard for b in row]
+        for q_lbl in ("1", "5", "10", "20", "50"):
+            self.assertIn(q_lbl, btns_60)
+        self.assertIn("10+", card_60)
+
+        _, kb_31 = bot.render_product_card(uid, p_redeem_31, "shop")
+        btns_31 = [b.text for row in kb_31.inline_keyboard for b in row]
+        for q_lbl in ("1", "5", "10", "20"):
+            self.assertIn(q_lbl, btns_31)
+        self.assertNotIn("50", btns_31)
+
+        _, kb_norm = bot.render_product_card(uid, p_normal, "shop")
+        btns_norm = [b.text for row in kb_norm.inline_keyboard for b in row]
+        self.assertNotIn("20", btns_norm)
+        self.assertNotIn("50", btns_norm)
+
+        # Telegram summary, fiat methods, and payment order creation all charge exact discounted total
+        summary_20, _ = bot.render_order_summary(uid, p_redeem, 20, "shop")
+        self.assertIn("$86.20 USDT", summary_20)
+        self.assertIn("Buy more &amp; save:", summary_20)
+
+        with patch.object(bot, "is_bank_configured", return_value=True), \
+             patch.object(bot, "get_bank_accounts", return_value=[{"bank_name": "OPay", "account_number": "1234567890", "account_name": "CreditLog"}]), \
+             patch.object(bot, "is_bachs_configured", return_value=False):
+            _, fiat_kb = bot.render_fiat_payment_methods(uid, p_redeem, 20, "shop")
+        fiat_text = " ".join(b.text for row in fiat_kb.inline_keyboard for b in row)
+        self.assertIn(f"₦{round(86.20 * 1500):,}", fiat_text)
+
+        c_pay = AsyncMock()
+        c_pay.from_user.id = uid
+        c_pay.data = f"pay_opt:binance:{pid_redeem}:20:shop"
+        c_pay.answer = AsyncMock()
+        c_pay.message = AsyncMock()
+        bot._live_stock_cache.clear() if hasattr(bot, "_live_stock_cache") else None
+        mock_sup = AsyncMock()
+        mock_sup.api_key = "live_key"
+        mock_sup.get_product = AsyncMock(return_value={"id": "292", "name": "ElevenLabs Redeem 131K Credits", "price_cents": 300, "price_usd": 3.0, "stock": 60})
+        with patch.object(bot.supplier_registry, "get", return_value=mock_sup), \
+             patch.object(bot, "edit", new=AsyncMock()):
+            await bot.on_pay_option_selected(c_pay)
+        ord_tg = bot.db.execute("SELECT price, quantity FROM orders WHERE product_id=? ORDER BY id DESC LIMIT 1", (pid_redeem,)).fetchone()
+        self.assertEqual((ord_tg["price"], ord_tg["quantity"]), (8620, 20))
+
+        # Admin /setbulk supports % off (and respects cost floor) & /delbulk disables defaults cleanly
+        m_adm = AsyncMock()
+        m_adm.from_user.id = admin_id
+        cmd_pct = AsyncMock()
+        cmd_pct.args = f"{pid_redeem} 10:10% 20:50%"
+        await bot.admin_set_bulk(m_adm, cmd_pct)
+        p_redeem_pct = bot.db.execute("SELECT * FROM products WHERE id=?", (pid_redeem,)).fetchone()
+        # 10% off 435 = 392c (>= 300c); 50% off 435 = 218c -> clamped at 300c wholesale cost
+        self.assertEqual(bot.calculate_bulk_order_price(p_redeem_pct, 10)["unit_cents"], 392)
+        self.assertEqual(bot.calculate_bulk_order_price(p_redeem_pct, 20)["unit_cents"], 300)
+
+        # Web API /api/products/{id}, /api/orders/quote, and /api/orders/create stay in sync
+        app = web.Application()
+        with patch.dict(os.environ, {"CREDITLOG_BACKEND_SECRET": "test-web-secret"}), \
+             patch.object(bot.supplier_registry, "get", return_value=mock_sup):
+            register_web_routes(app, vars(bot))
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                res_prod = await client.get(f"/api/products/{pid_redeem}", headers={"X-CreditLog-Backend-Secret": "test-web-secret"})
+                d_prod = await res_prod.json()
+                self.assertEqual(res_prod.status, 200)
+                self.assertEqual([t["minQty"] for t in d_prod["data"]["bulkTiers"]], [10, 20])
+
+                res_quote = await client.post("/api/orders/quote", headers={"X-CreditLog-Backend-Secret": "test-web-secret"}, json={
+                    "productId": pid_redeem, "quantity": 10, "currency": "USD"
+                })
+                d_quote = await res_quote.json()
+                self.assertEqual(res_quote.status, 200)
+                self.assertEqual(d_quote["unitPriceUsd"], 3.92)
+                self.assertEqual(d_quote["totalUsd"], 39.20)
+                self.assertTrue(d_quote["bulkDiscountApplied"])
+
+                res_ord = await client.post("/api/orders/create", headers={"X-CreditLog-Backend-Secret": "test-web-secret"}, json={
+                    "productId": pid_redeem, "quantity": 10, "customerName": "Bulk Buyer",
+                    "customerEmail": "bulk@example.com", "gateway": "binance", "currency": "USD",
+                })
+                d_ord = await res_ord.json()
+                self.assertEqual(res_ord.status, 201)
+                self.assertEqual(d_ord["order"]["totalUsd"], 39.20)
+            finally:
+                await client.close()
+
+        # /delbulk permanently removes bulk discount even on a redeem-link SKU
+        cmd_delb = AsyncMock()
+        cmd_delb.args = str(pid_redeem)
+        await bot.admin_del_bulk(m_adm, cmd_delb)
+        p_redeem_cleared = bot.db.execute("SELECT * FROM products WHERE id=?", (pid_redeem,)).fetchone()
+        self.assertEqual(bot.get_product_bulk_tiers(p_redeem_cleared), [])
+        self.assertEqual(bot.calculate_bulk_order_price(p_redeem_cleared, 50)["total_cents"], 435 * 50)
 
 
 if __name__ == "__main__":

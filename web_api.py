@@ -144,6 +144,25 @@ def _require_admin(req, *roles):
     return claims, None
 
 
+def _bulk_pricing(service, row, quantity, unit_cents):
+    calc_fn = service["calculate_bulk_order_price"] if "calculate_bulk_order_price" in service else None
+    if calc_fn:
+        return calc_fn(row, quantity, unit_price_cents=unit_cents)
+    qty = max(1, int(quantity or 1))
+    base_unit = max(1, int(unit_cents))
+    return {
+        "base_unit_cents": base_unit,
+        "unit_cents": base_unit,
+        "unit_discount_cents": 0,
+        "total_cents": base_unit * qty,
+        "base_total_cents": base_unit * qty,
+        "discount_total_cents": 0,
+        "matched_tier": None,
+        "tiers": [],
+        "floored_by_cost": False,
+    }
+
+
 def _product(service, row):
     data = dict(row)
     stock_count = service["stock_count"](data["id"])
@@ -153,6 +172,18 @@ def _product(service, row):
     available = 999999 if is_supplier and stock is None else max(0, int(stock or 0))
     price = int(data.get("price") or 0)
     cost = int(data.get("supplier_price") or 0)
+    tiers_fn = service["get_effective_bulk_tiers"] if "get_effective_bulk_tiers" in service else None
+    eff_tiers = tiers_fn(row, unit_price_cents=price) if tiers_fn else []
+    bulk_tiers = [
+        {
+            "minQty": t["min_qty"],
+            "type": t["type"],
+            "value": t["value"],
+            "unitPriceUsd": round(t["unit_cents"] / 100, 2),
+            "discountPerUnitUsd": round(t["discount_cents"] / 100, 2),
+        }
+        for t in eff_tiers
+    ]
     return {
         "id": str(data["id"]), "botProductId": data["id"],
         "name": data["name"], "title": data["name"],
@@ -175,6 +206,7 @@ def _product(service, row):
         "autoFulfill": bool(data.get("auto_fulfill")),
         "deliveryType": data.get("delivery_type") or "auto",
         "variants": json.loads(data.get("web_options_json") or "[]"),
+        "bulkTiers": bulk_tiers,
         "margin": data.get("margin"), "fixedPrice": bool(data.get("fixed_price")),
     }
 
@@ -252,6 +284,7 @@ def _migrate_schema(service):
         "web_brand": "TEXT DEFAULT ''", "web_logo_url": "TEXT DEFAULT ''",
         "web_requirements": "TEXT DEFAULT ''", "web_delivery_instructions": "TEXT DEFAULT ''",
         "web_options_json": "TEXT DEFAULT '[]'", "web_duration": "TEXT DEFAULT ''",
+        "bulk_tiers": "TEXT DEFAULT NULL",
     }
     for name, definition in product_additions.items():
         if name not in product_columns:
@@ -410,13 +443,19 @@ def register_web_routes(app, service):
             unit_cents, duration = _selected_product_price(row, duration)
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             return _json(422, success=False, message=str(exc) or "Product option is invalid.")
-        total_cents = unit_cents * quantity
+        pricing = _bulk_pricing(service, row, quantity, unit_cents)
+        eff_unit_cents = pricing["unit_cents"]
+        total_cents = pricing["total_cents"]
         rate = service["get_usd_ngn_rate"]()
         usd_total = round(total_cents / 100, 2)
         ngn_total = round(usd_total * rate)
         currency = body.get("currency", "NGN").upper()
         return _json(200, success=True, productId=str(product_id), productName=row["name"], quantity=quantity,
-                     availableStock=count, inStock=bool(available), duration=duration, unitPriceUsd=round(unit_cents / 100, 2),
+                     availableStock=count, inStock=bool(available), duration=duration,
+                     baseUnitPriceUsd=round(unit_cents / 100, 2),
+                     unitPriceUsd=round(eff_unit_cents / 100, 2),
+                     bulkDiscountApplied=bool(pricing["discount_total_cents"] > 0),
+                     savingsUsd=round(pricing["discount_total_cents"] / 100, 2),
                      totalUsd=usd_total, totalNgn=ngn_total, currency=currency,
                      formattedPrice=f"${usd_total:.2f}" if currency == "USD" else f"₦{ngn_total:,}")
 
@@ -479,7 +518,7 @@ def register_web_routes(app, service):
             unit_cents, duration = _selected_product_price(row, duration)
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             return _json(422, success=False, message=str(exc) or "Product option is invalid.")
-        total = unit_cents * quantity
+        total = _bulk_pricing(service, row, quantity, unit_cents)["total_cents"]
         token = secrets.token_urlsafe(32)
         cur = service["db"].execute(
             "INSERT INTO orders(user_id,product_id,product_name,price,quantity,payment_method,status,customer_name,customer_email,customer_phone,delivery_channel,web_order_token_hash,web_currency,customer_notes,web_plan,delivery_contact) VALUES(?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)",

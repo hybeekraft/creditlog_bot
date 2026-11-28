@@ -144,7 +144,8 @@ CREATE TABLE IF NOT EXISTS products(
   category TEXT DEFAULT 'AI Tools',
   supplier TEXT DEFAULT 'default',
   supplier_stock INTEGER DEFAULT NULL,
-  delivery_type TEXT DEFAULT 'auto');
+  delivery_type TEXT DEFAULT 'auto',
+  bulk_tiers TEXT DEFAULT NULL);
 CREATE TABLE IF NOT EXISTS stock(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   product_id INTEGER NOT NULL,
@@ -793,6 +794,7 @@ def migrate_db():
             ("supplier", "TEXT DEFAULT 'default'"),
             ("supplier_stock", "INTEGER DEFAULT NULL"),
             ("delivery_type", "TEXT DEFAULT 'auto'"),
+            ("bulk_tiers", "TEXT DEFAULT NULL"),
         ],
         "orders": [
             ("supplier_order_id", "TEXT DEFAULT NULL"),
@@ -936,7 +938,8 @@ def resequence_product_ids(conn=None) -> Dict[int, int]:
                     supplier TEXT DEFAULT 'default',
                     supplier_stock INTEGER DEFAULT NULL,
                     delivery_type TEXT DEFAULT 'auto',
-                    fixed_price INTEGER DEFAULT 0
+                    fixed_price INTEGER DEFAULT 0,
+                    bulk_tiers TEXT DEFAULT NULL
                 )
             """)
 
@@ -1207,6 +1210,204 @@ def format_price(cents: Optional[int], currency: str = "USD") -> str:
 
 def format_user_price(cents: int, uid: int) -> str:
     return format_price(cents, get_user_currency(uid))
+
+
+DEFAULT_REDEEM_BULK_TIERS: tuple[dict, ...] = (
+    {"min_qty": 10, "type": "fixed", "value": 2},
+    {"min_qty": 20, "type": "fixed", "value": 4},
+    {"min_qty": 50, "type": "fixed", "value": 5},
+)
+
+
+def is_redeem_link_product(name: Optional[str]) -> bool:
+    """Identify redeem-link products using whole-word checks so unrelated words like 'LinkedIn' do not match."""
+    n = (name or "").lower()
+    return bool(re.search(r"\bredeem\b|\blink\b", n))
+
+
+def _normalize_bulk_tiers(tiers: list[dict]) -> list[dict]:
+    """Validate, deduplicate by min_qty, and sort bulk discount tiers ascending."""
+    by_qty: dict[int, dict] = {}
+    for item in tiers or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            mq = int(item.get("min_qty", item.get("minQty", 0)))
+        except (TypeError, ValueError):
+            continue
+        t_type = str(item.get("type", "fixed")).strip().lower()
+        if mq < 2 or mq > 1000 or t_type not in ("fixed", "percent"):
+            continue
+        try:
+            raw_val = float(item.get("value", 0))
+        except (TypeError, ValueError):
+            continue
+        if t_type == "fixed":
+            val = round(raw_val)
+            if val <= 0:
+                continue
+            by_qty[mq] = {"min_qty": mq, "type": "fixed", "value": int(val)}
+        else:
+            if not (0.0 < raw_val < 100.0):
+                continue
+            pct_val = round(raw_val, 2)
+            if pct_val.is_integer():
+                pct_val = int(pct_val)
+            by_qty[mq] = {"min_qty": mq, "type": "percent", "value": pct_val}
+    return [by_qty[q] for q in sorted(by_qty.keys())][:10]
+
+
+def get_product_bulk_tiers(p) -> list[dict]:
+    """Return configured bulk tiers for a product, or default 10+/20+/50+ tiers for redeem-link products."""
+    raw_tiers = p["bulk_tiers"] if (hasattr(p, "keys") and "bulk_tiers" in p.keys()) else (p.get("bulk_tiers") if isinstance(p, dict) else None)
+    if raw_tiers is not None and str(raw_tiers).strip() != "":
+        try:
+            parsed = json.loads(raw_tiers) if isinstance(raw_tiers, str) else raw_tiers
+            if isinstance(parsed, list):
+                # Explicitly stored "[]" disables default redeem-link tiers on this SKU
+                return _normalize_bulk_tiers(parsed)
+        except Exception:
+            return []
+    name = p["name"] if (hasattr(p, "keys") and "name" in p.keys()) else (p.get("name") if isinstance(p, dict) else "")
+    if is_redeem_link_product(name):
+        return [dict(t) for t in DEFAULT_REDEEM_BULK_TIERS]
+    return []
+
+
+def parse_bulk_tiers_spec(spec: str) -> list[dict]:
+    """Parse admin bulk tier rules like '10:-$0.02 20:-$0.04 50:-$0.05' or '10:5% 20:10%'."""
+    tokens = [tok.strip() for tok in re.split(r"[\s,;]+", (spec or "").strip()) if tok.strip()]
+    if not tokens:
+        raise ValueError("Provide at least one tier like 10:-$0.02 or 10:5%.")
+    parsed = []
+    for tok in tokens:
+        if ":" not in tok:
+            raise ValueError(f"Invalid tier '{tok}'. Expected format qty:discount (e.g. 10:-$0.02 or 10:5%).")
+        q_part, d_part = tok.split(":", 1)
+        q_clean = q_part.strip().rstrip("+")
+        if not q_clean.isdigit() or not (2 <= int(q_clean) <= 1000):
+            raise ValueError(f"Invalid tier quantity '{q_part}'. Must be between 2 and 1000.")
+        min_qty = int(q_clean)
+        d_clean = d_part.strip().lstrip("+-").strip()
+        if not d_clean:
+            raise ValueError(f"Missing discount value in tier '{tok}'.")
+        if d_clean.endswith("%"):
+            pct = float(d_clean[:-1].strip())
+            if not (0 < pct < 100):
+                raise ValueError(f"Percent discount in '{tok}' must be between 0% and 100%.")
+            parsed.append({"min_qty": min_qty, "type": "percent", "value": round(pct, 2)})
+        elif d_clean.lower().endswith("c") and "$" not in d_clean:
+            cents_val = round(float(d_clean[:-1].strip()))
+            if cents_val <= 0:
+                raise ValueError(f"Fixed discount in '{tok}' must be > 0.")
+            parsed.append({"min_qty": min_qty, "type": "fixed", "value": cents_val})
+        else:
+            usd_val = float(d_clean.lstrip("$").strip())
+            cents_val = round(usd_val * 100)
+            if cents_val <= 0:
+                raise ValueError(f"Fixed discount in '{tok}' must be > 0.")
+            parsed.append({"min_qty": min_qty, "type": "fixed", "value": cents_val})
+    normalized = _normalize_bulk_tiers(parsed)
+    if not normalized:
+        raise ValueError("No valid bulk pricing tiers provided.")
+    return normalized
+
+
+def _ensure_bulk_tiers_column():
+    if not db:
+        return
+    cols = {r["name"] for r in db.execute("PRAGMA table_info(products)").fetchall()}
+    if "bulk_tiers" not in cols:
+        db.execute("ALTER TABLE products ADD COLUMN bulk_tiers TEXT DEFAULT NULL")
+        db.commit()
+
+
+def set_product_bulk_tiers(pid: int, tiers: Optional[list[dict]]) -> None:
+    """Persist custom bulk tiers or explicitly disable default tiers ('[]' on redeem-link SKUs)."""
+    _ensure_bulk_tiers_column()
+    p = db.execute("SELECT name FROM products WHERE id=?", (pid,)).fetchone()
+    if not p:
+        return
+    if tiers is None:
+        raw_val = "[]" if is_redeem_link_product(p["name"]) else None
+    else:
+        raw_val = json.dumps(_normalize_bulk_tiers(tiers))
+    db.execute("UPDATE products SET bulk_tiers=? WHERE id=?", (raw_val, pid))
+    db.commit()
+
+
+def calculate_bulk_order_price(p, qty: int, unit_price_cents: Optional[int] = None) -> dict:
+    """Calculate total order price with matching bulk tier and wholesale supplier_price floor."""
+    q = max(1, int(qty or 1))
+    base_unit = max(1, int(unit_price_cents if unit_price_cents is not None else p["price"]))
+    sup_raw = p["supplier_price"] if (hasattr(p, "keys") and "supplier_price" in p.keys()) else (p.get("supplier_price") if isinstance(p, dict) else None)
+    sup_cost = int(sup_raw) if (sup_raw is not None and int(sup_raw) > 0) else None
+    # Never allow bulk discounts to push the unit selling price below wholesale cost
+    floor_cents = max(1, min(base_unit, sup_cost)) if sup_cost is not None else 1
+
+    tiers = get_product_bulk_tiers(p)
+    matched = None
+    for tier in tiers:
+        if q >= tier["min_qty"]:
+            matched = tier
+
+    eff_unit = base_unit
+    if matched:
+        if matched["type"] == "fixed":
+            raw_unit = base_unit - int(matched["value"])
+        else:
+            raw_unit = round(base_unit * (100.0 - float(matched["value"])) / 100.0)
+        eff_unit = max(floor_cents, min(base_unit, raw_unit))
+
+    unit_disc = base_unit - eff_unit
+    return {
+        "base_unit_cents": base_unit,
+        "unit_cents": eff_unit,
+        "unit_discount_cents": unit_disc,
+        "total_cents": eff_unit * q,
+        "base_total_cents": base_unit * q,
+        "discount_total_cents": unit_disc * q,
+        "matched_tier": matched if unit_disc > 0 else None,
+        "tiers": tiers,
+        "floor_cents": floor_cents,
+        "floored_by_cost": bool(matched and sup_cost is not None and raw_unit < floor_cents),
+    }
+
+
+def get_effective_bulk_tiers(p, unit_price_cents: Optional[int] = None) -> list[dict]:
+    """Return bulk tiers enriched with actual post-floor unit price and per-unit savings."""
+    raw_tiers = get_product_bulk_tiers(p)
+    out = []
+    prev_save = 0
+    for tier in raw_tiers:
+        calc = calculate_bulk_order_price(p, tier["min_qty"], unit_price_cents=unit_price_cents)
+        save_c = calc["unit_discount_cents"]
+        if save_c > prev_save:
+            out.append({
+                "min_qty": tier["min_qty"],
+                "type": tier["type"],
+                "value": tier["value"],
+                "unit_cents": calc["unit_cents"],
+                "discount_cents": save_c,
+                "floored_by_cost": calc["floored_by_cost"],
+            })
+            prev_save = save_c
+    return out
+
+
+def format_bulk_tier_lines(p, uid: int) -> list[str]:
+    """Format bulk tier bullet lines strictly in the user's selected display currency."""
+    eff_tiers = get_effective_bulk_tiers(p)
+    curr = get_user_currency(uid)
+    lines = []
+    for t_info in eff_tiers:
+        save_disp = format_price(t_info["discount_cents"], curr)
+        unit_disp = format_price(t_info["unit_cents"], curr)
+        if t_info["type"] == "percent":
+            lines.append(f"• {t_info['min_qty']}+ pcs — {t_info['value']}% off (save {save_disp} each · {unit_disp} each)")
+        else:
+            lines.append(f"• {t_info['min_qty']}+ pcs — save {save_disp} each ({unit_disp} each)")
+    return lines
 
 
 def parse_currency_amount(raw_amount: str, default_curr: str = "USD") -> Tuple[int, str, float]:
@@ -1724,34 +1925,37 @@ def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, Inline
         price_disp = f"{p['price'] / 100:.2f} USD"
 
     desc = (p["description"] or "").strip()
+    bulk_lines = format_bulk_tier_lines(p, uid)
+    bulk_block = f"\n\n💡 <b>Buy more &amp; save:</b>\n" + "\n".join(bulk_lines) if bulk_lines else ""
     if desc:
         text = (
             f"Item: <b>{esc(p['name'])}</b>\n"
             f"📝 Description: {esc(desc)}\n\n"
             f"💵 Price: {price_disp}\n"
-            f"{stock_line}"
+            f"{stock_line}{bulk_block}"
         )
     else:
         text = (
             f"Item: <b>{esc(p['name'])}</b>\n\n"
             f"💵 Price: {price_disp}\n"
-            f"{stock_line}"
+            f"{stock_line}{bulk_block}"
         )
 
     rows = []
     if has_stock:
-        qty_row = []
-        qty_row.append(btn("1", f"buyqty:{p['id']}:1:{ctx}", style="success"))
-        if is_auto or deliv_type == "manual":
-            qty_row.append(btn("5", f"buyqty:{p['id']}:5:{ctx}", style="success"))
-            qty_row.append(btn("10", f"buyqty:{p['id']}:10:{ctx}", style="success"))
-        else:
-            if count and count >= 5:
-                qty_row.append(btn("5", f"buyqty:{p['id']}:5:{ctx}", style="success"))
-                qty_row.append(btn(f"All {count}", f"buyqty:{p['id']}:{count}:{ctx}", style="success"))
-            elif count and count > 1:
-                qty_row.append(btn(f"All {count}", f"buyqty:{p['id']}:{count}:{ctx}", style="success"))
-        rows.append(qty_row)
+        is_finite_local = not is_auto and deliv_type != "manual"
+        max_avail = count if is_finite_local else (sup_stock if sup_stock is not None else None)
+        base_qtys = [1, 5] if is_finite_local else [1, 5, 10]
+        if bulk_lines:
+            base_qtys.extend(t_info["min_qty"] for t_info in get_effective_bulk_tiers(p))
+        allowed_qtys = [q for q in sorted(set(base_qtys)) if max_avail is None or q <= max_avail]
+        qty_items = [(str(q), q) for q in allowed_qtys]
+        if is_finite_local and count and count > 1 and count not in allowed_qtys:
+            qty_items.append((f"All {count}", count))
+
+        qty_btns = [btn(label, f"buyqty:{p['id']}:{q_val}:{ctx}", style="success") for label, q_val in qty_items]
+        for i in range(0, len(qty_btns), 5):
+            rows.append(qty_btns[i : i + 5])
         rows.append([btn(t(uid, "btn_custom_qty"), f"cqty:{p['id']}:{ctx}", style="primary")])
 
     # Back button target
@@ -2329,35 +2533,54 @@ async def verify_bachs_transaction(checkout_id: str) -> Tuple[bool, dict]:
 
 def render_order_summary(uid: int, p: sqlite3.Row, qty: int, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
     """Order summary before payment."""
-    total_cents = p["price"] * qty
-    icon = get_product_icon(p["name"], p["category"] if "category" in p.keys() else None)
-    unit_usd = f"{p['price'] / 100:.2f}"
-    total_usd = f"{total_cents / 100:.2f}"
+    pricing = calculate_bulk_order_price(p, qty)
+    base_unit_cents = pricing["base_unit_cents"]
+    unit_cents = pricing["unit_cents"]
+    total_cents = pricing["total_cents"]
+    disc_total_cents = pricing["discount_total_cents"]
 
+    icon = get_product_icon(p["name"], p["category"] if "category" in p.keys() else None)
     curr = get_user_currency(uid)
     if curr == "NGN":
         rate = get_usd_ngn_rate()
-        unit_ngn = round((p["price"] / 100.0) * rate)
+        base_unit_ngn = round((base_unit_cents / 100.0) * rate)
+        unit_ngn = round((unit_cents / 100.0) * rate)
         total_ngn = round((total_cents / 100.0) * rate)
+        disc_line = (
+            f"🏷 <b>Bulk Price:</b> ₦{unit_ngn:,} each (saved ₦{round((disc_total_cents / 100.0) * rate):,})\n"
+            if disc_total_cents > 0 else ""
+        )
         price_lines = (
-            f"🤑 <b>Price:</b> ₦{unit_ngn:,}\n"
+            f"🤑 <b>Price:</b> ₦{base_unit_ngn:,}\n"
+            f"{disc_line}"
             f"🪙 <b>Total:</b> ₦{total_ngn:,}\n\n"
         )
     else:
+        base_unit_usd = f"{base_unit_cents / 100:.2f}"
+        unit_usd = f"{unit_cents / 100:.2f}"
+        total_usd = f"{total_cents / 100:.2f}"
+        disc_line = (
+            f"🏷 <b>Bulk Price:</b> ${unit_usd} each (saved ${disc_total_cents / 100:.2f})\n"
+            if disc_total_cents > 0 else ""
+        )
         price_lines = (
-            f"🤑 <b>Price:</b> ${unit_usd} each\n"
+            f"🤑 <b>Price:</b> ${base_unit_usd} each\n"
+            f"{disc_line}"
             f"🪙 <b>Total:</b> ${total_usd} USDT\n\n"
         )
+
+    bulk_lines = format_bulk_tier_lines(p, uid)
+    bulk_section = (
+        "💡 <b>Buy more &amp; save:</b>\n" + "\n".join(bulk_lines) + "\n\n"
+        if bulk_lines else ""
+    )
 
     text = (
         "🧾 <b>Order Summary</b>\n\n"
         f"🥇 {icon} <b>{esc(p['name'])}</b>\n"
         f"🔢 <b>Qty:</b> {qty}\n"
         f"{price_lines}"
-        "💡 <b>Buy more & save:</b>\n"
-        "• 10+ redeem links — save $0.02 each\n"
-        "• 20+ redeem links — save $0.04 each\n"
-        "• 50+ redeem links — save $0.05 each\n\n"
+        f"{bulk_section}"
         "<b>Choose how to pay:</b>"
     )
     rows = [
@@ -2398,8 +2621,9 @@ def render_fiat_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) ->
     _ = uid
     pid = p["id"]
     rate = get_usd_ngn_rate()
-    total_ngn = round((p["price"] * qty / 100.0) * rate)
-    total_usd = f"{(p['price'] * qty / 100.0):.2f}"
+    total_cents = calculate_bulk_order_price(p, qty)["total_cents"]
+    total_ngn = round((total_cents / 100.0) * rate)
+    total_usd = f"{(total_cents / 100.0):.2f}"
 
     rows = []
     if is_bachs_configured():
@@ -2641,7 +2865,7 @@ async def on_pay_option_selected(c: CallbackQuery):
     if not ok:
         return await c.answer(err_msg or t(uid, "out_of_stock"), show_alert=True)
 
-    total_cents = p["price"] * qty
+    total_cents = calculate_bulk_order_price(p, qty)["total_cents"]
     total_usdt = f"{total_cents / 100:.2f}"
     icon = get_product_icon(p["name"], p["category"] if "category" in p.keys() else None)
 
@@ -3114,9 +3338,11 @@ async def on_custom_qty(c: CallbackQuery):
     deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
     count = stock_count(pid) if (not is_auto and deliv_type != "manual") else 999
 
+    bulk_lines = format_bulk_tier_lines(p, uid)
+    bulk_hint = "\n\n💡 <b>Bulk Pricing:</b>\n" + "\n".join(bulk_lines) if bulk_lines else ""
     await c.message.answer(
         f"✏️ <b>Enter Custom Quantity for {esc(p['name'])}:</b>\n"
-        f"💵 <b>Unit Price:</b> {format_user_price(p['price'], uid)}\n\n"
+        f"💵 <b>Unit Price:</b> {format_user_price(p['price'], uid)}{bulk_hint}\n\n"
         f"Please send the quantity you want to purchase (1 to {count} pcs).\n"
         f"Send /cancel to return to the product card."
     )
@@ -3671,6 +3897,9 @@ def render_admin_help() -> Tuple[str, InlineKeyboardMarkup]:
         "/addproduct &lt;price&gt; [currency] &lt;name&gt; [| description] (e.g. $12.50 or 15000 NGN)\n"
         "/setprice &lt;product_id&gt; &lt;price&gt; [currency] (e.g. /setprice 1 15000 NGN or $12.50)\n"
         "/clearprices [product_id] - Clear manual price overrides & reset to dynamic supplier pricing\n"
+        "/bulk [product_id] - View bulk sale pricing rules\n"
+        "/setbulk &lt;product_id&gt; &lt;tiers...&gt; - Set bulk discount ($ off or %, e.g. 10:-$0.02 20:5%)\n"
+        "/delbulk &lt;product_id&gt; - Remove bulk pricing rules from a product\n"
         "/clearcache - Clear all cached products & sync totally from supplier API\n"
         "/sync_retail - Sync retail catalog descriptions and stock from supplier scraper data\n"
         "/crawl_retail - Crawl live supplier bot to discover new SKUs and refresh stock\n"
@@ -4725,6 +4954,130 @@ async def admin_clearprices(m: Message, command: CommandObject = None):
         f"• Active store profit margin: <b>{global_margin}%</b>\n\n"
         f"<i>All supplier products are now dynamically calculated from wholesale costs.</i>"
     )
+
+
+@dp.message(Command("bulk", "bulkprice", "bulkpricing"), is_admin)
+async def admin_list_bulk(m: Message, command: CommandObject = None):
+    """View bulk pricing tiers storewide or for one product ID."""
+    args = (command.args or "").strip() if command else ""
+    admin_curr = get_user_currency(m.from_user.id)
+    if args and args.isdigit():
+        pid = int(args)
+        p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+        if not p:
+            return await m.answer(f"⚠️ Product #{pid} not found.")
+        eff = get_effective_bulk_tiers(p)
+        sup_disp = format_price(p["supplier_price"], admin_curr) if ("supplier_price" in p.keys() and p["supplier_price"]) else "N/A"
+        if not eff:
+            return await m.answer(
+                f"📦 <b>#{pid} {esc(p['name'])}</b>\n"
+                f"• Unit Price: <b>{format_price(p['price'], admin_curr)}</b> · Wholesale Floor: <b>{sup_disp}</b>\n"
+                f"• Bulk Tiers: <i>None configured</i>\n\n"
+                f"Use <code>/setbulk {pid} 10:-$0.02 20:-$0.04 50:-$0.05</code> or <code>/setbulk {pid} 10:5% 20:10%</code>."
+            )
+        lines = [
+            f"📦 <b>Bulk Pricing · #{pid} {esc(p['name'])}</b>",
+            f"• Base Price: <b>{format_price(p['price'], admin_curr)}</b> · Wholesale Floor: <b>{sup_disp}</b>",
+            "",
+        ]
+        for t_info in eff:
+            kind_lbl = f"{t_info['value']}% off" if t_info["type"] == "percent" else f"-{format_price(t_info['discount_cents'], admin_curr)}"
+            floor_tag = " <i>(at cost floor)</i>" if t_info["floored_by_cost"] else ""
+            lines.append(
+                f"• <b>{t_info['min_qty']}+ pcs</b>: {kind_lbl} → <b>{format_price(t_info['unit_cents'], admin_curr)} each</b> "
+                f"(save {format_price(t_info['discount_cents'], admin_curr)}/pc){floor_tag}"
+            )
+        lines.append(f"\nRemove with <code>/delbulk {pid}</code>.")
+        return await m.answer("\n".join(lines))
+
+    prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
+    configured = [(p, get_effective_bulk_tiers(p)) for p in prods]
+    configured = [(p, eff) for p, eff in configured if eff]
+    lines = [f"🏷 <b>Active Bulk Pricing Rules ({len(configured)} products)</b>\n"]
+    if not configured:
+        lines.append("<i>No products currently have bulk sale tiers.</i>")
+    else:
+        for p, eff in configured[:30]:
+            summary = ", ".join(
+                f"{t_info['min_qty']}+:{t_info['value']}%" if t_info["type"] == "percent" else f"{t_info['min_qty']}+:-${t_info['discount_cents'] / 100:.2f}"
+                for t_info in eff
+            )
+            lines.append(f"• <code>#{p['id']}</code> <b>{esc(p['name'])}</b> — {esc(summary)}")
+        if len(configured) > 30:
+            lines.append(f"<i>...and {len(configured) - 30} more. Use /bulk &lt;product_id&gt; to inspect.</i>")
+    lines.append(
+        "\n💡 <b>Commands:</b>\n"
+        "• <code>/setbulk &lt;id&gt; 10:-$0.02 20:-$0.04 50:-$0.05</code>\n"
+        "• <code>/setbulk &lt;id&gt; 10:5% 20:10%</code>\n"
+        "• <code>/delbulk &lt;id&gt;</code>"
+    )
+    await m.answer("\n".join(lines))
+
+
+@dp.message(Command("setbulk", "setbulkprice"), is_admin)
+async def admin_set_bulk(m: Message, command: CommandObject = None):
+    """Set fixed-$ or percentage bulk discount tiers for a product ID."""
+    args = (command.args or "").strip() if command else ""
+    parts = args.split(None, 1)
+    if len(parts) < 2 or not parts[0].isdigit():
+        return await m.answer(
+            "<b>Usage:</b>\n"
+            "• <code>/setbulk &lt;product_id&gt; 10:-$0.02 20:-$0.04 50:-$0.05</code>\n"
+            "• <code>/setbulk &lt;product_id&gt; 10:5% 20:10% 50:15%</code>\n"
+            "• <code>/setbulk &lt;product_id&gt; default</code> (restore default redeem-link tiers)"
+        )
+    pid = int(parts[0])
+    spec = parts[1].strip()
+    p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+    if not p:
+        return await m.answer(f"⚠️ Product #{pid} not found.")
+
+    try:
+        if spec.lower() in ("default", "reset"):
+            if not is_redeem_link_product(p["name"]):
+                return await m.answer("⚠️ Default redeem-link tiers only apply to redeem-link products. Specify explicit tiers like <code>10:5% 20:10%</code>.")
+            _ensure_bulk_tiers_column()
+            db.execute("UPDATE products SET bulk_tiers=NULL WHERE id=?", (pid,))
+            db.commit()
+        elif spec.lower() in ("off", "none", "clear", "remove"):
+            set_product_bulk_tiers(pid, None)
+            return await m.answer(f"🗑️ Bulk pricing disabled for #{pid} (<b>{esc(p['name'])}</b>).")
+        else:
+            tiers = parse_bulk_tiers_spec(spec)
+            set_product_bulk_tiers(pid, tiers)
+    except ValueError as e:
+        return await m.answer(f"⚠️ {esc(str(e))}")
+
+    updated = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+    eff = get_effective_bulk_tiers(updated)
+    admin_curr = get_user_currency(m.from_user.id)
+    if not eff:
+        return await m.answer(
+            f"⚠️ Bulk tiers saved for #{pid} (<b>{esc(updated['name'])}</b>), but current selling price is already at or below wholesale cost."
+        )
+    tier_lines = [
+        f"• <b>{t_info['min_qty']}+ pcs</b>: <b>{format_price(t_info['unit_cents'], admin_curr)} each</b> "
+        f"(save {format_price(t_info['discount_cents'], admin_curr)}/pc)"
+        + (" <i>[floored at cost]</i>" if t_info["floored_by_cost"] else "")
+        for t_info in eff
+    ]
+    await m.answer(
+        f"✅ <b>Bulk pricing updated for #{pid} {esc(updated['name'])}</b>\n\n" + "\n".join(tier_lines)
+    )
+
+
+@dp.message(Command("delbulk", "clearbulk", "removebulk"), is_admin)
+async def admin_del_bulk(m: Message, command: CommandObject = None):
+    """Remove bulk discount tiers from a product ID."""
+    args = (command.args or "").strip() if command else ""
+    if not args.isdigit():
+        return await m.answer("Usage: <code>/delbulk &lt;product_id&gt;</code>")
+    pid = int(args)
+    p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+    if not p:
+        return await m.answer(f"⚠️ Product #{pid} not found.")
+    set_product_bulk_tiers(pid, None)
+    await m.answer(f"🗑️ Bulk sale pricing removed for #{pid} (<b>{esc(p['name'])}</b>).")
 
 
 @dp.message(Command("toggle"), is_admin)
@@ -6088,6 +6441,9 @@ async def main():
             BotCommand(command="setguide", description="Add or edit a category page message"),
             BotCommand(command="delguide", description="Remove a category page message"),
             BotCommand(command="clearprices", description="Clear manual price overrides"),
+            BotCommand(command="bulk", description="View bulk sale pricing rules"),
+            BotCommand(command="setbulk", description="Configure product bulk discount tiers"),
+            BotCommand(command="delbulk", description="Remove product bulk discount tiers"),
             BotCommand(command="clearcache", description="Clear cached products & sync from supplier API"),
             BotCommand(command="sync_retail", description="Sync retail catalog descriptions & stock"),
             BotCommand(command="crawl_retail", description="Crawl supplier bot for new SKUs & live stock"),
