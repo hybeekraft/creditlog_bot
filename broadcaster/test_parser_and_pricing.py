@@ -511,6 +511,52 @@ class TestParserAndPricing(unittest.TestCase):
         finally:
             tmp_path.unlink(missing_ok=True)
 
+    def test_sync_product_from_broadcast_no_cross_match_antigravity_and_keeps_retail_supplier(self):
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        try:
+            from broadcaster import broadcaster as b
+        except ImportError:
+            import broadcaster as b
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            tmp_path = Path(f.name)
+        try:
+            conn = sqlite3.connect(tmp_path)
+            conn.execute("""
+                CREATE TABLE products (
+                    id INTEGER PRIMARY KEY, name TEXT, description TEXT, price INTEGER,
+                    active INTEGER, supplier_product_id TEXT, supplier_price INTEGER,
+                    auto_fulfill INTEGER, margin INTEGER, category TEXT,
+                    supplier TEXT, supplier_stock INTEGER, delivery_type TEXT, fixed_price INTEGER DEFAULT 0
+                )
+            """)
+            # Hydrogen 3M FAM is OUT OF STOCK (0); restock alert arrives for Hydro 3M Solo FAM
+            conn.execute("""
+                INSERT INTO products (id, name, price, active, supplier_product_id, supplier_price, supplier, supplier_stock, fixed_price)
+                VALUES (165, 'AntiGravity Argon/Hydrogen 3M FAM', 725, 0, 'renqis_retail_1', 500, 'renqis_retail', 0, 0)
+            """)
+            conn.commit()
+            conn.close()
+
+            orig_db = b.DB_PATH
+            b.DB_PATH = tmp_path
+            try:
+                new_pid = b.sync_product_from_broadcast("AntiGravity Argon/Hydro 3M Solo FAM", cost_usd=6.90, new_price_usd=10.00)
+                conn = sqlite3.connect(tmp_path)
+                hyd = conn.execute("SELECT active, supplier_stock FROM products WHERE id=165").fetchone()
+                new_row = conn.execute("SELECT supplier, supplier_product_id FROM products WHERE id=?", (new_pid,)).fetchone()
+                conn.close()
+                self.assertEqual(hyd, (0, 0))
+                self.assertNotEqual(new_pid, 165)
+                self.assertEqual(new_row[0], "renqis_retail")
+                self.assertTrue(bool(new_row[1]))
+            finally:
+                b.DB_PATH = orig_db
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
     def test_supplier_screenshots_exact_flow(self):
         # 1. Screenshot 1: New product alert
         img1_msg = (

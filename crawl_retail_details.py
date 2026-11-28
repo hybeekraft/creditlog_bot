@@ -194,32 +194,55 @@ def parse_detail_text(text: str) -> dict:
     }
 
 
-def update_db_product(name: str, desc: str, stock: int, cost_usd: Optional[float] = None, db_path=None):
-    """Updates an existing product (default or renqis_retail) or inserts a new retail product if not found."""
+def update_db_product(
+    name: str,
+    desc: str,
+    stock: int,
+    cost_usd: Optional[float] = None,
+    db_path=None,
+    allow_multi_price: bool = False,
+):
+    """Updates an existing product (preserving live API stock/prices on default rows) or inserts a new retail SKU."""
     conn = None
     try:
         target_path = resolve_db_path(db_path)
         conn = sqlite3.connect(target_path)
         cur = conn.cursor()
         norm = norm_name(name)
+        target_cost_cents = int(round(cost_usd * 100)) if (cost_usd is not None and cost_usd > 0) else None
 
-        rows = cur.execute("SELECT id, name, margin, fixed_price, supplier, auto_fulfill, description FROM products").fetchall()
+        rows = cur.execute(
+            "SELECT id, name, margin, fixed_price, supplier, auto_fulfill, description, supplier_price FROM products"
+        ).fetchall()
         matched_id = None
         matched_desc = ""
+        matched_is_api = False
         margin = 45
         fixed_price = 0
 
-        # Prioritize matching an existing product. If multiple exist, prioritize auto_fulfill/default
         candidates = []
-        for pid, pname, pmargin, pfixed, psup, pauto, pdesc in rows:
+        for pid, pname, pmargin, pfixed, psup, pauto, pdesc, psup_price in rows:
             if norm_name(pname) == norm:
-                candidates.append((pid, pname, pmargin, pfixed, psup, pauto, pdesc))
+                candidates.append((pid, pname, pmargin, pfixed, psup, pauto, pdesc, psup_price))
 
         if candidates:
-            # Prefer supplier='default' or auto_fulfill=1
-            candidates.sort(key=lambda c: (1 if (c[4] == 'default' or c[5]) else 0, -c[0]), reverse=True)
-            matched_id, _, pmargin, fixed_price, _, _, matched_desc = candidates[0]
-            margin = pmargin if pmargin is not None else 45
+            def _cand_key(c):
+                c_cost = c[7] or 0
+                price_hit = 1 if (target_cost_cents is not None and c_cost > 0 and abs(c_cost - target_cost_cents) <= 1) else 0
+                is_api = 1 if (c[4] == "default" or c[5]) else 0
+                return (price_hit, is_api, -c[0])
+
+            candidates.sort(key=_cand_key, reverse=True)
+            best = candidates[0]
+            best_cost = best[7] or 0
+            # Keep distinct-price variants separate when multiple prices exist on supplier bot
+            price_mismatch = bool(
+                allow_multi_price and target_cost_cents is not None and best_cost > 0 and abs(best_cost - target_cost_cents) > 1
+            )
+            if not price_mismatch:
+                matched_id, _, pmargin, fixed_price, psup, pauto, matched_desc, _ = best
+                matched_is_api = bool(psup == "default" or pauto)
+                margin = pmargin if pmargin is not None else 45
 
         if matched_id:
             active = 1 if stock > 0 else 0
@@ -231,7 +254,18 @@ def update_db_product(name: str, desc: str, stock: int, cost_usd: Optional[float
                 cat = detect_category(name)
             except Exception:
                 pass
-            if cost_usd is not None and cost_usd > 0 and not fixed_price:
+            if matched_is_api:
+                # Never overwrite live Reseller API stock, active status, or pricing with retail scrape guesses
+                cur.execute(
+                    """
+                    UPDATE products
+                    SET description = ?,
+                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
+                    WHERE id = ?
+                """,
+                    (effective_desc, cat, matched_id),
+                )
+            elif cost_usd is not None and cost_usd > 0 and not fixed_price:
                 cost_cents = int(round(cost_usd * 100))
                 retail_cents = max(100, int(round(cost_cents * (1 + margin / 100.0))))
                 cur.execute(
@@ -276,7 +310,7 @@ def update_db_product(name: str, desc: str, stock: int, cost_usd: Optional[float
             retail_cents = max(100, int(round(cost_cents * 1.45)))
             active = 1 if stock > 0 else 0
             clean_desc = f"{name}\n\nVerified digital product delivery." if is_menu_screen_text(desc) else desc
-            sp_id = f"renqis_retail_{norm}"
+            sp_id = f"renqis_retail_{norm}_{cost_cents}" if allow_multi_price else f"renqis_retail_{norm}"
             cur.execute(
                 """
                 INSERT INTO products (
@@ -503,6 +537,114 @@ async def open_catalog(client, bot):
     return cur_msg
 
 
+_telethon_nav_lock = asyncio.Lock()
+
+
+async def check_live_retail_item_stock(
+    item_name: str,
+    expected_price_usd: Optional[float] = None,
+    page_hint: Optional[str] = None,
+) -> Optional[dict]:
+    """Quickly checks live stock for one retail item on @geminiprosub_bot via active Telethon client."""
+    try:
+        from broadcaster.broadcaster import get_active_client
+        client = get_active_client()
+    except Exception:
+        return None
+    if client is None or not client.is_connected():
+        return None
+
+    try:
+        await asyncio.wait_for(_telethon_nav_lock.acquire(), timeout=3.0)
+    except Exception:
+        return None
+
+    try:
+        bot = await client.get_entity(TARGET_BOT)
+        sent = await client.send_message(bot, "/start")
+        cur_msg: Any = await _wait_for_incoming_reply(client, bot, after_id=getattr(sent, "id", 0) or 0, timeout=8.0)
+        if not cur_msg:
+            return None
+
+        if not _has_catalog_pagination(cur_msg):
+            shop_btn = _find_button_any(cur_msg, ("shop", "catalog", "store", "products"))
+            if shop_btn:
+                before_sig = _button_signature(cur_msg)
+                await _click_inline_button(cur_msg, shop_btn)
+                cur_msg = await _wait_for_menu_transition(client, bot, cur_msg, before_sig, timeout=8.0)
+
+        # Jump directly into matching category screen when available (1-2 pages instead of 20)
+        if not _has_catalog_pagination(cur_msg):
+            cat_guess = ""
+            try:
+                from bot import detect_category
+                cat_guess = detect_category(item_name).lower()
+            except Exception:
+                pass
+            target_btn = _find_button(cur_msg, cat_guess) if cat_guess and cat_guess != "ai tools" else None
+            if not target_btn:
+                target_btn = _find_button_any(cur_msg, ("all items", "all products", "full catalog", "open catalog", "view all"))
+            if target_btn:
+                before_sig = _button_signature(cur_msg)
+                await _click_inline_button(cur_msg, target_btn)
+                cur_msg = await _wait_for_menu_transition(client, bot, cur_msg, before_sig, timeout=8.0)
+
+        if not cur_msg or not getattr(cur_msg, "reply_markup", None):
+            return None
+
+        target_norm = norm_name(item_name)
+        target_cents = int(round(expected_price_usd * 100)) if (expected_price_usd and expected_price_usd > 0) else None
+        max_scan = 20 if page_hint else 5
+
+        for _ in range(max_scan):
+            for r in getattr(cur_msg.reply_markup, "rows", []):
+                for b in r.buttons:
+                    data = getattr(b, "data", None)
+                    if data is None and hasattr(b, "type"):
+                        data = getattr(b.type, "data", None)
+                    clean_btn = (getattr(b, "text", "") or "").strip()
+                    if not is_product_button(clean_btn, data):
+                        continue
+                    info = parse_catalog_button(clean_btn)
+                    if norm_name(info["name"]) != target_norm:
+                        continue
+                    b_cents = int(round(info["price_usd"] * 100)) if info.get("price_usd") else None
+                    if target_cents and b_cents and abs(b_cents - target_cents) > 1:
+                        continue
+                    if not info["is_in_stock"]:
+                        return {"in_stock": False, "stock": 0, "price_usd": info.get("price_usd")}
+                    # Click product button to confirm exact piece count
+                    before_detail_sig = _button_signature(cur_msg)
+                    await _click_inline_button(cur_msg, b)
+                    detail_msg = await _wait_for_menu_transition(client, bot, cur_msg, before_detail_sig, timeout=6.0, in_place_only=True)
+                    detail_txt = getattr(detail_msg, "text", "") or ""
+                    if detail_msg and not is_menu_screen_text(detail_txt):
+                        parsed = parse_detail_text(detail_txt)
+                        live_qty = parsed.get("stock", 0)
+                        return {
+                            "in_stock": live_qty > 0,
+                            "stock": live_qty,
+                            "price_usd": info.get("price_usd") or parsed.get("price_usd"),
+                        }
+                    return {"in_stock": True, "stock": info.get("stock", 1), "price_usd": info.get("price_usd")}
+
+            next_btn = _find_button_any(cur_msg, ("▶️", "➡️", "▶", "➡"))
+            if not next_btn:
+                break
+            before_sig = _button_signature(cur_msg)
+            await _click_inline_button(cur_msg, next_btn)
+            next_msg = await _wait_for_menu_transition(client, bot, cur_msg, before_sig, timeout=6.0, in_place_only=True)
+            if not next_msg or _button_signature(next_msg) == before_sig:
+                break
+            cur_msg = next_msg
+    except Exception as e:
+        logger.debug("Live retail stock check skipped for [%s]: %s", item_name, e)
+    finally:
+        if _telethon_nav_lock.locked():
+            _telethon_nav_lock.release()
+    return None
+
+
 def _persist_cache(details_cache: dict, primary_path: Path):
     with open(primary_path, "w", encoding="utf-8") as f:
         json.dump(details_cache, f, indent=2, ensure_ascii=False)
@@ -583,7 +725,9 @@ async def run_retail_crawler(
     current_page = 1
     total_pages = 19
     seen_norms = set()
+    seen_norm_prices = {}
     crawl_incomplete = False
+    nav_locked = False
 
     try:
         try:
@@ -629,6 +773,8 @@ async def run_retail_crawler(
                     "pages_scanned": 0,
                 }
 
+        await _telethon_nav_lock.acquire()
+        nav_locked = True
         bot = await client.get_entity(TARGET_BOT)
         cat_msg: Any = await open_catalog(client, bot)
         if not cat_msg:
@@ -679,6 +825,11 @@ async def run_retail_crawler(
                 except Exception:
                     pass
 
+            page_norm_counts = {}
+            for pb_text, _ in prod_buttons:
+                pnk = norm_name(parse_catalog_button(pb_text)["name"])
+                page_norm_counts[pnk] = page_norm_counts.get(pnk, 0) + 1
+
             for idx, (b_text, b_data) in enumerate(prod_buttons, 1):
                 btn_info = parse_catalog_button(b_text)
                 btn_name = btn_info["name"]
@@ -686,8 +837,14 @@ async def run_retail_crawler(
                 live_stock = btn_info["stock"]
                 norm_k = norm_name(btn_name)
                 seen_norms.add(norm_k)
+                price_cents = int(round(live_price * 100)) if (live_price is not None and live_price > 0) else 0
+                prev_price_set = seen_norm_prices.setdefault(norm_k, set())
+                if price_cents > 0:
+                    prev_price_set.add(price_cents)
+                is_multi_price = bool(page_norm_counts.get(norm_k, 1) > 1 or len(prev_price_set) > 1)
+                cache_k = f"{norm_k}_{price_cents}" if (is_multi_price and price_cents > 0 and norm_k in details_cache and int(round((details_cache[norm_k].get("price_usd") or 0) * 100)) != price_cents) else norm_k
 
-                cached = details_cache.get(norm_k)
+                cached = details_cache.get(cache_k)
                 cached_desc = (cached or {}).get("description", "")
                 if (
                     cached is not None
@@ -705,7 +862,9 @@ async def run_retail_crawler(
                         cached["price_usd"] = eff_price
                     cached["raw_btn"] = b_text
                     cached["page"] = page_indicator
-                    pid, is_new = update_db_product(btn_name, cached_desc, eff_stock, eff_price, db_path)
+                    pid, is_new = update_db_product(
+                        btn_name, cached_desc, eff_stock, eff_price, db_path, allow_multi_price=is_multi_price
+                    )
                     if is_new:
                         new_count += 1
                     elif pid:
@@ -756,10 +915,17 @@ async def run_retail_crawler(
                         parsed["raw_btn"] = b_text
                         parsed.pop("needs_refresh", None)
 
-                        details_cache[norm_k] = parsed
+                        details_cache[cache_k] = parsed
                         _persist_cache(details_cache, cache_path)
 
-                        pid, is_new = update_db_product(parsed["item_name"], parsed["description"], parsed["stock"], parsed.get("price_usd"), db_path)
+                        pid, is_new = update_db_product(
+                            parsed["item_name"],
+                            parsed["description"],
+                            parsed["stock"],
+                            parsed.get("price_usd"),
+                            db_path,
+                            allow_multi_price=is_multi_price,
+                        )
                         if is_new:
                             new_count += 1
                         elif pid:
@@ -793,7 +959,9 @@ async def run_retail_crawler(
 
                 if not scraped_ok and live_price is not None and live_price > 0:
                     fallback_desc = cached_desc if (cached_desc and not is_menu_screen_text(cached_desc)) else f"{btn_name}\n\nVerified digital product delivery."
-                    pid, is_new = update_db_product(btn_name, fallback_desc, live_stock, live_price, db_path)
+                    pid, is_new = update_db_product(
+                        btn_name, fallback_desc, live_stock, live_price, db_path, allow_multi_price=is_multi_price
+                    )
                     if is_new:
                         new_count += 1
                     elif pid:
@@ -893,6 +1061,8 @@ async def run_retail_crawler(
             "incomplete": True,
         }
     finally:
+        if nav_locked and _telethon_nav_lock.locked():
+            _telethon_nav_lock.release()
         if own_client and client:
             try:
                 disc = client.disconnect()

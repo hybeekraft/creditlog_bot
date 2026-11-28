@@ -174,45 +174,64 @@ def sync_product_from_broadcast(
         cur.execute("PRAGMA table_info(products)")
         cols = {row[1] for row in cur.fetchall()}
         has_pricing = "price" in cols
+        has_supplier = "supplier" in cols
+        has_sp_id = "supplier_product_id" in cols
 
         if has_pricing:
-            cur.execute("SELECT id, name, active, price, fixed_price, margin, supplier_price FROM products")
+            sup_col = "supplier" if has_supplier else "'renqis_retail'"
+            spid_col = "supplier_product_id" if has_sp_id else "NULL"
+            cur.execute(f"SELECT id, name, active, price, fixed_price, margin, supplier_price, {sup_col}, {spid_col} FROM products")
             rows = cur.fetchall()
         else:
             cur.execute("SELECT id, name, active FROM products")
-            rows = [(r[0], r[1], r[2], 0, 0, 0, 0) for r in cur.fetchall()]
+            rows = [(r[0], r[1], r[2], 0, 0, 0, 0, "renqis_retail", None) for r in cur.fetchall()]
 
         q_words = clean_words(product_name)
         q_set = set(q_words)
         q_lower = ' '.join(q_words)
+        cost_cents = int(round(cost_usd * 100)) if (cost_usd is not None and cost_usd > 0) else None
 
         GENERIC = {'api', 'account', 'redeem', 'credits', 'pack', 'plan', 'pro', 'month', 'months', 'year', 'years', '1m', '1y', '3m', '6m', '12m', '1', '2', '3', '6', '12', 'days', '7d', '28'}
+        QUALIFIERS = {
+            'solo', 'fam', 'hydro', 'hydrogen', 'plus', 'team', 'invite', 'cdk', 'business',
+            'go', 'ultra', 'max', 'basic', 'lite', 'edu', 'mini', 'nano', 'pix', 'upi',
+            'ggpay', 'gpay', 'apple', 'google', 'backup', 'your', 'mail', 'email',
+            '1m', '3m', '4m', '6m', '12m', '24m', '1d', '2d', '3d', '4d', '6d', '7d', '14d', '28d', '30d', '1y', '2y', '3y',
+        }
+        q_quals = {w for w in q_words if w in QUALIFIERS or any(ch.isdigit() for ch in w)}
 
         matched_row = None
 
-        # 1. Exact match pass: exact normalized text match active first, then inactive
-        for active_target in (1, 0):
-            for row in rows:
-                pid, name, active, price, fixed_price, margin, supplier_price = row
-                if active != active_target:
-                    continue
-                n_words = clean_words(name)
-                if ' '.join(n_words) == q_lower:
-                    matched_row = row
+        # 1. Exact match pass: prefer matching price variant when multiple exist, active first then inactive
+        for price_match_first in ((True, False) if cost_cents else (False,)):
+            for active_target in (1, 0):
+                for row in rows:
+                    pid, name, active, price, fixed_price, margin, supplier_price, _, _ = row
+                    if active != active_target:
+                        continue
+                    if price_match_first and abs((supplier_price or 0) - cost_cents) > 1:
+                        continue
+                    if ' '.join(clean_words(name)) == q_lower:
+                        matched_row = row
+                        break
+                if matched_row:
                     break
             if matched_row:
                 break
 
-        # 2. Substring pass in normalized text (active first, then inactive)
+        # 2. Substring pass (requires qualifier parity so variants like Hydro Solo vs Hydrogen FAM never collide)
         if not matched_row:
             for active_target in (1, 0):
                 for row in rows:
-                    pid, name, active, price, fixed_price, margin, supplier_price = row
+                    pid, name, active, price, fixed_price, margin, supplier_price, _, _ = row
                     if active != active_target:
                         continue
                     n_words = clean_words(name)
                     n_lower = ' '.join(n_words)
                     if not n_lower:
+                        continue
+                    n_quals = {w for w in n_words if w in QUALIFIERS or any(ch.isdigit() for ch in w)}
+                    if n_quals != q_quals:
                         continue
                     brand_token = next((w for w in n_words if w not in GENERIC), n_words[0] if n_words else "")
                     if brand_token and brand_token in q_set and (n_lower in q_lower or q_lower in n_lower):
@@ -221,40 +240,47 @@ def sync_product_from_broadcast(
                 if matched_row:
                     break
 
-        # 3. Key brand match: first non-generic word of db name MUST be in query
+        # 3. High-confidence token match with strict qualifier parity
         if not matched_row:
             best_match = None
             best_score = 0.0
             for active_target in (1, 0):
                 for row in rows:
-                    pid, name, active, price, fixed_price, margin, supplier_price = row
+                    pid, name, active, price, fixed_price, margin, supplier_price, _, _ = row
                     if active != active_target:
                         continue
                     n_words = clean_words(name)
                     if not n_words:
                         continue
+                    n_quals = {w for w in n_words if w in QUALIFIERS or any(ch.isdigit() for ch in w)}
+                    if n_quals != q_quals:
+                        continue
                     brand_token = next((w for w in n_words if w not in GENERIC), n_words[0])
                     if brand_token not in q_set:
                         continue
                     n_set = set(n_words)
-                    common = q_set & n_set
-                    score = len(common) / len(n_set)
-                    if score > best_score and score >= 0.6:
+                    score = len(q_set & n_set) / len(n_set | q_set)
+                    if score > best_score and score >= 0.8:
                         best_score = score
                         best_match = row
                 if best_match:
                     matched_row = best_match
                     break
 
-        cost_cents = int(round(cost_usd * 100)) if (cost_usd is not None and cost_usd > 0) else None
-
         if matched_row:
-            pid, name, active, price, fixed_price, margin, supplier_price = matched_row
-            if has_pricing and cost_cents is not None and cost_cents > 0:
+            pid, name, active, price, fixed_price, margin, supplier_price, r_sup, r_spid = matched_row
+            is_api_row = bool(r_sup == "default" and r_spid and not str(r_spid).startswith("renqis_retail_"))
+            # Preserve exact Reseller API stock when >0 rather than overwriting it with 10
+            if is_api_row:
+                next_stock_clause = "active = 1, supplier_stock = CASE WHEN supplier_stock IS NULL OR supplier_stock <= 0 THEN 1 ELSE supplier_stock END"
+            else:
+                next_stock_clause = "active = 1, supplier_stock = 10"
+
+            if has_pricing and cost_cents is not None and cost_cents > 0 and not is_api_row:
                 if fixed_price == 1:
                     eff_margin = int(round(((price - cost_cents) / cost_cents) * 100)) if (price and price > 0) else (margin or 45)
                     cur.execute(
-                        "UPDATE products SET supplier_price = ?, margin = ?, active = 1, supplier_stock = 10 WHERE id = ?",
+                        f"UPDATE products SET supplier_price = ?, margin = ?, {next_stock_clause} WHERE id = ?",
                         (cost_cents, eff_margin, pid)
                     )
                 else:
@@ -264,17 +290,17 @@ def sync_product_from_broadcast(
                         m_val = margin if margin is not None else 45
                         retail_cents = int(round(cost_cents * (1 + m_val / 100.0)))
                     cur.execute(
-                        "UPDATE products SET price = ?, supplier_price = ?, active = 1, supplier_stock = 10 WHERE id = ?",
+                        f"UPDATE products SET price = ?, supplier_price = ?, {next_stock_clause} WHERE id = ?",
                         (retail_cents, cost_cents, pid)
                     )
             else:
-                cur.execute("UPDATE products SET active = 1, supplier_stock = 10 WHERE id = ?", (pid,))
+                cur.execute(f"UPDATE products SET {next_stock_clause} WHERE id = ?", (pid,))
 
             conn.commit()
-            logger.info(f"Broadcast sync updated SKU #{pid} ({name}): active=1, stock=10, cost={cost_cents}c")
+            logger.info(f"Broadcast sync updated SKU #{pid} ({name}): active=1, cost={cost_cents}c")
             return pid
 
-        # 4. If product not found in store.db and has valid cost, auto-create it
+        # 4. If product not found in store.db and has valid cost, auto-create it as renqis_retail
         if cost_cents is not None and cost_cents > 0:
             clean_name = re.sub(r'^[^\w\d]+', '', product_name).strip() or product_name.strip()
             cat = "AI Tools"
@@ -290,11 +316,20 @@ def sync_product_from_broadcast(
                 retail_cents = int(round(cost_cents * 1.45))
 
             desc = f"{clean_name}\n\nManual fulfillment by Store Admin within minutes."
-            cur.execute("""
-                INSERT INTO products (
-                    name, description, price, active, supplier_price, margin, category, supplier, supplier_stock, delivery_type, fixed_price
-                ) VALUES (?, ?, ?, 1, ?, 45, ?, 'default', 10, 'manual', 0)
-            """, (clean_name, desc, retail_cents, cost_cents, cat))
+            norm_slug = re.sub(r'[^a-z0-9]', '', clean_name.lower())
+            sp_id = f"renqis_retail_{norm_slug}_{cost_cents}" if norm_slug else f"renqis_retail_{cost_cents}"
+            if has_sp_id and has_supplier:
+                cur.execute("""
+                    INSERT INTO products (
+                        name, description, price, active, supplier_product_id, supplier_price, margin, category, supplier, supplier_stock, delivery_type, fixed_price
+                    ) VALUES (?, ?, ?, 1, ?, ?, 45, ?, 'renqis_retail', 10, 'manual', 0)
+                """, (clean_name, desc, retail_cents, sp_id, cost_cents, cat))
+            else:
+                cur.execute("""
+                    INSERT INTO products (
+                        name, description, price, active, supplier_price, margin, category, supplier, supplier_stock, delivery_type, fixed_price
+                    ) VALUES (?, ?, ?, 1, ?, 45, ?, 'renqis_retail', 10, 'manual', 0)
+                """, (clean_name, desc, retail_cents, cost_cents, cat))
             conn.commit()
             new_id = cur.lastrowid
             logger.info(f"Broadcast sync created NEW SKU #{new_id} ({clean_name}) under category '{cat}' at {retail_cents}c")

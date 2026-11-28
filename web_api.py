@@ -430,9 +430,14 @@ def register_web_routes(app, service):
         row = service["db"].execute("SELECT * FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
         if not row:
             return _json(404, success=False, message="Product not found or unavailable.")
-        available, count = service["check_product_stock_available"](row, quantity)
-        if not available:
-            return _json(409, success=False, message=f"Only {count} units are available.")
+        if "verify_live_product_stock" in service:
+            available, count, row, live_err = await service["verify_live_product_stock"](row, quantity)
+            if not available:
+                return _json(409, success=False, message=live_err or "Product is currently out of stock.")
+        else:
+            available, count = service["check_product_stock_available"](row, quantity)
+            if not available:
+                return _json(409, success=False, message=f"Only {count} units are available.")
         expires_at = int(time.time() * 1000) + 15 * 60 * 1000
         token = secrets.token_hex(16)
         return _json(200, success=True, reservationToken=token, expiresAt=expires_at, availableStock=count)
@@ -457,9 +462,14 @@ def register_web_routes(app, service):
         row = service["db"].execute("SELECT * FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
         if not row:
             return _json(404, success=False, message="Product not found or unavailable.")
-        available, count = service["check_product_stock_available"](row, quantity)
-        if not available:
-            return _json(409, success=False, message=f"Only {count} units are available.")
+        if "verify_live_product_stock" in service:
+            available, count, row, live_err = await service["verify_live_product_stock"](row, quantity)
+            if not available:
+                return _json(409, success=False, message=live_err or "Product is currently out of stock.")
+        else:
+            available, count = service["check_product_stock_available"](row, quantity)
+            if not available:
+                return _json(409, success=False, message=f"Only {count} units are available.")
         method = str(body.get("gateway", "bachs")).strip().lower()
         allowed = {"bachs", "bank", "binance", "trc20", "bep20"}
         if method not in allowed:

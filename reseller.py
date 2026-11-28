@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 import logging
 import aiohttp
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger("reseller")
 
@@ -47,6 +47,30 @@ def _find_field(d: Any, *keys: str) -> Any:
         if v is not None:
             return v
     return None
+
+
+def _parse_stock(item: Dict[str, Any]) -> Optional[int]:
+    """Extract integer stock count cleanly without treating 0 as missing."""
+    stock_val = _find_field(item, "stock", "quantity", "inStock")
+    try:
+        return int(stock_val) if stock_val is not None else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_price(item: Dict[str, Any]) -> Tuple[int, float]:
+    raw_price = _find_field(item, "price", "cost", "unit_price")
+    if raw_price is None:
+        raw_price = 0
+    try:
+        price_val = float(raw_price)
+        if isinstance(raw_price, float) or "." in str(raw_price):
+            price_cents = round(price_val * 100)
+        else:
+            price_cents = round(price_val * 100) if price_val < 100 else int(price_val)
+        return price_cents, price_cents / 100.0
+    except (ValueError, TypeError):
+        return 0, 0.0
 
 
 class ResellerClient:
@@ -160,23 +184,8 @@ class ResellerClient:
             name = str(item.get("name") or item.get("title") or f"Product {pid}")
             desc = str(item.get("description") or item.get("desc") or "")
 
-            raw_price = item.get("price") or item.get("cost") or item.get("unit_price") or 0
-            try:
-                price_val = float(raw_price)
-                if isinstance(raw_price, float) or "." in str(raw_price):
-                    price_cents = round(price_val * 100)
-                else:
-                    price_cents = round(price_val * 100) if price_val < 100 else int(price_val)
-                price_usd = price_cents / 100.0
-            except (ValueError, TypeError):
-                price_cents = 0
-                price_usd = 0.0
-
-            stock_val = item.get("stock") or item.get("quantity") or item.get("inStock")
-            try:
-                stock_int = int(stock_val) if stock_val is not None else None
-            except (ValueError, TypeError):
-                stock_int = None
+            price_cents, price_usd = _parse_price(item)
+            stock_int = _parse_stock(item)
 
             normalized.append({
                 "id": pid,
@@ -199,17 +208,8 @@ class ResellerClient:
         pid = str(item.get("productId") or item.get("id") or product_id)
         name = str(item.get("name") or item.get("title") or f"Product {pid}")
         desc = str(item.get("description") or item.get("desc") or "")
-        raw_price = item.get("price") or item.get("cost") or 0
-        try:
-            price_val = float(raw_price)
-            if isinstance(raw_price, float) or "." in str(raw_price):
-                price_cents = round(price_val * 100)
-            else:
-                price_cents = round(price_val * 100) if price_val < 100 else int(price_val)
-            price_usd = price_cents / 100.0
-        except (ValueError, TypeError):
-            price_cents = 0
-            price_usd = 0.0
+        price_cents, price_usd = _parse_price(item)
+        stock_int = _parse_stock(item)
 
         return {
             "id": pid,
@@ -217,6 +217,7 @@ class ResellerClient:
             "description": desc,
             "price_cents": price_cents,
             "price_usd": price_usd,
+            "stock": stock_int,
             "raw": item,
         }
 

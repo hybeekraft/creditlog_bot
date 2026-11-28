@@ -360,7 +360,8 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
     from bot import detect_category
     cur = db_conn.cursor()
 
-    rows = cur.execute("SELECT id, name, margin, fixed_price, supplier, auto_fulfill, description FROM products").fetchall()
+    rows = cur.execute("SELECT id, name, margin, fixed_price, supplier, auto_fulfill, description, supplier_price FROM products").fetchall()
+    by_variant = {}
     by_norm = {}
     for r in rows:
         pid = r[0] if isinstance(r, tuple) else r["id"]
@@ -370,30 +371,55 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
         psup = r[4] if isinstance(r, tuple) else (r["supplier"] if "supplier" in r.keys() else "default")
         pauto = r[5] if isinstance(r, tuple) else (r["auto_fulfill"] if "auto_fulfill" in r.keys() else 0)
         pdesc = r[6] if isinstance(r, tuple) else (r["description"] if "description" in r.keys() else "")
+        psup_price = r[7] if isinstance(r, tuple) else (r["supplier_price"] if "supplier_price" in r.keys() else 0)
         norm = re.sub(r'[^a-z0-9]', '', str(pname).lower())
-        if norm not in by_norm or (psup == 'default' or pauto):
-            by_norm[norm] = (pid, pmargin if pmargin is not None else 45, pfixed, pdesc or "")
+        is_api = bool(psup == 'default' or pauto)
+        entry = (pid, pmargin if pmargin is not None else 45, pfixed, pdesc or "", is_api, psup_price or 0)
+        vkey = (norm, int(psup_price or 0))
+        if vkey not in by_variant or is_api:
+            by_variant[vkey] = entry
+        if norm not in by_norm or is_api:
+            by_norm[norm] = entry
+
+    norm_counts = {}
+    for k in data.keys():
+        cn = re.sub(r'[^a-z0-9]', '', str(k).split("_")[0].lower())
+        norm_counts[cn] = norm_counts.get(cn, 0) + 1
 
     updated = 0
     inserted = 0
     for norm_k, item in data.items():
-        clean_norm = re.sub(r'[^a-z0-9]', '', str(norm_k).lower())
         name = item.get("item_name") or norm_k
+        clean_norm = re.sub(r'[^a-z0-9]', '', str(name).lower())
         desc = item.get("description") or ""
         cost_usd = item.get("price_usd")
         stock = item.get("stock", 0)
         active = 1 if stock > 0 else 0
         cat = detect_category(name)
         is_menu = _is_menu_garbage(desc)
+        cost_cents = int(round(cost_usd * 100)) if (cost_usd is not None and cost_usd > 0) else 0
 
-        if clean_norm in by_norm:
-            pid, margin_val, is_fixed, cur_desc = by_norm[clean_norm]
-            # Ignore corrupted menu-screen captures so valid stock, price, and descriptions are preserved
+        matched = by_variant.get((clean_norm, cost_cents)) if cost_cents > 0 else None
+        if matched is None and clean_norm in by_norm:
+            cand = by_norm[clean_norm]
+            # Keep distinct-price supplier variants separate when multiple prices exist at this name
+            if cost_cents == 0 or cand[5] == 0 or abs(cand[5] - cost_cents) <= 1 or norm_counts.get(clean_norm, 1) <= 1:
+                matched = cand
+
+        if matched is not None:
+            pid, margin_val, is_fixed, cur_desc, is_api, prev_cost = matched
             if is_menu and (cost_usd is None or stock == 0):
                 continue
             final_desc = cur_desc if is_menu else (desc if (desc and len(desc) >= len(cur_desc)) else (cur_desc or desc))
-            if cost_usd is not None and cost_usd > 0 and not is_fixed:
-                cost_cents = int(round(cost_usd * 100))
+            if is_api:
+                # Never overwrite live Reseller API stock, active flag, or pricing with cached JSON
+                cur.execute("""
+                    UPDATE products
+                    SET description = ?,
+                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
+                    WHERE id = ?
+                """, (final_desc, cat, pid))
+            elif cost_cents > 0 and not is_fixed:
                 retail_cents = max(100, int(round(cost_cents * (1 + margin_val / 100.0))))
                 cur.execute("""
                     UPDATE products
@@ -405,6 +431,7 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
                         category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
                     WHERE id = ?
                 """, (final_desc, stock, active, cost_cents, retail_cents, cat, pid))
+                prev_cost = cost_cents
             else:
                 cur.execute("""
                     UPDATE products
@@ -414,23 +441,27 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
                         category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
                     WHERE id = ?
                 """, (final_desc, stock, active, cat, pid))
-            by_norm[clean_norm] = (pid, margin_val, is_fixed, final_desc)
+            updated_entry = (pid, margin_val, is_fixed, final_desc, is_api, prev_cost)
+            by_variant[(clean_norm, prev_cost)] = updated_entry
+            by_norm[clean_norm] = updated_entry
             updated += 1
         else:
-            if cost_usd is None or cost_usd <= 0:
+            if cost_cents <= 0:
                 continue
             clean_desc = f"{name}\n\nVerified digital product delivery." if is_menu else desc
-            cost_cents = int(round(cost_usd * 100))
             retail_cents = max(100, int(round(cost_cents * 1.45)))
+            sp_id = f"renqis_retail_{clean_norm}_{cost_cents}" if norm_counts.get(clean_norm, 1) > 1 else f"renqis_retail_{clean_norm}"
             cur.execute("""
                 INSERT INTO products (
                     name, description, price, supplier_product_id, supplier_price,
                     auto_fulfill, active, category, supplier, supplier_stock,
                     delivery_type, margin, fixed_price
                 ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'renqis_retail', ?, 'manual', 45, 0)
-            """, (name, clean_desc, retail_cents, f"renqis_retail_{clean_norm}", cost_cents, active, cat, stock))
+            """, (name, clean_desc, retail_cents, sp_id, cost_cents, active, cat, stock))
             inserted += 1
-            by_norm[clean_norm] = (cur.lastrowid, 45, 0, clean_desc)
+            new_entry = (cur.lastrowid, 45, 0, clean_desc, False, cost_cents)
+            by_variant[(clean_norm, cost_cents)] = new_entry
+            by_norm.setdefault(clean_norm, new_entry)
 
     db_conn.commit()
     return updated, inserted

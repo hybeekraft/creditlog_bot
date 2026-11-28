@@ -4487,13 +4487,14 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertIn("revoked", res["error"].lower())
         fake_client.disconnect.assert_awaited_once()
 
-    async def test_perform_supplier_sync_skips_same_supplier_invisible_char_duplicates(self):
+    async def test_perform_supplier_sync_keeps_distinct_price_variants_and_collapses_same_price(self):
         bot.db.execute("DELETE FROM products")
         bot.db.commit()
 
         mock_products = [
             {"id": "63", "name": "ChatGPT Plus 1M Apple Pay", "description": "Valid desc", "price_cents": 499, "stock": 14},
             {"id": "380", "name": "ChatGPT Plus 1M Apple Pay\u2063", "description": "Valid desc", "price_cents": 489, "stock": 3},
+            {"id": "381", "name": "ChatGPT Plus 1M Apple Pay\u2062", "description": "Valid desc", "price_cents": 499, "stock": 1},
         ]
         mock_client = AsyncMock()
         mock_client.api_key = "test_key"
@@ -4501,15 +4502,18 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(bot.supplier_registry, "get", return_value=mock_client), \
              patch.object(bot.supplier_registry, "list_suppliers", return_value={"default": mock_client}):
-            added1, updated1, _, _ = await bot.perform_supplier_sync(target_suppliers=["default"], markup=45)
+            added1, _, _, _ = await bot.perform_supplier_sync(target_suppliers=["default"], markup=45)
             added2, updated2, _, _ = await bot.perform_supplier_sync(target_suppliers=["default"], markup=45)
 
-        self.assertEqual(added1, 1)
+        # Same-price clone (499 vs 499) collapsed to 1; distinct-price variant (489) kept separately
+        self.assertEqual(added1, 2)
         self.assertEqual(added2, 0)
-        self.assertEqual(updated2, 1)
-        rows = bot.db.execute("SELECT supplier_product_id, supplier_stock FROM products WHERE name LIKE 'ChatGPT Plus 1M Apple Pay%'").fetchall()
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(updated2, 2)
+        rows = bot.db.execute("SELECT supplier_product_id, supplier_price FROM products WHERE name LIKE 'ChatGPT Plus 1M Apple Pay%' ORDER BY supplier_price").fetchall()
+        self.assertEqual([(r["supplier_product_id"], r["supplier_price"]) for r in rows], [("380", 489), ("63", 499)])
         self.assertEqual(bot.deduplicate_products_in_db(bot.db), 0)
+        cat_rows = bot.get_products_for_category("chatgpt")
+        self.assertEqual(len([r for r in cat_rows if "apple pay" in r["name"].lower()]), 2)
 
     async def test_login_session_qr_with_2fa_and_phone_resend(self):
         from telethon import errors as tl_errors
@@ -5031,6 +5035,100 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
                 bot.db.execute("DELETE FROM orders WHERE product_id=?", (pid,))
                 bot.db.execute("DELETE FROM products WHERE id=?", (pid,))
                 bot.db.commit()
+
+    async def test_reseller_zero_stock_not_treated_as_none(self):
+        client = ResellerClient(api_key="test_key")
+        with patch.object(client, "_request", new=AsyncMock(return_value=[{"productId": "1", "name": "Zero Stock", "price": 5.0, "stock": 0}])):
+            prods = await client.get_products()
+        self.assertEqual(prods[0]["stock"], 0)
+        with patch.object(client, "_request", new=AsyncMock(return_value={"product": {"productId": "1", "name": "Zero Stock", "price": 5.0, "stock": 0}})):
+            prod = await client.get_product("1")
+        self.assertEqual(prod["stock"], 0)
+
+    async def test_sync_retail_catalog_details_does_not_overwrite_api_stock_or_price(self):
+        import tempfile, json
+        bot.db.execute("DELETE FROM products")
+        bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type, margin, fixed_price) "
+            "VALUES('CapCut Pro Personal 1 Month', 'Short', 363, '90', 250, 1, 0, 'CapCut', 'default', 0, 'auto', 45, 0)"
+        )
+        bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type, margin, fixed_price) "
+            "VALUES('Canva Pro Admin (500 Invitations)', 'Short', 914, '405', 630, 1, 1, 'Design', 'default', 3, 'auto', 45, 0)"
+        )
+        bot.db.commit()
+
+        from retail_catalog import sync_retail_catalog_details
+        payload = {
+            "capcutpropersonal1month": {"item_name": "CapCut Pro Personal 1 Month", "description": "Richer CapCut retail description text", "price_usd": 2.5, "stock": 10},
+            "canvaproadmin500invitations": {"item_name": "Canva Pro Admin (500 Invitations)", "description": "Richer Canva retail description text", "price_usd": 7.0, "stock": 0},
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tf:
+            json.dump(payload, tf)
+            tf_path = tf.name
+        try:
+            sync_retail_catalog_details(bot.db, json_path=tf_path)
+        finally:
+            if os.path.exists(tf_path):
+                os.remove(tf_path)
+
+        cap = bot.db.execute("SELECT active, supplier_stock, supplier_price, description FROM products WHERE supplier_product_id='90'").fetchone()
+        canva = bot.db.execute("SELECT active, supplier_stock, supplier_price, description FROM products WHERE supplier_product_id='405'").fetchone()
+        self.assertEqual((cap["active"], cap["supplier_stock"], cap["supplier_price"]), (0, 0, 250))
+        self.assertEqual(cap["description"], "Richer CapCut retail description text")
+        self.assertEqual((canva["active"], canva["supplier_stock"], canva["supplier_price"]), (1, 3, 630))
+        self.assertEqual(canva["description"], "Richer Canva retail description text")
+
+    async def test_checkout_and_web_api_block_when_live_supplier_stock_drops_to_zero(self):
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+        from web_api import register_web_routes
+        import crawl_retail_details
+
+        bot.db.execute("DELETE FROM products")
+        pid_retail = bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type) "
+            "VALUES('AntiGravity Argon/Hydrogen 3M FAM', 'Desc', 725, 'renqis_retail_1', 500, 0, 1, 'Gemini', 'renqis_retail', 10, 'manual')"
+        ).lastrowid
+        pid_api = bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type) "
+            "VALUES('ChatGPT Business CDK | Your Own Email', 'Desc', 2175, '456', 1500, 1, 1, 'ChatGPT', 'default', 10, 'auto')"
+        ).lastrowid
+        bot.db.commit()
+
+        # 1. Retail checkout blocked when live supplier bot returns stock=0
+        c = AsyncMock()
+        c.from_user.id = 999
+        c.data = f"buyqty:{pid_retail}:1:shop"
+        c.message = AsyncMock()
+        bot._live_stock_cache.clear() if hasattr(bot, "_live_stock_cache") else None
+        with patch.object(crawl_retail_details, "check_live_retail_item_stock", new=AsyncMock(return_value={"in_stock": False, "stock": 0, "price_usd": 5.0})):
+            await bot.on_buy_qty(c)
+        self.assertTrue(c.answer.called)
+        row_r = bot.db.execute("SELECT active, supplier_stock FROM products WHERE id=?", (pid_retail,)).fetchone()
+        self.assertEqual((row_r["active"], row_r["supplier_stock"]), (0, 0))
+
+        # 2. Payment screen & Web API blocked when Reseller API get_product returns stock=0
+        mock_sup = AsyncMock()
+        mock_sup.api_key = "live_key"
+        mock_sup.get_product = AsyncMock(return_value={"id": "456", "name": "ChatGPT Business CDK", "price_cents": 1500, "price_usd": 15.0, "stock": 0})
+        bot._live_stock_cache.clear() if hasattr(bot, "_live_stock_cache") else None
+        app = web.Application()
+        with patch.dict(os.environ, {"CREDITLOG_BACKEND_SECRET": "test-web-secret"}), \
+             patch.object(bot.supplier_registry, "get", return_value=mock_sup):
+            register_web_routes(app, vars(bot))
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                res = await client.post("/api/orders/create", headers={"X-CreditLog-Backend-Secret": "test-web-secret"}, json={
+                    "productId": pid_api, "quantity": 1, "customerName": "Buyer",
+                    "customerEmail": "buyer@example.com", "gateway": "bachs", "currency": "USD",
+                })
+                self.assertEqual(res.status, 409)
+            finally:
+                await client.close()
+        row_a = bot.db.execute("SELECT active, supplier_stock FROM products WHERE id=?", (pid_api,)).fetchone()
+        self.assertEqual((row_a["active"], row_a["supplier_stock"]), (0, 0))
 
 
 if __name__ == "__main__":

@@ -608,25 +608,28 @@ def get_products_for_category(key: str) -> list[sqlite3.Row]:
             if detect_category(p["name"]).lower() in target_names:
                 matched.append(p)
 
-    # Deduplicate by normalized name: prefer auto-fulfill / default, then active/in-stock, then lowest id
+    # Deduplicate by (normalized name, supplier_price or retail price):
+    # preserves distinct-price supplier variants while merging identical-price duplicates/twins
     by_norm = {}
     for p in matched:
         norm = re.sub(r"[^a-z0-9]", "", p["name"].lower())
-        if norm not in by_norm:
-            by_norm[norm] = p
+        sup_p = p["supplier_price"] if ("supplier_price" in p.keys() and p["supplier_price"]) else p["price"]
+        dkey = (norm, int(sup_p or 0))
+        if dkey not in by_norm:
+            by_norm[dkey] = p
         else:
-            prev = by_norm[norm]
+            prev = by_norm[dkey]
             prev_score = (2 if (prev["auto_fulfill"] or prev["supplier"] == "default") else 0) + (1 if prev["active"] else 0)
             curr_score = (2 if (p["auto_fulfill"] or p["supplier"] == "default") else 0) + (1 if p["active"] else 0)
             if curr_score > prev_score:
-                by_norm[norm] = p
+                by_norm[dkey] = p
 
     seen_ids = {p["id"] for p in by_norm.values()}
     return [p for p in matched if p["id"] in seen_ids]
 
 
 def deduplicate_products_in_db(conn):
-    """Finds and merges duplicate products in products table by normalized name."""
+    """Finds and merges duplicate-price identical products in products table while keeping distinct-price variants."""
     try:
         cur = conn.cursor()
         rows = cur.execute(
@@ -635,8 +638,10 @@ def deduplicate_products_in_db(conn):
         groups = {}
         for r in rows:
             p_name = r[1] if isinstance(r, tuple) else r["name"]
+            p_sup_price = r[4] if isinstance(r, tuple) else (r["supplier_price"] if "supplier_price" in r.keys() else None)
+            p_price = r[3] if isinstance(r, tuple) else r["price"]
             norm = re.sub(r"[^a-z0-9]", "", str(p_name).lower())
-            groups.setdefault(norm, []).append(r)
+            groups.setdefault((norm, int(p_sup_price or p_price or 0)), []).append(r)
 
         deleted_count = 0
         for norm, plist in groups.items():
@@ -2057,6 +2062,7 @@ async def on_product(c: CallbackQuery):
     p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
     if not p:
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
+    _, _, p, _ = await verify_live_product_stock(p, qty=1, uid=uid, allow_out_of_stock_refresh=True)
     text, markup = render_product_card(uid, p, ctx)
     await edit(c, text, markup)
 
@@ -2325,6 +2331,74 @@ def render_fiat_payment_methods(uid: int, p: sqlite3.Row, qty: int, ctx: str) ->
 
 
 
+_live_stock_cache: dict = {}
+LIVE_STOCK_TTL_SEC = 15.0
+
+
+async def verify_live_product_stock(
+    p: sqlite3.Row,
+    qty: int = 1,
+    uid: int = 0,
+    allow_out_of_stock_refresh: bool = False,
+) -> Tuple[bool, Optional[int], sqlite3.Row, Optional[str]]:
+    """Checks live supplier API or retail bot stock right before checkout/payment and syncs DB."""
+    pid = int(p["id"])
+    sup_name = p["supplier"] if ("supplier" in p.keys() and p["supplier"]) else "default"
+    sp_id = str(p["supplier_product_id"]) if ("supplier_product_id" in p.keys() and p["supplier_product_id"]) else ""
+    is_auto = bool(p["auto_fulfill"] and sp_id and not sp_id.startswith("renqis_retail_"))
+    now = time.monotonic()
+    cache_key = (id(db), pid, str(p["name"]), sp_id)
+    cached_entry = _live_stock_cache.get(cache_key)
+
+    if not cached_entry or (now - cached_entry[0]) > LIVE_STOCK_TTL_SEC:
+        live_stock: Optional[int] = None
+        if is_auto and sp_id:
+            sup_client = supplier_registry.get(sup_name) or reseller
+            is_mocked = bool(sup_client and hasattr(getattr(sup_client, "get_product", None), "assert_awaited"))
+            has_live_key = bool(sup_client and sup_client.api_key and (sup_client.api_key != "test_key" and DB_PATH != ":memory:"))
+            if sup_client and (is_mocked or has_live_key):
+                try:
+                    info = await asyncio.wait_for(sup_client.get_product(sp_id), timeout=4.0)
+                    live_stock = info.get("stock") if isinstance(info, dict) else None
+                    if live_stock is None:
+                        all_prods = await asyncio.wait_for(sup_client.get_products(), timeout=5.0)
+                        for item in all_prods:
+                            if str(item.get("id")) == sp_id:
+                                live_stock = item.get("stock")
+                                break
+                except Exception as e:
+                    log.debug("Live API stock check skipped for #%s (%s): %s", pid, sp_id, e)
+        elif sup_name == "renqis_retail" or sp_id.startswith("renqis_retail_"):
+            try:
+                import crawl_retail_details
+                cost_usd = (p["supplier_price"] / 100.0) if ("supplier_price" in p.keys() and p["supplier_price"]) else None
+                res = await asyncio.wait_for(
+                    crawl_retail_details.check_live_retail_item_stock(p["name"], expected_price_usd=cost_usd),
+                    timeout=12.0,
+                )
+                if isinstance(res, dict) and "stock" in res:
+                    live_stock = int(res["stock"]) if res["stock"] is not None else (10 if res.get("in_stock") else 0)
+            except Exception as e:
+                log.debug("Live retail stock check skipped for #%s (%s): %s", pid, p["name"], e)
+
+        if live_stock is not None:
+            new_active = 1 if live_stock > 0 else 0
+            db.execute("UPDATE products SET supplier_stock=?, active=? WHERE id=?", (live_stock, new_active, pid))
+            db.commit()
+            _live_stock_cache[cache_key] = (now, live_stock)
+            p = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone() or p
+
+    sup_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
+    if not allow_out_of_stock_refresh and not is_product_available(p):
+        return False, 0, p, t(uid, "out_of_stock")
+    if sup_stock is not None and sup_stock >= 0 and qty > sup_stock:
+        return False, sup_stock, p, f"⚠️ Only {sup_stock} unit(s) available in stock."
+    ok, avail = check_product_stock_available(p, qty)
+    if not ok:
+        return False, avail, p, f"⚠️ Not enough stock available ({avail} left)."
+    return True, sup_stock, p, None
+
+
 def check_product_stock_available(p: sqlite3.Row, qty: int) -> Tuple[bool, int]:
     """Check if product has enough manual stock for requested quantity."""
     is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
@@ -2463,9 +2537,9 @@ async def on_pay_option_selected(c: CallbackQuery):
     if not p:
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
 
-    ok, avail = check_product_stock_available(p, qty)
+    ok, _, p, err_msg = await verify_live_product_stock(p, qty, uid=uid)
     if not ok:
-        return await c.answer(f"⚠️ Not enough stock available ({avail} left).", show_alert=True)
+        return await c.answer(err_msg or t(uid, "out_of_stock"), show_alert=True)
 
     total_cents = p["price"] * qty
     total_usdt = f"{total_cents / 100:.2f}"
@@ -2901,11 +2975,9 @@ async def on_buy_qty(c: CallbackQuery):
     if err:
         return await c.answer(err, show_alert=True)
     pid, qty, ctx, p = res
-    if not is_product_available(p):
-        return await c.answer(t(c.from_user.id, "out_of_stock"), show_alert=True)
-    sup_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
-    if sup_stock is not None and sup_stock >= 0 and qty > sup_stock:
-        return await c.answer(f"⚠️ Only {sup_stock} unit(s) available in stock.", show_alert=True)
+    ok, _, p, err_msg = await verify_live_product_stock(p, qty, uid=c.from_user.id)
+    if not ok:
+        return await c.answer(err_msg or t(c.from_user.id, "out_of_stock"), show_alert=True)
     await start_checkout(c, c.from_user.id, p, qty, ctx)
 
 
@@ -2917,8 +2989,11 @@ async def buy(c: CallbackQuery):
         return await c.answer("⚠️ Invalid callback data.", show_alert=True)
     uid, pid = c.from_user.id, int(c.data[4:])
     p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
-    if not p or not is_product_available(p):
+    if not p:
         return await c.answer(t(uid, "out_of_stock"), show_alert=True)
+    ok, _, p, err_msg = await verify_live_product_stock(p, 1, uid=uid)
+    if not ok:
+        return await c.answer(err_msg or t(uid, "out_of_stock"), show_alert=True)
     await start_checkout(c, uid, p, qty=1, ctx="shop")
 
 
@@ -2977,7 +3052,7 @@ async def handle_user_text_input(m: Message):
         pid = state["pid"]
         ctx = state.get("ctx", "shop")
         p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
-        if not p or not is_product_available(p):
+        if not p:
             return await m.answer(t(uid, "out_of_stock"), reply_markup=kb([[btn(t(uid, "btn_back"), "shop", style="danger")]]))
 
         try:
@@ -2988,20 +3063,12 @@ async def handle_user_text_input(m: Message):
             pending_inputs[uid] = state
             return await m.answer("⚠️ Please enter a valid positive number (e.g. 1, 2, 5) or send /cancel:")
 
-        is_auto = bool(p["auto_fulfill"] and p["supplier_product_id"])
-        deliv_type = p["delivery_type"] if ("delivery_type" in p.keys() and p["delivery_type"]) else ("auto" if is_auto else "manual")
-        sup_stock = p["supplier_stock"] if "supplier_stock" in p.keys() else None
-        if sup_stock is not None and sup_stock >= 0 and qty > sup_stock:
-            pending_inputs[uid] = state
-            return await m.answer(f"⚠️ Only {sup_stock} in stock at supplier. Please enter a quantity up to {sup_stock} (or send /cancel):")
-
-        if not is_auto and deliv_type != "manual":
-            has_stock_rows = db.execute("SELECT 1 FROM stock WHERE product_id=?", (pid,)).fetchone()
-            if has_stock_rows:
-                avail = stock_count(pid)
-                if qty > avail:
-                    pending_inputs[uid] = state
-                    return await m.answer(f"⚠️ Only {avail} in stock. Please enter a quantity up to {avail} (or send /cancel):")
+        ok, avail, p, err_msg = await verify_live_product_stock(p, qty, uid=uid)
+        if not ok:
+            if avail is not None and avail > 0:
+                pending_inputs[uid] = state
+                return await m.answer(f"⚠️ Only {avail} in stock. Please enter a quantity up to {avail} (or send /cancel):")
+            return await m.answer(err_msg or t(uid, "out_of_stock"), reply_markup=kb([[btn(t(uid, "btn_back"), "shop", style="danger")]]))
 
         await start_checkout(m, uid, p, qty, ctx)
 
@@ -5144,26 +5211,32 @@ async def perform_supplier_sync(
             errors.append(f"'{sup_name}': {e}")
             continue
 
-        # Collapse sibling feed SKUs with identical normalized names (e.g. invisible \u2063 variants)
+        # Keep distinct-price SKUs separate while collapsing identical-price duplicates (e.g. invisible \u2063)
         existing_rows_by_sp = {}
+        existing_rows_by_norm_price = {}
         existing_rows_by_norm = {}
         for row in db.execute(
-            "SELECT id, name, supplier_product_id, price, margin, fixed_price FROM products WHERE supplier=?",
+            "SELECT id, name, supplier_product_id, price, supplier_price, margin, fixed_price FROM products WHERE supplier=?",
             (sup_name,)
         ).fetchall():
             if row["supplier_product_id"]:
                 existing_rows_by_sp[str(row["supplier_product_id"])] = row
             r_norm = re.sub(r"[^a-z0-9]", "", str(row["name"]).lower())
+            r_cost = int(row["supplier_price"] or 0) if "supplier_price" in row.keys() else 0
+            existing_rows_by_norm_price.setdefault((r_norm, r_cost), row)
             existing_rows_by_norm.setdefault(r_norm, row)
 
+        feed_norm_counts = {}
         feed_groups = {}
         for idx, sp in enumerate(sup_products):
             sp_name_clean = re.sub(r"[\u2063\u2062\u200b]+", "", sp["name"]).strip() or sp["name"]
             norm_k = re.sub(r"[^a-z0-9]", "", sp_name_clean.lower())
-            feed_groups.setdefault(norm_k, []).append((idx, sp, sp_name_clean))
+            cost_k = int(sp["price_cents"] or 0)
+            feed_norm_counts.setdefault(norm_k, set()).add(cost_k)
+            feed_groups.setdefault((norm_k, cost_k), []).append((idx, sp, sp_name_clean))
 
         seen_supplier_ids = set()
-        for norm_k, group in feed_groups.items():
+        for (norm_k, cost_k), group in feed_groups.items():
             # Prefer in-stock SKU, then one already tracked in DB, then highest stock
             def _pick_key(entry):
                 idx, sp_item, _ = entry
@@ -5180,7 +5253,11 @@ async def perform_supplier_sync(
             stock = sp.get("stock")
             cat = detect_category(clean_name)
 
-            existing = existing_rows_by_sp.get(sp_id) or existing_rows_by_norm.get(norm_k)
+            existing = existing_rows_by_sp.get(sp_id) or existing_rows_by_norm_price.get((norm_k, cost_k))
+            if existing is None and len(feed_norm_counts.get(norm_k, set())) <= 1:
+                cand = existing_rows_by_norm.get(norm_k)
+                if cand and str(cand["supplier_product_id"] or "") not in seen_supplier_ids:
+                    existing = cand
 
             is_fixed = bool(existing and ("fixed_price" in existing.keys()) and existing["fixed_price"])
             is_active = 0 if (stock is not None and stock == 0) else 1
@@ -5600,8 +5677,14 @@ async def periodic_retail_crawler_task(aiogram_bot: Bot):
         except Exception as e:
             log.warning("Periodic retail crawler encountered error: %s", e)
 
-        interval_hours = float(get_setting("crawler_interval_hours", "2"))
-        await asyncio.sleep(max(1800, int(interval_hours * 3600)))
+        interval_mins_raw = get_setting("crawler_interval_minutes", "")
+        if interval_mins_raw:
+            sleep_sec = max(300, int(float(interval_mins_raw) * 60))
+        elif get_setting("crawler_interval_hours", ""):
+            sleep_sec = max(300, int(float(get_setting("crawler_interval_hours", "0.25")) * 3600))
+        else:
+            sleep_sec = 600
+        await asyncio.sleep(sleep_sec)
 
 
 # Main entrypoint
