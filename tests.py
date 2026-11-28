@@ -4352,6 +4352,131 @@ class TestAuditBugFixes(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("removed" in str(arg).lower() for arg in m.answer.call_args[0]))
         self.assertNotIn("testbrand", bot.CAT_BY_KEY)
 
+    async def test_category_guides_all_pages_and_admin_commands(self):
+        admin_id = 123456
+        uid = 998878
+        bot.ADMIN_IDS.add(admin_id)
+        bot.db.execute("INSERT OR REPLACE INTO users(id, currency, lang) VALUES(?, 'USD', 'en')", (uid,))
+        bot.reload_categories()
+
+        # Default ChatGPT Insight Guide is seeded on migration and appears on ALL pages of chatgpt
+        chatgpt_guide = bot.get_category_guide("chatgpt")
+        self.assertIn("Insight Guide", chatgpt_guide)
+        for i in range(1, 18):
+            bot.db.execute(
+                "INSERT INTO products(name, price, category, active, auto_fulfill, supplier_product_id, supplier_stock) VALUES(?, ?, ?, 1, 1, ?, 5)",
+                (f"ChatGPT Test Item {i:02d}", 500 + i, "ChatGPT", f"sp_{i}"),
+            )
+        bot.db.commit()
+
+        c = AsyncMock()
+        c.from_user.id = uid
+        c.bot = AsyncMock()
+        with patch.object(bot, "check_user_fsub", new=AsyncMock(return_value=(True, []))), \
+             patch.object(bot, "edit", new=AsyncMock()) as mock_edit:
+            c.data = "cat:chatgpt:1:0"
+            await bot.on_category(c)
+            p1_text = mock_edit.call_args[0][1]
+            self.assertIn("Insight Guide", p1_text)
+
+            c.data = "cat:chatgpt:2:0"
+            await bot.on_category(c)
+            p2_text = mock_edit.call_args[0][1]
+            self.assertIn("Insight Guide", p2_text)
+
+            c.data = "cat:chatgpt:1:1"
+            await bot.on_category(c)
+            avail_text = mock_edit.call_args[0][1]
+            self.assertIn("Insight Guide", avail_text)
+
+            # Unrelated category without a guide stays unchanged
+            c.data = "cat:grok:1:0"
+            await bot.on_category(c)
+            grok_text = mock_edit.call_args[0][1]
+            self.assertNotIn("Insight Guide", grok_text)
+
+        # Inline /setguide updates an arbitrary category and escapes plain '&' / '<' safely
+        m = AsyncMock()
+        m.from_user.id = admin_id
+        m.entities = []
+        m.reply_to_message = None
+        m.text = "/setguide grok SuperGrok Notice: 10 < 20 & fast"
+        cmd_set = AsyncMock()
+        cmd_set.args = "grok SuperGrok Notice: 10 < 20 & fast"
+        await bot.admin_set_guide(m, cmd_set)
+        self.assertEqual(bot.get_category_guide("grok"), "SuperGrok Notice: 10 &lt; 20 &amp; fast")
+
+        # Interactive /setguide <key> then formatted multi-line message via pending_inputs
+        from aiogram.types import MessageEntity
+        m_prompt = AsyncMock()
+        m_prompt.from_user.id = admin_id
+        m_prompt.entities = []
+        m_prompt.reply_to_message = None
+        m_prompt.text = "/setguide claude"
+        cmd_prompt = AsyncMock()
+        cmd_prompt.args = "claude"
+        await bot.admin_set_guide(m_prompt, cmd_prompt)
+        self.assertEqual(bot.pending_inputs.get(admin_id, {}).get("action"), "set_cat_guide")
+
+        m_body = AsyncMock()
+        m_body.from_user.id = admin_id
+        m_body.text = "Claude Guide\nWorks on web & mobile."
+        m_body.html_text = "<b>Claude Guide</b>\nWorks on web &amp; mobile."
+        m_body.entities = [MessageEntity(type="bold", offset=0, length=12)]
+        await bot.handle_user_text_input(m_body)
+        self.assertNotIn(admin_id, bot.pending_inputs)
+        self.assertEqual(bot.get_category_guide("claude"), "<b>Claude Guide</b>\nWorks on web &amp; mobile.")
+
+        # /guides lists configured category guides
+        m_list = AsyncMock()
+        m_list.from_user.id = admin_id
+        await bot.admin_list_guides(m_list)
+        guides_out = m_list.answer.call_args[0][0]
+        self.assertIn("chatgpt", guides_out)
+        self.assertIn("grok", guides_out)
+        self.assertIn("claude", guides_out)
+
+        # /delguide removes a guide (including ChatGPT) and persists deletion across reload_categories
+        m_del = AsyncMock()
+        m_del.from_user.id = admin_id
+        cmd_del_g = AsyncMock()
+        cmd_del_g.args = "chatgpt"
+        await bot.admin_del_guide(m_del, cmd_del_g)
+        self.assertEqual(bot.get_category_guide("chatgpt"), "")
+        bot.reload_categories()
+        self.assertEqual(bot.get_category_guide("chatgpt"), "")
+
+        # Reply-to-message & inline rich entities preserve formatting cleanly across emojis
+        m_reply_src = AsyncMock()
+        m_reply_src.text = "ℹ️ Gemini Guide\nWorks fast."
+        m_reply_src.entities = [MessageEntity(type="bold", offset=3, length=12)]
+        m_reply_src.caption = None
+        m_reply_src.caption_entities = None
+
+        m_reply_cmd = AsyncMock()
+        m_reply_cmd.from_user.id = admin_id
+        m_reply_cmd.text = "/setguide gemini"
+        m_reply_cmd.entities = [MessageEntity(type="bot_command", offset=0, length=9)]
+        m_reply_cmd.reply_to_message = m_reply_src
+        cmd_reply = AsyncMock()
+        cmd_reply.args = "gemini"
+        await bot.admin_set_guide(m_reply_cmd, cmd_reply)
+        self.assertEqual(bot.get_category_guide("gemini"), "ℹ️ <b>Gemini Guide</b>\nWorks fast.")
+
+        m_inline_rich = AsyncMock()
+        m_inline_rich.from_user.id = admin_id
+        m_inline_rich.reply_to_message = None
+        m_inline_rich.text = "/setguide Video AI Fast & Reliable"
+        m_inline_rich.entities = [
+            MessageEntity(type="bot_command", offset=0, length=9),
+            MessageEntity(type="bold", offset=19, length=4),
+        ]
+        cmd_inline_rich = AsyncMock()
+        cmd_inline_rich.args = "Video AI Fast & Reliable"
+        await bot.admin_set_guide(m_inline_rich, cmd_inline_rich)
+        self.assertEqual(bot.get_category_guide("video_ai"), "<b>Fast</b> &amp; Reliable")
+        bot.pending_inputs.pop(admin_id, None)
+
 
 class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
     def test_parse_catalog_button(self):

@@ -5,6 +5,7 @@ crypto, card, and bank transfers, with multi-language support.
 """
 import asyncio
 import html
+from html.parser import HTMLParser
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (BotCommand, BotCommandScopeChat, CallbackQuery, FSInputFile, InlineKeyboardButton,
                            InlineKeyboardMarkup, Message)
+from aiogram.utils.text_decorations import html_decoration
 from dotenv import load_dotenv
 
 from reseller import ResellerClient, ResellerAPIError, SupplierRegistry
@@ -467,11 +469,22 @@ DEFAULT_CATEGORIES = [
 CATEGORIES = list(DEFAULT_CATEGORIES)
 CAT_BY_KEY = {k: (name, icon) for k, name, icon in CATEGORIES}
 CAT_KEY_BY_NAME = {name.lower(): k for k, name, icon in CATEGORIES}
+CAT_GUIDES: Dict[str, str] = {}
+
+DEFAULT_CATEGORY_GUIDES: Dict[str, str] = {
+    "chatgpt": (
+        "ℹ️ <b>Insight Guide</b>\n\n"
+        "<b>Google Pay/Apple Pay</b> - payment methods used to create the account. More reliable. Works on any device.\n\n"
+        "<b>UPI/Pix/GCash/Momo Pay</b> - payment methods used to create the account. Less reliable.\n\n"
+        "<b>K12</b> - educational profile, close to Plus, but with lower token and image limits.\n\n"
+        "<b>Business</b> - business account, close to Plus limits."
+    ),
+}
 
 
 def reload_categories():
-    """Reload categories from database table if present, else seed defaults."""
-    global CATEGORIES, CAT_BY_KEY, CAT_KEY_BY_NAME
+    """Reload categories and category guide texts from database, seeding defaults."""
+    global CATEGORIES, CAT_BY_KEY, CAT_KEY_BY_NAME, CAT_GUIDES
     try:
         if db:
             cur = db.cursor()
@@ -480,10 +493,15 @@ def reload_categories():
                     key TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     icon TEXT NOT NULL,
-                    sort_order INTEGER DEFAULT 0
+                    sort_order INTEGER DEFAULT 0,
+                    guide_text TEXT DEFAULT NULL
                 )
             """)
-            rows = cur.execute("SELECT key, name, icon FROM categories ORDER BY sort_order ASC, rowid ASC").fetchall()
+            existing_cols = {r["name"] for r in cur.execute("PRAGMA table_info(categories)").fetchall()}
+            if "guide_text" not in existing_cols:
+                cur.execute("ALTER TABLE categories ADD COLUMN guide_text TEXT DEFAULT NULL")
+
+            rows = cur.execute("SELECT key, name, icon, guide_text FROM categories ORDER BY sort_order ASC, rowid ASC").fetchall()
             if not rows:
                 for idx, (k, n, ic) in enumerate(DEFAULT_CATEGORIES):
                     cur.execute(
@@ -491,18 +509,91 @@ def reload_categories():
                         (k, n, ic, idx)
                     )
                 db.commit()
-                rows = cur.execute("SELECT key, name, icon FROM categories ORDER BY sort_order ASC, rowid ASC").fetchall()
 
+            has_settings = cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'").fetchone()
+            seeded_row = cur.execute("SELECT value FROM settings WHERE key='default_cat_guides_seeded_v1'").fetchone() if has_settings else None
+            if not seeded_row or seeded_row[0] != "1":
+                for g_key, g_text in DEFAULT_CATEGORY_GUIDES.items():
+                    cur.execute(
+                        "UPDATE categories SET guide_text=? WHERE key=? AND (guide_text IS NULL OR guide_text='')",
+                        (g_text, g_key)
+                    )
+                if has_settings:
+                    cur.execute(
+                        "INSERT INTO settings(key, value) VALUES('default_cat_guides_seeded_v1', '1') "
+                        "ON CONFLICT(key) DO UPDATE SET value='1'"
+                    )
+                db.commit()
+
+            rows = cur.execute("SELECT key, name, icon, guide_text FROM categories ORDER BY sort_order ASC, rowid ASC").fetchall()
             if rows:
                 CATEGORIES.clear()
+                CAT_GUIDES.clear()
                 for r in rows:
                     CATEGORIES.append((r["key"], r["name"], r["icon"]))
+                    if r["guide_text"] and str(r["guide_text"]).strip():
+                        CAT_GUIDES[r["key"]] = str(r["guide_text"]).strip()
                 CAT_BY_KEY.clear()
                 CAT_BY_KEY.update({k: (name, icon) for k, name, icon in CATEGORIES})
                 CAT_KEY_BY_NAME.clear()
                 CAT_KEY_BY_NAME.update({name.lower(): k for k, name, icon in CATEGORIES})
     except Exception as e:
         logger.warning(f"Could not load categories table: {e}")
+
+
+def resolve_category(query: str) -> Optional[Tuple[str, str, str]]:
+    """Find (key, name, icon) by exact key, display name, or normalized alphanumeric name."""
+    raw = (query or "").strip()
+    if not raw:
+        return None
+    low = raw.lower()
+    if low in CAT_BY_KEY:
+        name, icon = CAT_BY_KEY[low]
+        return (low, name, icon)
+    if low in CAT_KEY_BY_NAME:
+        k = CAT_KEY_BY_NAME[low]
+        name, icon = CAT_BY_KEY[k]
+        return (k, name, icon)
+    norm_q = re.sub(r"[^a-z0-9]", "", low)
+    if norm_q:
+        for k, name, icon in CATEGORIES:
+            if re.sub(r"[^a-z0-9]", "", k.lower()) == norm_q or re.sub(r"[^a-z0-9]", "", name.lower()) == norm_q:
+                return (k, name, icon)
+    return None
+
+
+def get_category_guide(key: str) -> str:
+    """Return configured HTML guide text for a category key, or empty string."""
+    k = (key or "").strip().lower()
+    if not k:
+        return ""
+    if k in CAT_GUIDES:
+        return CAT_GUIDES[k]
+    try:
+        if db:
+            has_col = any(r["name"] == "guide_text" for r in db.execute("PRAGMA table_info(categories)").fetchall())
+            if has_col:
+                row = db.execute("SELECT guide_text FROM categories WHERE key=?", (k,)).fetchone()
+                if row and row["guide_text"] and str(row["guide_text"]).strip():
+                    val = str(row["guide_text"]).strip()
+                    CAT_GUIDES[k] = val
+                    return val
+    except Exception:
+        pass
+    return ""
+
+
+def set_category_guide(key: str, guide_html: Optional[str]) -> bool:
+    """Persist or clear guide_text for a category key and refresh in-memory caches."""
+    k = (key or "").strip().lower()
+    if not k or not db:
+        return False
+    reload_categories()
+    val = (guide_html or "").strip() or None
+    cur = db.execute("UPDATE categories SET guide_text=? WHERE key=?", (val, k))
+    db.commit()
+    reload_categories()
+    return cur.rowcount > 0
 
 
 CATEGORY_KEYWORDS = (
@@ -1532,8 +1623,13 @@ def sort_catalog_products(prods: list) -> list:
     return in_stock + out_of_stock
 
 
-def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_prefix: str, back_cb: str, avail_only: int = 0) -> Tuple[str, InlineKeyboardMarkup]:
+def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_prefix: str, back_cb: str, avail_only: int = 0, header_note: str = "") -> Tuple[str, InlineKeyboardMarkup]:
     """1-column product list with in-stock products arranged alphabetically and out-of-stock goods at the last pages."""
+    header = t(uid, "prods_title")
+    note = (header_note or "").strip()
+    if note:
+        header = f"{header}\n\n{note}"
+
     sorted_prods = sort_catalog_products(prods)
     if avail_only:
         display_prods = [p for p in sorted_prods if is_product_available(p)]
@@ -1545,7 +1641,8 @@ def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_pr
         if avail_only:
             empty_rows.append([btn(t(uid, "btn_show_all"), f"{cb_prefix}:1:0", style="primary")])
         empty_rows.append([btn(t(uid, "btn_back"), back_cb, style="danger")])
-        return t(uid, "no_products"), kb(empty_rows)
+        empty_text = f"{header}\n\n{t(uid, 'no_products')}" if note else t(uid, "no_products")
+        return empty_text, kb(empty_rows)
 
     total_pages = max(1, (len(display_prods) + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(1, min(page, total_pages))
@@ -1583,7 +1680,7 @@ def render_product_list(uid: int, prods: list, page: int, cb_prefix: str, ctx_pr
         btn(t(uid, "btn_refresh"), f"{cb_prefix}:{page}:{avail_only}", style="primary"),
         btn(t(uid, "btn_back"), back_cb, style="danger")
     ])
-    return t(uid, "prods_title"), kb(rows)
+    return header, kb(rows)
 
 
 def render_product_card(uid: int, p: sqlite3.Row, ctx: str) -> Tuple[str, InlineKeyboardMarkup]:
@@ -1988,7 +2085,8 @@ async def on_category(c: CallbackQuery):
         cb_prefix=f"cat:{key}",
         ctx_prefix=f"c_{key}",
         back_cb="shop",
-        avail_only=avail_only
+        avail_only=avail_only,
+        header_note=get_category_guide(key),
     )
     await edit(c, text, markup)
 
@@ -3037,6 +3135,8 @@ async def handle_cancel(m: Message):
         if p:
             text, markup = render_product_card(uid, p, ctx)
             return await m.answer(text, reply_markup=markup)
+    elif action == "set_cat_guide":
+        return await m.answer("❌ Cancelled category guide update.")
     await m.answer(t(uid, "welcome"), reply_markup=home_kb(uid))
 
 
@@ -3071,6 +3171,19 @@ async def handle_user_text_input(m: Message):
             return await m.answer(err_msg or t(uid, "out_of_stock"), reply_markup=kb([[btn(t(uid, "btn_back"), "shop", style="danger")]]))
 
         await start_checkout(m, uid, p, qty, ctx)
+
+    elif action == "set_cat_guide":
+        if uid not in ADMIN_IDS:
+            return
+        cat_key = state.get("cat_key", "")
+        cat_tuple = resolve_category(cat_key)
+        if not cat_tuple:
+            return await m.answer("⚠️ Category no longer exists. Run /guides to inspect categories.")
+        guide_html = extract_telegram_html(m, prefix_chars=0)
+        if not guide_html:
+            pending_inputs[uid] = state
+            return await m.answer("⚠️ Guide text cannot be empty. Send the guide message or /cancel:")
+        await _save_and_confirm_category_guide(m, cat_tuple, guide_html)
 
     elif action == "search":
         raw_term = m.text.strip()
@@ -3586,7 +3699,10 @@ def render_admin_help() -> Tuple[str, InlineKeyboardMarkup]:
         "📂 <b>Category Management</b>\n"
         "/categories - View all store categories & item counts\n"
         "/addcategory &lt;name&gt; [icon] - Add or update a category\n"
-        "/delcategory &lt;key_or_name&gt; - Remove a category\n\n"
+        "/delcategory &lt;key_or_name&gt; - Remove a category\n"
+        "/guides - View all category page messages\n"
+        "/setguide &lt;category&gt; [text] - Add or edit a category page message\n"
+        "/delguide &lt;category&gt; - Remove a category page message\n\n"
         "🌐 <b>Supplier Catalog (Automated)</b>\n"
         "/supplier - Supplier balance & account info\n"
         "/mode [auto|manual|instant] - View or switch Model A / Model B\n"
@@ -3916,9 +4032,225 @@ async def admin_list_categories(m: Message):
     lines.append(
         "\n💡 <i>Commands:</i>\n"
         "• <code>/addcategory &lt;name&gt; [icon]</code> to add or update a category\n"
-        "• <code>/delcategory &lt;key_or_name&gt;</code> to remove a category"
+        "• <code>/delcategory &lt;key_or_name&gt;</code> to remove a category\n"
+        "• <code>/guides</code>, <code>/setguide</code>, <code>/delguide</code> to manage page messages"
     )
     await m.answer("\n".join(lines))
+
+
+TELEGRAM_HTML_ALLOWED_TAGS = {
+    "b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+    "span", "tg-spoiler", "tg-emoji", "a", "code", "pre", "blockquote",
+}
+MAX_CATEGORY_GUIDE_LEN = 3800
+
+
+class _TelegramHTMLValidator(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.stack: List[str] = []
+        self.valid = True
+        self.tag_count = 0
+
+    def handle_starttag(self, tag, attrs):
+        t_low = tag.lower()
+        if t_low not in TELEGRAM_HTML_ALLOWED_TAGS:
+            self.valid = False
+            return
+        self.tag_count += 1
+        self.stack.append(t_low)
+
+    def handle_endtag(self, tag):
+        t_low = tag.lower()
+        if not self.stack or self.stack[-1] != t_low:
+            self.valid = False
+            return
+        self.stack.pop()
+
+
+def _is_valid_telegram_html(text: str) -> bool:
+    if "<" not in text and ">" not in text:
+        return False
+    parser = _TelegramHTMLValidator()
+    try:
+        parser.feed(text)
+        parser.close()
+    except Exception:
+        return False
+    return parser.valid and not parser.stack and parser.tag_count > 0
+
+
+def extract_telegram_html(m: Message, prefix_chars: int = 0) -> str:
+    """Extract Telegram-safe HTML from a message slice, preserving rich formatting entities."""
+    raw_text = m.text if m.text is not None else (m.caption or "")
+    tail = raw_text[prefix_chars:]
+    if not tail.strip():
+        return ""
+
+    leading_ws = len(tail) - len(tail.lstrip())
+    slice_start = prefix_chars + leading_ws
+    slice_text = raw_text[slice_start:].rstrip()
+    entities = m.entities if m.text is not None else getattr(m, "caption_entities", None)
+    non_cmd = [e for e in (entities or []) if getattr(e, "type", None) != "bot_command"]
+
+    if non_cmd:
+        prefix_u16 = len(raw_text[:slice_start].encode("utf-16-le")) // 2
+        max_u16 = len(slice_text.encode("utf-16-le")) // 2
+        shifted = []
+        for ent in non_cmd:
+            s = max(0, ent.offset - prefix_u16)
+            end = min(max_u16, ent.offset + ent.length - prefix_u16)
+            if end > s:
+                shifted.append(ent.model_copy(update={"offset": s, "length": end - s}))
+        if shifted:
+            return html_decoration.unparse(slice_text, shifted).strip()
+
+    body = slice_text.strip()
+    if _is_valid_telegram_html(body):
+        return re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)", "&amp;", body)
+    return esc(body)
+
+
+def _split_guide_command(raw_text: str, cmd_args: str = "") -> Tuple[Optional[Tuple[str, str, str]], int]:
+    """Parse category + raw prefix char offset for the guide body from /setguide."""
+    cmd_m = re.match(r"^/\S+(?:\s+|$)", raw_text or "")
+    after_cmd = cmd_m.end() if cmd_m else 0
+    rest = (raw_text or "")[after_cmd:] if cmd_m else (cmd_args or "")
+    rest_stripped = rest.lstrip()
+    if not rest_stripped:
+        return None, 0
+
+    ws_before = len(rest) - len(rest_stripped)
+    rest_low = rest_stripped.lower()
+    # Check longest category names first so two-word names (e.g. "Video AI") match before single words
+    for k, name, icon in sorted(CATEGORIES, key=lambda item: len(item[1]), reverse=True):
+        n_low = name.lower()
+        if rest_low.startswith(n_low) and (len(rest_low) == len(n_low) or rest_low[len(n_low)].isspace()):
+            return (k, name, icon), after_cmd + ws_before + len(name)
+
+    tok_m = re.match(r"^(\S+)", rest_stripped)
+    if tok_m:
+        tok = tok_m.group(1)
+        cat_tuple = resolve_category(tok)
+        if cat_tuple:
+            return cat_tuple, after_cmd + ws_before + len(tok)
+
+    return None, 0
+
+
+async def _save_and_confirm_category_guide(m: Message, cat_tuple: Tuple[str, str, str], guide_html: str):
+    key, name, icon = cat_tuple
+    if len(guide_html) > MAX_CATEGORY_GUIDE_LEN:
+        return await m.answer(
+            f"⚠️ Guide message is too long ({len(guide_html)} chars). Keep it under {MAX_CATEGORY_GUIDE_LEN} characters so every page fits Telegram's limit."
+        )
+
+    prev_guide = get_category_guide(key)
+    set_category_guide(key, guide_html)
+    uid = m.from_user.id if m.from_user else 0
+    preview = (
+        f"✅ <b>Category page message saved for {icon} {esc(name)}</b> (<code>{esc(key)}</code>)\n"
+        f"<i>Shown on all pages of this category. Use <code>/delguide {esc(key)}</code> to remove.</i>\n\n"
+        f"<b>Preview:</b>\n\n{t(uid, 'prods_title')}\n\n{guide_html}"
+    )
+    try:
+        await m.answer(preview)
+    except TelegramBadRequest as e:
+        set_category_guide(key, prev_guide or None)
+        await m.answer(
+            f"⚠️ Telegram rejected the HTML formatting (<code>{esc(str(e))}</code>).\n"
+            "Your previous category message was kept unchanged."
+        )
+
+
+@dp.message(Command("guides", "listguides", "catguides"), is_admin)
+async def admin_list_guides(m: Message):
+    reload_categories()
+    configured = [(k, name, icon, CAT_GUIDES[k]) for k, name, icon in CATEGORIES if k in CAT_GUIDES]
+    lines = [f"📝 <b>Category Page Messages ({len(configured)} active)</b>\n"]
+    if not configured:
+        lines.append("<i>No category page messages set yet.</i>")
+    else:
+        for k, name, icon, body in configured:
+            plain_preview = re.sub(r"<[^>]+>", "", body).replace("\n", " ").strip()
+            snippet = plain_preview[:65] + ("..." if len(plain_preview) > 65 else "")
+            lines.append(f"• {icon} <b>{esc(name)}</b> (<code>{esc(k)}</code>): {esc(snippet)}")
+
+    lines.append(
+        "\n💡 <b>Manage any category:</b>\n"
+        "• <code>/setguide &lt;key&gt;</code> — Set or edit interactively (multi-line & bold supported)\n"
+        "• <code>/setguide &lt;key&gt; &lt;text&gt;</code> — Set directly in one command\n"
+        "• Reply to a message with <code>/setguide &lt;key&gt;</code> — Copy formatting cleanly\n"
+        "• <code>/delguide &lt;key&gt;</code> — Remove message from a category"
+    )
+    await m.answer("\n".join(lines))
+
+
+@dp.message(Command("setguide", "set_guide", "editguide"), is_admin)
+async def admin_set_guide(m: Message, command: CommandObject = None):
+    reload_categories()
+    raw_text = m.text if m.text is not None else ""
+    cmd_args = (command.args or "").strip() if command else ""
+    cat_tuple, body_start = _split_guide_command(raw_text, cmd_args)
+
+    if not cat_tuple:
+        arg_head = cmd_args.split(None, 1)[0] if cmd_args else ""
+        if arg_head:
+            keys_preview = ", ".join(f"<code>{esc(k)}</code>" for k, _, _ in CATEGORIES)
+            return await m.answer(
+                f"⚠️ Unknown category <b>{esc(arg_head)}</b>.\n\n"
+                f"Available keys: {keys_preview}"
+            )
+        return await m.answer(
+            "<b>Usage:</b>\n"
+            "• <code>/setguide &lt;category&gt; &lt;message&gt;</code>\n"
+            "• <code>/setguide &lt;category&gt;</code> (then send message, or reply to a message)\n\n"
+            "<b>Examples:</b>\n"
+            "• <code>/setguide chatgpt</code>\n"
+            "• <code>/setguide grok Fast delivery on all tiers.</code>\n\n"
+            "Run /guides to view existing category messages or /categories for all keys."
+        )
+
+    key, name, icon = cat_tuple
+    inline_html = extract_telegram_html(m, prefix_chars=body_start)
+    if inline_html:
+        return await _save_and_confirm_category_guide(m, cat_tuple, inline_html)
+
+    if m.reply_to_message:
+        replied_html = extract_telegram_html(m.reply_to_message, prefix_chars=0)
+        if replied_html:
+            return await _save_and_confirm_category_guide(m, cat_tuple, replied_html)
+
+    uid = m.from_user.id
+    pending_inputs[uid] = {"action": "set_cat_guide", "cat_key": key}
+    existing = get_category_guide(key)
+    status_hint = "\n<i>(This will replace the current message on all pages of this category.)</i>" if existing else ""
+    await m.answer(
+        f"✏️ Send the page message for {icon} <b>{esc(name)}</b> (<code>{esc(key)}</code>).\n"
+        f"Multi-line text, Telegram formatting (bold/italic/links), and HTML tags are supported.{status_hint}\n\n"
+        f"Send /cancel to abort."
+    )
+
+
+@dp.message(Command("delguide", "del_guide", "removeguide", "clearguide"), is_admin)
+async def admin_del_guide(m: Message, command: CommandObject = None):
+    reload_categories()
+    target = (command.args or "").strip() if command else ""
+    if not target:
+        return await m.answer(
+            "<b>Usage:</b> <code>/delguide &lt;category_key_or_name&gt;</code>\n"
+            "<b>Example:</b> <code>/delguide chatgpt</code>"
+        )
+    cat_tuple = resolve_category(target)
+    if not cat_tuple:
+        return await m.answer(f"⚠️ Category matching <b>{esc(target)}</b> not found.")
+    key, name, icon = cat_tuple
+    had_guide = bool(get_category_guide(key))
+    set_category_guide(key, None)
+    if had_guide:
+        await m.answer(f"🗑️ Removed page message for {icon} <b>{esc(name)}</b> (<code>{esc(key)}</code>).")
+    else:
+        await m.answer(f"ℹ️ {icon} <b>{esc(name)}</b> (<code>{esc(key)}</code>) had no page message set.")
 
 
 def chunk_lines(lines: List[str], max_chars: int = 3500) -> List[str]:
@@ -5750,6 +6082,9 @@ async def main():
             BotCommand(command="categories", description="View & manage store categories"),
             BotCommand(command="addcategory", description="Add or update a store category"),
             BotCommand(command="delcategory", description="Remove a store category"),
+            BotCommand(command="guides", description="View category page messages"),
+            BotCommand(command="setguide", description="Add or edit a category page message"),
+            BotCommand(command="delguide", description="Remove a category page message"),
             BotCommand(command="clearprices", description="Clear manual price overrides"),
             BotCommand(command="clearcache", description="Clear cached products & sync from supplier API"),
             BotCommand(command="sync_retail", description="Sync retail catalog descriptions & stock"),
