@@ -567,20 +567,22 @@ def get_category_guide(key: str) -> str:
     k = (key or "").strip().lower()
     if not k:
         return ""
-    if k in CAT_GUIDES:
-        return CAT_GUIDES[k]
     try:
         if db:
             has_col = any(r["name"] == "guide_text" for r in db.execute("PRAGMA table_info(categories)").fetchall())
             if has_col:
                 row = db.execute("SELECT guide_text FROM categories WHERE key=?", (k,)).fetchone()
-                if row and row["guide_text"] and str(row["guide_text"]).strip():
-                    val = str(row["guide_text"]).strip()
-                    CAT_GUIDES[k] = val
+                if row is not None:
+                    val = (row["guide_text"] or "").strip()
+                    if val:
+                        CAT_GUIDES[k] = val
+                    else:
+                        CAT_GUIDES.pop(k, None)
                     return val
+                return ""
     except Exception:
         pass
-    return ""
+    return CAT_GUIDES.get(k, "")
 
 
 def set_category_guide(key: str, guide_html: Optional[str]) -> bool:
@@ -4172,7 +4174,7 @@ async def admin_list_guides(m: Message):
         lines.append("<i>No category page messages set yet.</i>")
     else:
         for k, name, icon, body in configured:
-            plain_preview = re.sub(r"<[^>]+>", "", body).replace("\n", " ").strip()
+            plain_preview = html.unescape(re.sub(r"<[^>]+>", "", body)).replace("\n", " ").strip()
             snippet = plain_preview[:65] + ("..." if len(plain_preview) > 65 else "")
             lines.append(f"• {icon} <b>{esc(name)}</b> (<code>{esc(k)}</code>): {esc(snippet)}")
 

@@ -4446,6 +4446,44 @@ class TestAuditBugFixes(unittest.IsolatedAsyncioTestCase):
         bot.reload_categories()
         self.assertEqual(bot.get_category_guide("chatgpt"), "")
 
+        # Two-word category name + reply-to-message preserves formatted entities
+        m_reply_src = AsyncMock()
+        m_reply_src.text = "Video AI Note & Tips"
+        m_reply_src.entities = [MessageEntity(type="bold", offset=0, length=8)]
+        m_reply_cmd = AsyncMock()
+        m_reply_cmd.from_user.id = admin_id
+        m_reply_cmd.entities = []
+        m_reply_cmd.text = "/setguide Video AI"
+        m_reply_cmd.reply_to_message = m_reply_src
+        cmd_vid = AsyncMock()
+        cmd_vid.args = "Video AI"
+        await bot.admin_set_guide(m_reply_cmd, cmd_vid)
+        self.assertEqual(bot.get_category_guide("video_ai"), "<b>Video AI</b> Note &amp; Tips")
+
+        # Raw valid HTML + rollback if Telegram rejects preview formatting
+        from aiogram.exceptions import TelegramBadRequest
+        m_html = AsyncMock()
+        m_html.from_user.id = admin_id
+        m_html.entities = []
+        m_html.reply_to_message = None
+        m_html.text = "/setguide gemini <b>Gemini Pro</b>\nReliable & fast."
+        cmd_gem = AsyncMock()
+        cmd_gem.args = "gemini <b>Gemini Pro</b>\nReliable & fast."
+        await bot.admin_set_guide(m_html, cmd_gem)
+        self.assertEqual(bot.get_category_guide("gemini"), "<b>Gemini Pro</b>\nReliable &amp; fast.")
+
+        m_bad = AsyncMock()
+        m_bad.from_user.id = admin_id
+        m_bad.entities = []
+        m_bad.reply_to_message = None
+        m_bad.text = '/setguide gemini <a href="bad-url">broken</a>'
+        m_bad.answer = AsyncMock(side_effect=[TelegramBadRequest(method=MagicMock(), message="can't parse entities"), None])
+        cmd_bad = AsyncMock()
+        cmd_bad.args = 'gemini <a href="bad-url">broken</a>'
+        await bot.admin_set_guide(m_bad, cmd_bad)
+        self.assertEqual(bot.get_category_guide("gemini"), "<b>Gemini Pro</b>\nReliable &amp; fast.")
+        bot.pending_inputs.pop(admin_id, None)
+
         # Reply-to-message & inline rich entities preserve formatting cleanly across emojis
         m_reply_src = AsyncMock()
         m_reply_src.text = "ℹ️ Gemini Guide\nWorks fast."
