@@ -4774,8 +4774,9 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
         m.answer = AsyncMock(return_value=status_msg)
 
         async def fake_crawler(db_path=None, progress_cb=None, force_refresh_all=False):
-            await progress_cb(1, 19, "Scanning page 1/19")
-            await progress_cb(2, 19, "Scanning page 2/19")
+            if progress_cb is not None:
+                await progress_cb(1, 19, "Scanning page 1/19")
+                await progress_cb(2, 19, "Scanning page 2/19")
             return {"success": True, "total_scraped": 291, "new_items": 0, "updated_items": 15, "pages_scanned": 2, "total_pages": 19, "incomplete": True}
 
         cmd = MagicMock()
@@ -4790,6 +4791,61 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("Page 2/19" in txt for txt in edits))
         self.assertIn("2/19", edits[-1])
         self.assertIn("Stopped Early", edits[-1])
+
+    async def test_detail_scrape_handles_none_recovered_cat_msg_without_crash(self):
+        import tempfile, json
+        import crawl_retail_details
+        import broadcaster.broadcaster as bc
+
+        def _make_btn(text, data=None):
+            b = MagicMock()
+            b.text = text
+            b.data = data
+            return b
+
+        def _make_msg(mid, buttons):
+            m = AsyncMock()
+            m.id = mid
+            m.out = False
+            m.text = "✨ Choose a product"
+            m.message = m.text
+            m.raw_text = m.text
+            row = MagicMock()
+            row.buttons = [_make_btn(t, d) for t, d in buttons]
+            m.reply_markup = MagicMock()
+            m.reply_markup.rows = [row]
+            m.click = AsyncMock()
+            return m
+
+        page1 = _make_msg(76040, [("Prod X · $2.50 ✅", b"itm:x"), ("1/1", b"pg:1")])
+        fake_client = AsyncMock()
+        fake_client.is_connected = MagicMock(return_value=True)
+        fake_client.get_entity = AsyncMock(return_value=MagicMock())
+        fake_client.get_messages = AsyncMock(return_value=page1)
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tf:
+            json.dump({}, tf)
+            tmp_json = tf.name
+
+        try:
+            with self.assertLogs("retail_crawler", level="INFO") as log_cm, \
+                 patch("asyncio.sleep", new=AsyncMock()), \
+                 patch.object(crawl_retail_details, "DETAILS_JSON", crawl_retail_details.Path(tmp_json)), \
+                 patch.object(bc, "get_active_client", return_value=fake_client), \
+                 patch.object(crawl_retail_details, "open_catalog", new=AsyncMock(return_value=page1)), \
+                 patch.object(crawl_retail_details, "_recover_to_catalog_page", new=AsyncMock(return_value=None)), \
+                 patch.object(crawl_retail_details, "update_db_product", return_value=(1, False)) as mock_upd, \
+                 patch.object(crawl_retail_details, "_persist_cache"), \
+                 patch.object(crawl_retail_details, "update_retail_catalog_py"):
+                fake_client.get_messages = AsyncMock(side_effect=[page1] + [None] * 20)
+                res = await crawl_retail_details.run_retail_crawler(db_path=":memory:", force_refresh_all=True)
+        finally:
+            if os.path.exists(tmp_json):
+                os.remove(tmp_json)
+
+        self.assertTrue(res["success"])
+        self.assertTrue(mock_upd.called)
+        self.assertFalse(any("NoneType" in rec for rec in log_cm.output))
 
     def test_detect_category_gemini_google_ai(self):
         self.assertEqual(bot.detect_category("Google AI Pro 12M CDK V2"), "Gemini")

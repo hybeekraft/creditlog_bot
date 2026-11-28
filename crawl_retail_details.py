@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -6,7 +7,7 @@ from pathlib import Path
 import re
 import sqlite3
 import sys
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from dotenv import load_dotenv
 
@@ -629,7 +630,7 @@ async def run_retail_crawler(
                 }
 
         bot = await client.get_entity(TARGET_BOT)
-        cat_msg = await open_catalog(client, bot)
+        cat_msg: Any = await open_catalog(client, bot)
         if not cat_msg:
             raise RuntimeError("Could not open supplier catalog message")
         cat_id = cat_msg.id
@@ -688,16 +689,15 @@ async def run_retail_crawler(
 
                 cached = details_cache.get(norm_k)
                 cached_desc = (cached or {}).get("description", "")
-                has_valid_cache = bool(
-                    not force_refresh_all
-                    and cached
+                if (
+                    cached is not None
+                    and not force_refresh_all
                     and cached_desc
                     and len(cached_desc) > 30
                     and not is_menu_screen_text(cached_desc)
                     and not cached.get("needs_refresh")
                     and ((live_price is not None and live_price > 0) or (cached.get("price_usd") and float(cached.get("price_usd")) > 0))
-                )
-                if has_valid_cache:
+                ):
                     eff_price = live_price if (live_price is not None and live_price > 0) else cached.get("price_usd")
                     eff_stock = live_stock
                     cached["stock"] = eff_stock
@@ -719,6 +719,12 @@ async def run_retail_crawler(
                     try:
                         if attempt > 0:
                             cat_msg = await _recover_to_catalog_page(client, bot, cat_id, cat_msg)
+                        if not cat_msg:
+                            cat_msg = await client.get_messages(bot, ids=cat_id)
+                        if not cat_msg:
+                            logger.warning("Catalog message unavailable for [%s] on attempt %d", btn_name, attempt + 1)
+                            await asyncio.sleep(1.5)
+                            continue
                         before_detail_sig = _button_signature(cat_msg)
                         if b_data:
                             await cat_msg.click(data=b_data)
@@ -797,10 +803,14 @@ async def run_retail_crawler(
             cat_msg = await client.get_messages(bot, ids=cat_id)
             if not cat_msg or not _has_catalog_pagination(cat_msg):
                 cat_msg = await _recover_to_catalog_page(client, bot, cat_id, cat_msg)
-            if cat_msg:
-                cat_id = cat_msg.id
+            if not cat_msg:
+                if current_page < total_pages:
+                    logger.warning("Lost catalog message on page %d/%d; stopping crawl.", current_page, total_pages)
+                    crawl_incomplete = True
+                break
+            cat_id = cat_msg.id
             prev_page_num = _extract_page_num(cat_msg) or current_page
-            next_btn = _find_button_any(cat_msg, ("▶️", "➡️", "▶", "➡")) if cat_msg else None
+            next_btn = _find_button_any(cat_msg, ("▶️", "➡️", "▶", "➡"))
 
             if current_page < total_pages and next_btn:
                 advanced = False
@@ -885,7 +895,9 @@ async def run_retail_crawler(
     finally:
         if own_client and client:
             try:
-                await client.disconnect()
+                disc = client.disconnect()
+                if inspect.isawaitable(disc):
+                    await disc
             except Exception:
                 pass
 
