@@ -145,7 +145,8 @@ CREATE TABLE IF NOT EXISTS products(
   supplier TEXT DEFAULT 'default',
   supplier_stock INTEGER DEFAULT NULL,
   delivery_type TEXT DEFAULT 'auto',
-  bulk_tiers TEXT DEFAULT NULL);
+  bulk_tiers TEXT DEFAULT NULL,
+  delisted INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS stock(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   product_id INTEGER NOT NULL,
@@ -685,9 +686,20 @@ def get_product_icon(name: str, cat_name: Optional[str] = None) -> str:
     return "📦"
 
 
+def _not_delisted_clause(alias: str = "") -> str:
+    """Return SQL predicate excluding delisted rows when the delisted column exists."""
+    prefix = f"{alias}." if alias else ""
+    try:
+        if db and any(r["name"] == "delisted" for r in db.execute("PRAGMA table_info(products)").fetchall()):
+            return f"COALESCE({prefix}delisted, 0) = 0"
+    except Exception:
+        pass
+    return "1=1"
+
+
 def get_products_for_category(key: str) -> list[sqlite3.Row]:
     cat_name, _ = CAT_BY_KEY.get(key, ("AI Tools", "⚡"))
-    all_prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
+    all_prods = db.execute(f"SELECT * FROM products WHERE {_not_delisted_clause()} ORDER BY id").fetchall()
     matched = []
     target_names = {cat_name.lower(), key.lower()}
     if cat_name.lower() == "deepseek":
@@ -795,6 +807,7 @@ def migrate_db():
             ("supplier_stock", "INTEGER DEFAULT NULL"),
             ("delivery_type", "TEXT DEFAULT 'auto'"),
             ("bulk_tiers", "TEXT DEFAULT NULL"),
+            ("delisted", "INTEGER DEFAULT 0"),
         ],
         "orders": [
             ("supplier_order_id", "TEXT DEFAULT NULL"),
@@ -939,7 +952,8 @@ def resequence_product_ids(conn=None) -> Dict[int, int]:
                     supplier_stock INTEGER DEFAULT NULL,
                     delivery_type TEXT DEFAULT 'auto',
                     fixed_price INTEGER DEFAULT 0,
-                    bulk_tiers TEXT DEFAULT NULL
+                    bulk_tiers TEXT DEFAULT NULL,
+                    delisted INTEGER DEFAULT 0
                 )
             """)
 
@@ -1599,7 +1613,7 @@ def get_featured_products(include_inactive: bool = False) -> List[sqlite3.Row]:
         return []
     try:
         placeholders = ",".join("?" for _ in pids)
-        active_clause = "" if include_inactive else " AND active=1"
+        active_clause = "" if include_inactive else f" AND active=1 AND {_not_delisted_clause()}"
         rows = db.execute(f"SELECT * FROM products WHERE id IN ({placeholders}){active_clause}", pids).fetchall()
         row_map = {r["id"]: r for r in rows}
         return [row_map[pid] for pid in pids if pid in row_map]
@@ -1692,7 +1706,7 @@ def render_featured_panel(admin_uid: int) -> Tuple[str, InlineKeyboardMarkup]:
 def render_featured_add_picker(admin_uid: int, page: int = 1) -> Tuple[str, InlineKeyboardMarkup]:
     """Render catalogue product picker to add to homepage featured."""
     PAGE_SIZE = 6
-    prods = db.execute("SELECT * FROM products WHERE active=1 ORDER BY category ASC, name ASC").fetchall()
+    prods = db.execute(f"SELECT * FROM products WHERE active=1 AND {_not_delisted_clause()} ORDER BY category ASC, name ASC").fetchall()
     total = len(prods)
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(1, min(page, total_pages))
@@ -2304,7 +2318,7 @@ async def on_all_prods(c: CallbackQuery):
     parts = c.data.split(":")
     page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
     avail_only = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-    prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
+    prods = db.execute(f"SELECT * FROM products WHERE {_not_delisted_clause()} ORDER BY id").fetchall()
     text, markup = render_product_list(
         uid, prods, page=page,
         cb_prefix="allprods",
@@ -2336,7 +2350,7 @@ async def on_search_page(c: CallbackQuery):
     page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
     avail_only = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
     prods = db.execute(
-        "SELECT * FROM products WHERE (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY id",
+        f"SELECT * FROM products WHERE {_not_delisted_clause()} AND (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY id",
         (f"%{term.lower()}%", f"%{term.lower()}%")
     ).fetchall()
     text, markup = render_product_list(
@@ -3420,7 +3434,7 @@ async def handle_user_text_input(m: Message):
             pending_inputs[uid] = state
             return await m.answer("⚠️ Please enter a valid search keyword (or send /cancel):")
         prods = db.execute(
-            "SELECT * FROM products WHERE (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY id",
+            f"SELECT * FROM products WHERE {_not_delisted_clause()} AND (LOWER(name) LIKE ? OR LOWER(description) LIKE ?) ORDER BY id",
             (f"%{clean_term.lower()}%", f"%{clean_term.lower()}%")
         ).fetchall()
         text, markup = render_product_list(
@@ -4705,7 +4719,7 @@ async def cb_admin_featured_pick(c: CallbackQuery):
 
 @dp.message(Command("products"), is_admin)
 async def admin_products(m: Message):
-    rows = db.execute("SELECT * FROM products ORDER BY id").fetchall()
+    rows = db.execute(f"SELECT * FROM products WHERE {_not_delisted_clause()} ORDER BY id").fetchall()
     if not rows:
         return await m.answer("No products.")
     admin_curr = get_user_currency(m.from_user.id)
@@ -4990,7 +5004,7 @@ async def admin_list_bulk(m: Message, command: CommandObject = None):
         lines.append(f"\nRemove with <code>/delbulk {pid}</code>.")
         return await m.answer("\n".join(lines))
 
-    prods = db.execute("SELECT * FROM products ORDER BY id").fetchall()
+    prods = db.execute(f"SELECT * FROM products WHERE {_not_delisted_clause()} ORDER BY id").fetchall()
     configured = [(p, get_effective_bulk_tiers(p)) for p in prods]
     configured = [(p, eff) for p, eff in configured if eff]
     lines = [f"🏷 <b>Active Bulk Pricing Rules ({len(configured)} products)</b>\n"]
@@ -5966,11 +5980,13 @@ async def perform_supplier_sync(
                 db_margin = saved_margin
                 db_fixed_price = 0
 
+            has_delisted = any(r["name"] == "delisted" for r in db.execute("PRAGMA table_info(products)").fetchall())
             if existing:
-                db.execute("""
+                delisted_sql = ", delisted=0" if has_delisted else ""
+                db.execute(f"""
                     UPDATE products
                     SET name=?, description=?, price=?, supplier_price=?, auto_fulfill=1, active=?, category=?, supplier=?,
-                        supplier_stock=?, delivery_type='auto', supplier_product_id=?, margin=?, fixed_price=?
+                        supplier_stock=?, delivery_type='auto', supplier_product_id=?, margin=?, fixed_price=?{delisted_sql}
                     WHERE id=?
                 """, (clean_name, sp["description"], retail_cents, cost_cents, is_active, cat, sup_name, stock, sp_id, db_margin, db_fixed_price, existing["id"]))
                 total_updated += 1
@@ -5984,21 +6000,46 @@ async def perform_supplier_sync(
         # Clear legacy unlinked cached products
         db.execute("DELETE FROM products WHERE supplier_product_id IS NULL")
 
-        if purge_delisted and seen_supplier_ids:
-            placeholders = ",".join("?" for _ in seen_supplier_ids)
-            db.execute(
-                f"DELETE FROM products WHERE supplier=? AND supplier_product_id NOT IN ({placeholders})",
-                (sup_name, *seen_supplier_ids)
-            )
-        elif seen_supplier_ids:
-            # Deactivate supplier products no longer in feed
+        removed_any = False
+        if seen_supplier_ids:
+            # Load live retail catalog norms so items kept on @geminiprosub_bot transition cleanly instead of vanishing
+            retail_norms = set()
+            try:
+                from crawl_retail_details import resolve_details_json_path, norm_name as _rc_norm
+                rj_path = resolve_details_json_path(DB_PATH)
+                if os.path.exists(rj_path):
+                    with open(rj_path, "r", encoding="utf-8") as rf:
+                        rj_data = json.load(rf)
+                    for rk, rv in rj_data.items():
+                        rname = rv.get("item_name") or rv.get("name") or rk
+                        retail_norms.add(_rc_norm(rname))
+            except Exception:
+                pass
+
             cur_prods = db.execute(
-                "SELECT id, supplier_product_id FROM products WHERE supplier=? AND delivery_type='auto' AND supplier_product_id IS NOT NULL",
+                "SELECT id, name, supplier_product_id, supplier_price FROM products WHERE supplier=? AND delivery_type='auto' AND supplier_product_id IS NOT NULL",
                 (sup_name,)
             ).fetchall()
             for cp in cur_prods:
                 if str(cp["supplier_product_id"]) not in seen_supplier_ids:
-                    db.execute("UPDATE products SET supplier_stock=0, active=0 WHERE id=?", (cp["id"],))
+                    cp_norm = re.sub(r"[^a-z0-9]", "", str(cp["name"]).lower())
+                    if sup_name == "default" and cp_norm in retail_norms:
+                        cp_cost = int(cp["supplier_price"] or 0) if "supplier_price" in cp.keys() else 0
+                        new_spid = f"renqis_retail_{cp_norm}_{cp_cost}" if cp_cost > 0 else f"renqis_retail_{cp_norm}"
+                        db.execute(
+                            "UPDATE products SET supplier='renqis_retail', auto_fulfill=0, delivery_type='manual', supplier_product_id=? WHERE id=?",
+                            (new_spid, cp["id"]),
+                        )
+                    elif purge_delisted or len(sup_products) >= 20:
+                        from crawl_retail_details import remove_or_delist_product
+                        outcome = remove_or_delist_product(db, cp["id"])
+                        if outcome == "deleted":
+                            removed_any = True
+                    else:
+                        if has_delisted:
+                            db.execute("UPDATE products SET supplier_stock=0, active=0, delisted=1 WHERE id=?", (cp["id"],))
+                        else:
+                            db.execute("UPDATE products SET supplier_stock=0, active=0 WHERE id=?", (cp["id"],))
 
         total_items += len(sup_products)
 
@@ -6006,6 +6047,8 @@ async def perform_supplier_sync(
         from retail_catalog import sync_retail_catalog_details
         sync_retail_catalog_details(db)
         deduplicate_products_in_db(db)
+        if removed_any:
+            resequence_product_ids(db)
     except Exception as e:
         log.warning("Post-supplier-sync retail catalog sync failed: %s", e)
 
@@ -6143,8 +6186,8 @@ async def admin_clearcache(m: Message, command: CommandObject = None):
     trigger_catalog_refresh()
 
     admin_curr = get_user_currency(m.from_user.id)
-    active_count = db.execute("SELECT COUNT(*) FROM products WHERE active=1").fetchone()[0]
-    total_count = db.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+    active_count = db.execute(f"SELECT COUNT(*) FROM products WHERE active=1 AND {_not_delisted_clause()}").fetchone()[0]
+    total_count = db.execute(f"SELECT COUNT(*) FROM products WHERE {_not_delisted_clause()}").fetchone()[0]
 
     err_text = f"\n⚠️ Errors: {', '.join(errors)}" if errors else ""
     await m.answer(

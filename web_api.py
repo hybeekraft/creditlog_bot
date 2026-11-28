@@ -285,6 +285,7 @@ def _migrate_schema(service):
         "web_requirements": "TEXT DEFAULT ''", "web_delivery_instructions": "TEXT DEFAULT ''",
         "web_options_json": "TEXT DEFAULT '[]'", "web_duration": "TEXT DEFAULT ''",
         "bulk_tiers": "TEXT DEFAULT NULL",
+        "delisted": "INTEGER DEFAULT 0",
     }
     for name, definition in product_additions.items():
         if name not in product_columns:
@@ -408,7 +409,7 @@ def register_web_routes(app, service):
 
     async def products(req):
         db = service["db"]
-        sql = "SELECT * FROM products WHERE active=1 ORDER BY category, name"
+        sql = "SELECT * FROM products WHERE active=1 AND COALESCE(delisted, 0)=0 ORDER BY category, name"
         rows = db.execute(sql).fetchall()
         items = [_product(service, row) for row in rows]
         category = req.query.get("category", "all").lower()
@@ -420,7 +421,7 @@ def register_web_routes(app, service):
         return _json(200, success=True, count=len(items), exchangeRate={"USD_TO_NGN": service["get_usd_ngn_rate"]()}, data=items)
 
     async def product_detail(req):
-        row = service["db"].execute("SELECT * FROM products WHERE id=? AND active=1", (req.match_info["product_id"],)).fetchone()
+        row = service["db"].execute("SELECT * FROM products WHERE id=? AND active=1 AND COALESCE(delisted, 0)=0", (req.match_info["product_id"],)).fetchone()
         if not row:
             return _json(404, success=False, message="Product not found.")
         return _json(200, success=True, exchangeRate={"USD_TO_NGN": service["get_usd_ngn_rate"]()}, data=_product(service, row))
@@ -434,7 +435,7 @@ def register_web_routes(app, service):
             return _json(400, success=False, message="A valid product and quantity are required.")
         if not 1 <= quantity <= 100:
             return _json(422, success=False, message="Quantity must be between 1 and 100.")
-        row = service["db"].execute("SELECT * FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
+        row = service["db"].execute("SELECT * FROM products WHERE id=? AND active=1 AND COALESCE(delisted, 0)=0", (product_id,)).fetchone()
         if not row:
             return _json(404, success=False, message="Product not found or unavailable.")
         available, count = service["check_product_stock_available"](row, quantity)
@@ -466,7 +467,7 @@ def register_web_routes(app, service):
             quantity = int(body.get("quantity", 1))
         except (ValueError, TypeError, json.JSONDecodeError):
             return _json(400, success=False, message="Valid product and quantity are required.")
-        row = service["db"].execute("SELECT * FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
+        row = service["db"].execute("SELECT * FROM products WHERE id=? AND active=1 AND COALESCE(delisted, 0)=0", (product_id,)).fetchone()
         if not row:
             return _json(404, success=False, message="Product not found or unavailable.")
         if "verify_live_product_stock" in service:
@@ -498,7 +499,7 @@ def register_web_routes(app, service):
             return _json(422, success=False, message="A name and valid email address are required.")
         if not 1 <= quantity <= 100:
             return _json(422, success=False, message="Quantity must be between 1 and 100.")
-        row = service["db"].execute("SELECT * FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
+        row = service["db"].execute("SELECT * FROM products WHERE id=? AND active=1 AND COALESCE(delisted, 0)=0", (product_id,)).fetchone()
         if not row:
             return _json(404, success=False, message="Product not found or unavailable.")
         if "verify_live_product_stock" in service:
@@ -764,7 +765,7 @@ def register_web_routes(app, service):
         claims, error = _require_admin(req, "admin", "manager")
         if error:
             return error
-        rows = service["db"].execute("SELECT * FROM products ORDER BY category,name").fetchall()
+        rows = service["db"].execute("SELECT * FROM products WHERE COALESCE(delisted, 0)=0 ORDER BY category,name").fetchall()
         items = [_product(service, row) for row in rows]
         low_stock = sum(1 for p in items if p["enabled"] and p["totalStock"] <= service["LOW_STOCK"])
         return _json(200, success=True, count=len(items), products=items,
@@ -1523,7 +1524,7 @@ def register_web_routes(app, service):
             filename = "creditlog-backup.db"
             content_type = "application/octet-stream"
         elif kind == "products.csv":
-            rows = service["db"].execute("SELECT id,name,description,price,active,category,supplier,supplier_product_id,supplier_stock FROM products ORDER BY id").fetchall()
+            rows = service["db"].execute("SELECT id,name,description,price,active,category,supplier,supplier_product_id,supplier_stock FROM products WHERE COALESCE(delisted, 0)=0 ORDER BY id").fetchall()
             output = io.StringIO()
             writer = csv.writer(output)
             writer.writerow(["id", "name", "description", "price_cents", "active", "category", "supplier", "supplier_product_id", "supplier_stock"])

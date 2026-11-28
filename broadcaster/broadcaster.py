@@ -270,11 +270,13 @@ def sync_product_from_broadcast(
         if matched_row:
             pid, name, active, price, fixed_price, margin, supplier_price, r_sup, r_spid = matched_row
             is_api_row = bool(r_sup == "default" and r_spid and not str(r_spid).startswith("renqis_retail_"))
+            has_delisted = any((r[1] if isinstance(r, tuple) else r["name"]) == "delisted" for r in cur.execute("PRAGMA table_info(products)").fetchall())
+            delisted_part = ", delisted = 0" if has_delisted else ""
             # Preserve exact Reseller API stock when >0 rather than overwriting it with 10
             if is_api_row:
-                next_stock_clause = "active = 1, supplier_stock = CASE WHEN supplier_stock IS NULL OR supplier_stock <= 0 THEN 1 ELSE supplier_stock END"
+                next_stock_clause = f"active = 1{delisted_part}, supplier_stock = CASE WHEN supplier_stock IS NULL OR supplier_stock <= 0 THEN 1 ELSE supplier_stock END"
             else:
-                next_stock_clause = "active = 1, supplier_stock = 10"
+                next_stock_clause = f"active = 1{delisted_part}, supplier_stock = 10"
 
             if has_pricing and cost_cents is not None and cost_cents > 0 and not is_api_row:
                 if fixed_price == 1:

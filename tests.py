@@ -5446,6 +5446,121 @@ class TestRetailCrawlerAndDeduplication(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.get_product_bulk_tiers(p_redeem_cleared), [])
         self.assertEqual(bot.calculate_bulk_order_price(p_redeem_cleared, 50)["total_cents"], 435 * 50)
 
+    async def test_full_crawl_and_sync_prune_stale_cache_and_hide_delisted_skus(self):
+        import tempfile, json
+        import crawl_retail_details
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+        from web_api import register_web_routes
+
+        uid = 998901
+        bot.db.execute("INSERT OR REPLACE INTO users(id, currency, lang) VALUES(?, 'USD', 'en')", (uid,))
+        bot.db.execute("DELETE FROM orders")
+        bot.db.execute("DELETE FROM products")
+
+        # Live retail SKU (will be seen)
+        pid_live_retail = bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type) "
+            "VALUES('Live Retail Tool', 'Desc', 435, 'renqis_retail_liveretailtool', 300, 0, 1, 'AI Tools', 'renqis_retail', 5, 'manual')"
+        ).lastrowid
+        # Stale retail SKU with NO orders -> must be deleted
+        pid_stale_no_orders = bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type) "
+            "VALUES('Old Removed SKU', 'Old', 500, 'renqis_retail_oldremovedsku', 350, 0, 0, 'AI Tools', 'renqis_retail', 0, 'manual')"
+        ).lastrowid
+        # Stale retail SKU WITH historical order -> must be preserved in DB with delisted=1, hidden from shop
+        pid_stale_with_order = bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type) "
+            "VALUES('Legacy Ordered SKU', 'Old', 500, 'renqis_retail_legacyorderedsku', 350, 0, 1, 'AI Tools', 'renqis_retail', 5, 'manual')"
+        ).lastrowid
+        bot.db.execute(
+            "INSERT INTO orders(user_id, product_id, product_name, price, status) VALUES(?, ?, 'Legacy Ordered SKU', 500, 'completed')",
+            (uid, pid_stale_with_order),
+        )
+        # API SKU still in feed (out of stock = 0 -> kept visible with delisted=0)
+        pid_api_oos = bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type) "
+            "VALUES('ChatGPT Go 1M', 'OOS API item', 609, '200', 420, 1, 0, 'ChatGPT', 'default', 0, 'auto')"
+        ).lastrowid
+        # Delisted API SKU with NO orders and NOT on retail bot -> deleted on full API sync
+        pid_api_dead = bot.db.execute(
+            "INSERT INTO products(name, description, price, supplier_product_id, supplier_price, auto_fulfill, active, category, supplier, supplier_stock, delivery_type) "
+            "VALUES('Deleted API Item', 'Dead', 300, '9999', 200, 1, 1, 'AI Tools', 'default', 5, 'auto')"
+        ).lastrowid
+        bot.db.commit()
+
+        # Simulate stale keys inside details_cache alongside the live key
+        details_cache = {
+            "liveretailtool": {"item_name": "Live Retail Tool", "price_usd": 3.0, "stock": 5, "page": "1/20"},
+            "oldremovedsku": {"item_name": "Old Removed SKU", "price_usd": 3.5, "stock": 0, "page": "14/19"},
+            "legacyorderedsku": {"item_name": "Legacy Ordered SKU", "price_usd": 3.5, "stock": 0, "page": "2/19"},
+        }
+        seen_cache_keys = {"liveretailtool"}
+        seen_norms = {"liveretailtool", "chatgptgo1m"}
+        seen_db_ids = {pid_live_retail, pid_api_oos}
+
+        crawl_retail_details.prune_stale_retail_catalog(
+            details_cache, seen_cache_keys, seen_norms, seen_db_ids, conn=bot.db, min_seen=1
+        )
+        self.assertEqual(set(details_cache.keys()), {"liveretailtool"})
+        self.assertIsNone(bot.db.execute("SELECT id FROM products WHERE id=?", (pid_stale_no_orders,)).fetchone())
+        legacy_row = bot.db.execute("SELECT active, supplier_stock, delisted FROM products WHERE id=?", (pid_stale_with_order,)).fetchone()
+        self.assertEqual((legacy_row["active"], legacy_row["supplier_stock"], legacy_row["delisted"]), (0, 0, 1))
+
+        # Full API sync (>= 20 items) deletes dead API SKU without orders while keeping live OOS API SKU
+        live_feed = [{"id": "200", "name": "ChatGPT Go 1M", "description": "OOS API item", "price_cents": 420, "stock": 0}] + [
+            {"id": str(300 + i), "name": f"Filler API {i}", "description": "Desc", "price_cents": 200, "stock": 1}
+            for i in range(25)
+        ]
+        mock_sup = AsyncMock()
+        mock_sup.api_key = "test_key"
+        mock_sup.get_products = AsyncMock(return_value=live_feed)
+        with patch.object(bot.supplier_registry, "get", return_value=mock_sup), \
+             patch.object(bot.supplier_registry, "list_suppliers", return_value={"default": mock_sup}), \
+             patch("retail_catalog.sync_retail_catalog_details", return_value=(0, 0)):
+            await bot.perform_supplier_sync(target_suppliers=["default"], markup=45)
+
+        self.assertIsNone(bot.db.execute("SELECT id FROM products WHERE name='Deleted API Item'").fetchone())
+        oos_row = bot.db.execute("SELECT id, active, supplier_stock, delisted FROM products WHERE supplier_product_id='200'").fetchone()
+        self.assertIsNotNone(oos_row)
+        self.assertEqual((oos_row["active"], oos_row["supplier_stock"], oos_row["delisted"]), (0, 0, 0))
+        legacy_row2 = bot.db.execute("SELECT id, active, delisted FROM products WHERE name='Legacy Ordered SKU'").fetchone()
+        self.assertIsNotNone(legacy_row2)
+        self.assertEqual((legacy_row2["active"], legacy_row2["delisted"]), (0, 1))
+        legacy_id_now = legacy_row2["id"]
+
+        # Buyer views (All items page 1 & page 2, category, Web API) hide delisted=1 SKU but keep live OOS SKU
+        c = AsyncMock()
+        c.from_user.id = uid
+        with patch.object(bot, "edit", new=AsyncMock()) as mock_edit:
+            c.data = "allprods:1:0"
+            await bot.on_all_prods(c)
+            p1_btns = [b.text for row in mock_edit.call_args[0][2].inline_keyboard for b in row]
+            c.data = "allprods:2:0"
+            await bot.on_all_prods(c)
+            p2_btns = [b.text for row in mock_edit.call_args[0][2].inline_keyboard for b in row]
+            self.assertFalse(any("Legacy Ordered SKU" in t for t in p1_btns + p2_btns))
+            self.assertTrue(any("ChatGPT Go 1M" in t for t in p2_btns))
+
+        chatgpt_prods = bot.get_products_for_category("chatgpt")
+        self.assertTrue(any(p["name"] == "ChatGPT Go 1M" for p in chatgpt_prods))
+
+        ai_prods = bot.get_products_for_category("ai_tools")
+        self.assertFalse(any(p["id"] == legacy_id_now for p in ai_prods))
+
+        app = web.Application()
+        with patch.dict(os.environ, {"CREDITLOG_BACKEND_SECRET": "test-web-secret"}):
+            register_web_routes(app, vars(bot))
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                res = await client.get("/api/products", headers={"X-CreditLog-Backend-Secret": "test-web-secret"})
+                data = await res.json()
+                self.assertEqual(res.status, 200)
+                self.assertFalse(any(item["botProductId"] == legacy_id_now for item in data.get("data", [])))
+            finally:
+                await client.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -253,7 +253,9 @@ async def build_catalog_excel(target_db_path: Optional[str] = None):
 
     all_db_rows = []
     if table_exists:
-        all_db_rows = [dict(r) for r in c.execute("SELECT * FROM products ORDER BY id ASC").fetchall()]
+        prod_cols = {r[1] for r in c.execute("PRAGMA table_info(products)").fetchall()}
+        where_clause = " WHERE COALESCE(delisted, 0) = 0" if "delisted" in prod_cols else ""
+        all_db_rows = [dict(r) for r in c.execute(f"SELECT * FROM products{where_clause} ORDER BY id ASC").fetchall()]
 
     conn.close()
 

@@ -71,11 +71,11 @@ def resolve_details_json_path(db_path=None) -> Path:
     return DETAILS_JSON
 
 
-def update_retail_catalogs(details_cache: dict) -> bool:
+def update_retail_catalogs(details_cache: dict, min_items: int = 50) -> bool:
     """Updates both retail_catalog.py and retail_bot_catalog_raw.json directly from scraped details."""
     cat_py_path = BASE_DIR / "retail_catalog.py"
     raw_json_path = BASE_DIR / "retail_bot_catalog_raw.json"
-    if not details_cache:
+    if not details_cache or len(details_cache) < min_items or DETAILS_JSON != (BASE_DIR / "retail_catalog_details.json"):
         return False
     try:
         items = []
@@ -214,6 +214,7 @@ def update_db_product(
         rows = cur.execute(
             "SELECT id, name, margin, fixed_price, supplier, auto_fulfill, description, supplier_price FROM products"
         ).fetchall()
+        has_delisted = any(r[1] == "delisted" for r in cur.execute("PRAGMA table_info(products)").fetchall())
         matched_id = None
         matched_desc = ""
         matched_is_api = False
@@ -268,27 +269,29 @@ def update_db_product(
             elif cost_usd is not None and cost_usd > 0 and not fixed_price:
                 cost_cents = int(round(cost_usd * 100))
                 retail_cents = max(100, int(round(cost_cents * (1 + margin / 100.0))))
+                delisted_clause = ", delisted = 0" if has_delisted else ""
                 cur.execute(
-                    """
+                    f"""
                     UPDATE products
                     SET description = ?,
                         supplier_stock = ?,
                         active = ?,
                         supplier_price = ?,
                         price = ?,
-                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
+                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END{delisted_clause}
                     WHERE id = ?
                 """,
                     (effective_desc, stock, active, cost_cents, retail_cents, cat, matched_id),
                 )
             else:
+                delisted_clause = ", delisted = 0" if has_delisted else ""
                 cur.execute(
-                    """
+                    f"""
                     UPDATE products
                     SET description = ?,
                         supplier_stock = ?,
                         active = ?,
-                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
+                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END{delisted_clause}
                     WHERE id = ?
                 """,
                     (effective_desc, stock, active, cat, matched_id),
@@ -656,31 +659,117 @@ def _persist_cache(details_cache: dict, primary_path: Path):
             pass
 
 
+def _ensure_delisted_column(cur) -> None:
+    cols = {r[1] for r in cur.execute("PRAGMA table_info(products)").fetchall()}
+    if "delisted" not in cols:
+        cur.execute("ALTER TABLE products ADD COLUMN delisted INTEGER DEFAULT 0")
+
+
+def remove_or_delist_product(conn_or_cur, pid: int) -> str:
+    """Deletes unreferenced discontinued SKU, or marks delisted=1/active=0 when order/stock history exists."""
+    cur = conn_or_cur.cursor() if hasattr(conn_or_cur, "cursor") else conn_or_cur
+    _ensure_delisted_column(cur)
+    has_orders = False
+    has_unsold_stock = False
+    try:
+        has_orders = bool(cur.execute("SELECT 1 FROM orders WHERE product_id=? LIMIT 1", (pid,)).fetchone())
+    except sqlite3.OperationalError:
+        pass
+    try:
+        has_unsold_stock = bool(cur.execute("SELECT 1 FROM stock WHERE product_id=? AND sold=0 LIMIT 1", (pid,)).fetchone())
+    except sqlite3.OperationalError:
+        pass
+
+    if has_orders or has_unsold_stock:
+        cur.execute("UPDATE products SET active=0, supplier_stock=0, delisted=1 WHERE id=?", (pid,))
+        return "delisted"
+
+    try:
+        cur.execute("DELETE FROM stock WHERE product_id=?", (pid,))
+    except sqlite3.OperationalError:
+        pass
+    try:
+        row_feat = cur.execute("SELECT value FROM settings WHERE key='featured_products'").fetchone()
+        if row_feat and row_feat[0]:
+            f_ids = [x.strip() for x in str(row_feat[0]).split(",") if x.strip() and x.strip() != str(pid)]
+            cur.execute("UPDATE settings SET value=? WHERE key='featured_products'", (",".join(f_ids),))
+    except sqlite3.OperationalError:
+        pass
+    cur.execute("DELETE FROM products WHERE id=?", (pid,))
+    return "deleted"
+
+
+def prune_stale_retail_catalog(
+    details_cache: dict,
+    seen_cache_keys: set,
+    seen_norms: set,
+    seen_db_ids: set,
+    db_path=None,
+    conn=None,
+    min_seen: int = 50,
+) -> dict:
+    """Prunes stale keys from details_cache and deletes/delists removed renqis_retail rows."""
+    if not seen_cache_keys or len(seen_cache_keys) < min_seen:
+        return {"cache_pruned": 0, "deleted": 0, "delisted": 0}
+
+    stale_keys = [k for k in list(details_cache.keys()) if k not in seen_cache_keys]
+    for k in stale_keys:
+        details_cache.pop(k, None)
+
+    own_conn = conn is None
+    deleted = 0
+    delisted = 0
+    try:
+        if own_conn:
+            conn = sqlite3.connect(resolve_db_path(db_path))
+        cur = conn.cursor()
+        _ensure_delisted_column(cur)
+        rows = cur.execute("SELECT id, name FROM products WHERE supplier='renqis_retail'").fetchall()
+        for r in rows:
+            pid = r[0] if isinstance(r, tuple) else r["id"]
+            if pid not in seen_db_ids:
+                outcome = remove_or_delist_product(cur, pid)
+                if outcome == "deleted":
+                    deleted += 1
+                else:
+                    delisted += 1
+        conn.commit()
+        if stale_keys or deleted or delisted:
+            logger.info(
+                "Pruned retail catalog: %d stale cache keys removed, %d DB SKUs deleted, %d DB SKUs delisted",
+                len(stale_keys), deleted, delisted,
+            )
+    except Exception as e:
+        logger.warning("Could not prune stale retail catalog entries: %s", e)
+    finally:
+        if own_conn and conn:
+            conn.close()
+    return {"cache_pruned": len(stale_keys), "deleted": deleted, "delisted": delisted}
+
+
 def _deactivate_removed_retail_skus(seen_norms: set, db_path=None) -> int:
-    """Marks renqis_retail SKUs missing from a complete supplier bot crawl as inactive."""
+    """Backwards-compatible helper marking renqis_retail SKUs missing from supplier bot as delisted/deleted."""
     if not seen_norms or len(seen_norms) < 50:
         return 0
     conn = None
-    deactivated = 0
+    removed = 0
     try:
         conn = sqlite3.connect(resolve_db_path(db_path))
         cur = conn.cursor()
-        rows = cur.execute(
-            "SELECT id, name FROM products WHERE supplier='renqis_retail' AND active=1"
-        ).fetchall()
+        _ensure_delisted_column(cur)
+        rows = cur.execute("SELECT id, name FROM products WHERE supplier='renqis_retail'").fetchall()
         for pid, pname in rows:
             if norm_name(pname) not in seen_norms:
-                cur.execute("UPDATE products SET active=0, supplier_stock=0 WHERE id=?", (pid,))
-                deactivated += 1
-        if deactivated:
+                remove_or_delist_product(cur, pid)
+                removed += 1
+        if removed:
             conn.commit()
-            logger.info("Deactivated %d removed retail SKUs not present on supplier bot", deactivated)
     except Exception as e:
         logger.warning("Could not deactivate removed retail SKUs: %s", e)
     finally:
         if conn:
             conn.close()
-    return deactivated
+    return removed
 
 
 async def run_retail_crawler(
@@ -700,9 +789,13 @@ async def run_retail_crawler(
     from telethon.sessions import StringSession
 
     cache_path = resolve_details_json_path(db_path)
-    candidate_paths = [DETAILS_JSON]
-    if cache_path != DETAILS_JSON:
-        candidate_paths.append(cache_path)
+    # Use persistent /data cache exclusively once populated so pruned keys are never resurrected from /app
+    if cache_path != DETAILS_JSON and cache_path.exists():
+        candidate_paths = [cache_path]
+    else:
+        candidate_paths = [DETAILS_JSON]
+        if cache_path != DETAILS_JSON:
+            candidate_paths.append(cache_path)
 
     details_cache = {}
     for candidate_path in candidate_paths:
@@ -726,6 +819,8 @@ async def run_retail_crawler(
     total_pages = 19
     seen_norms = set()
     seen_norm_prices = {}
+    seen_cache_keys = set()
+    seen_db_ids = set()
     crawl_incomplete = False
     nav_locked = False
 
@@ -865,6 +960,9 @@ async def run_retail_crawler(
                     pid, is_new = update_db_product(
                         btn_name, cached_desc, eff_stock, eff_price, db_path, allow_multi_price=is_multi_price
                     )
+                    seen_cache_keys.add(cache_k)
+                    if pid:
+                        seen_db_ids.add(pid)
                     if is_new:
                         new_count += 1
                     elif pid:
@@ -926,6 +1024,9 @@ async def run_retail_crawler(
                             db_path,
                             allow_multi_price=is_multi_price,
                         )
+                        seen_cache_keys.add(cache_k)
+                        if pid:
+                            seen_db_ids.add(pid)
                         if is_new:
                             new_count += 1
                         elif pid:
@@ -962,6 +1063,9 @@ async def run_retail_crawler(
                     pid, is_new = update_db_product(
                         btn_name, fallback_desc, live_stock, live_price, db_path, allow_multi_price=is_multi_price
                     )
+                    seen_cache_keys.add(cache_k)
+                    if pid:
+                        seen_db_ids.add(pid)
                     if is_new:
                         new_count += 1
                     elif pid:
@@ -1020,11 +1124,14 @@ async def run_retail_crawler(
                 break
 
         if not crawl_incomplete and current_page >= total_pages:
-            _deactivate_removed_retail_skus(seen_norms, db_path=db_path)
+            prune_stale_retail_catalog(
+                details_cache, seen_cache_keys, seen_norms, seen_db_ids, db_path=db_path, min_seen=50
+            )
 
         try:
             _persist_cache(details_cache, cache_path)
-            update_retail_catalog_py(details_cache)
+            if not crawl_incomplete and current_page >= total_pages:
+                update_retail_catalogs(details_cache)
         except Exception as e:
             logger.warning("Could not persist scraped details: %s", e)
 

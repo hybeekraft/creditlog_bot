@@ -359,6 +359,10 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
 
     from bot import detect_category
     cur = db_conn.cursor()
+    has_delisted = any(
+        (r[1] if isinstance(r, tuple) else r["name"]) == "delisted"
+        for r in cur.execute("PRAGMA table_info(products)").fetchall()
+    )
 
     rows = cur.execute("SELECT id, name, margin, fixed_price, supplier, auto_fulfill, description, supplier_price FROM products").fetchall()
     by_variant = {}
@@ -421,24 +425,26 @@ def sync_retail_catalog_details(db_conn, json_path: str = None) -> tuple:
                 """, (final_desc, cat, pid))
             elif cost_cents > 0 and not is_fixed:
                 retail_cents = max(100, int(round(cost_cents * (1 + margin_val / 100.0))))
-                cur.execute("""
+                delisted_sql = ",\n                        delisted = 0" if has_delisted else ""
+                cur.execute(f"""
                     UPDATE products
                     SET description = ?,
                         supplier_stock = ?,
                         active = ?,
                         supplier_price = ?,
                         price = ?,
-                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
+                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END{delisted_sql}
                     WHERE id = ?
                 """, (final_desc, stock, active, cost_cents, retail_cents, cat, pid))
                 prev_cost = cost_cents
             else:
-                cur.execute("""
+                delisted_sql = ",\n                        delisted = 0" if has_delisted else ""
+                cur.execute(f"""
                     UPDATE products
                     SET description = ?,
                         supplier_stock = ?,
                         active = ?,
-                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END
+                        category = CASE WHEN category = 'AI Tools' OR category IS NULL THEN ? ELSE category END{delisted_sql}
                     WHERE id = ?
                 """, (final_desc, stock, active, cat, pid))
             updated_entry = (pid, margin_val, is_fixed, final_desc, is_api, prev_cost)
